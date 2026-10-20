@@ -2,20 +2,18 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
+#include "Direct3D11Renderer.h"
 
 class Window {
 public:
     Window(HINSTANCE hInstance, int nCmdShow);
     ~Window();
-    LRESULT MessageHandler(HWND, UINT, WPARAM, LPARAM);
+    LRESULT MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void Run();
     bool InitD3D(HWND hwnd);
 private:
     HWND _hwnd;
-    ID3D11Device* m_device;
-    ID3D11DeviceContext* m_context;
-    IDXGISwapChain* m_swapChain;
-    ID3D11RenderTargetView* m_renderTargetView;
+    Direct3D11Renderer* m_renderer;
 };
 
 static Window* windowHandle = 0;

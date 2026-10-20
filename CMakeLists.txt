@@ -4,6 +4,7 @@ project(D3D11Example LANGUAGES CXX)
 add_executable(D3D11Example WIN32 
 	src/main.cpp
 	src/Window.cpp
+	src/Direct3D11Renderer.cpp
 )
 
 # Link against the Windows SDK libraries for DirectX 11
