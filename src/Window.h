@@ -3,10 +3,10 @@
 #include <d3d11.h>
 #include <dxgi.h>
 
-class D3D11Window {
+class Window {
 public:
-    D3D11Window(HINSTANCE hInstance, int nCmdShow);
-    ~D3D11Window();
+    Window(HINSTANCE hInstance, int nCmdShow);
+    ~Window();
     LRESULT MessageHandler(HWND, UINT, WPARAM, LPARAM);
     void Run();
     bool InitD3D(HWND hwnd);
@@ -18,5 +18,5 @@ private:
     ID3D11RenderTargetView* m_renderTargetView;
 };
 
-static D3D11Window* windowHandle = 0;
+static Window* windowHandle = 0;
 static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);

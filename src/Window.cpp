@@ -3,7 +3,7 @@
 #include <comdef.h>
 
 
-D3D11Window::D3D11Window(HINSTANCE hInstance, int nCmdShow) {
+Window::Window(HINSTANCE hInstance, int nCmdShow) {
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
@@ -28,7 +28,7 @@ D3D11Window::D3D11Window(HINSTANCE hInstance, int nCmdShow) {
 
 }
 
-LRESULT D3D11Window::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+LRESULT Window::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg) {
 
@@ -39,7 +39,7 @@ LRESULT D3D11Window::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
 }
 
-void D3D11Window::Run() {
+void Window::Run() {
     MSG msg = {};
     while (true) {
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -56,13 +56,13 @@ void D3D11Window::Run() {
     }
 }
 
-D3D11Window::~D3D11Window() {
+Window::~Window() {
     if (m_renderTargetView) m_renderTargetView->Release();
     if (m_swapChain) m_swapChain->Release();
     if (m_context) m_context->Release();
     if (m_device) m_device->Release();
 }
-bool D3D11Window::InitD3D(HWND hwnd) {
+bool Window::InitD3D(HWND hwnd) {
     DXGI_SWAP_CHAIN_DESC desc = {};
     desc.BufferCount = 1;
     desc.BufferDesc.Width = 800;

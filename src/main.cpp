@@ -4,7 +4,7 @@
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 {
-    D3D11Window* win = new D3D11Window(hInstance, nCmdShow);
+    Window* win = new Window(hInstance, nCmdShow);
     win->Run();
     return 0;
 }
