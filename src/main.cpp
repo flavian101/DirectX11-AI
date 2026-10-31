@@ -1,10 +1,10 @@
-#define UNICODE
+﻿#define UNICODE
 #include <windows.h>
 #include "Window.h"
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
+int main()
 {
-    Window* win = new Window(hInstance, nCmdShow);
-    win->Run();
+    Window window;
+    window.Run();
     return 0;
 }
