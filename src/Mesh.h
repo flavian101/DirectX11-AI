@@ -4,10 +4,21 @@
 #include <vector>
 #include <cstdint>
 
-struct Vertex {
+struct Vertex
+{
     DirectX::XMFLOAT3 position;
     DirectX::XMFLOAT3 normal;
     DirectX::XMFLOAT2 texCoord;
+
+    Vertex()
+        : position(0.0f, 0.0f, 0.0f),
+        normal(0.0f, 0.0f, 0.0f),
+        texCoord(0.0f, 0.0f) {}
+
+    Vertex(DirectX::XMFLOAT3 pos,
+        DirectX::XMFLOAT3 norm,
+        DirectX::XMFLOAT2 uv)
+        : position(pos), normal(norm), texCoord(uv) {}
 };
 
 class Mesh {

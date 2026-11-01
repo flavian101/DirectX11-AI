@@ -23,6 +23,10 @@ public:
                 const DirectX::XMFLOAT4X4& proj) const;
     void SetWorld(const DirectX::XMFLOAT4X4& world) { if (model_) model_->SetWorld(world); }
     Model* GetModel() const { return model_.get(); }
+    void SetTexture(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* texture)
+    {
+        shader_.SetTexture(ctx, texture);
+    }
 
 private:
     std::unique_ptr<Model> model_;

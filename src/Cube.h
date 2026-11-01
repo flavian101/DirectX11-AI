@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "Renderable.h"
 #include "SceneObject.h"
+#include "Texture.h"
 #include <DirectXMath.h>
 #include <memory>
 
@@ -12,5 +13,6 @@ public:
 
 private:
     std::unique_ptr<Renderable> renderable_;
+    std::unique_ptr<Texture> texture_;
     float angle_ = 0.0f;
 };

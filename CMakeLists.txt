@@ -18,8 +18,9 @@ add_executable(D3D11Example
 	src/Camera.cpp
 	src/Mesh.cpp
 	src/Renderable.cpp
-
- )
+	src/Texture.cpp
+    src/libs/stb_image.cpp
+)
 
 # Link against the Windows SDK libraries for DirectX 11
 # The d3d11 and dxgi libraries are part of the SDK and are available on Windows
@@ -31,4 +32,11 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/shaders
         $<TARGET_FILE_DIR:D3D11Example>/shaders
+)
+
+add_custom_command(
+    TARGET D3D11Example POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/assets
+        $<TARGET_FILE_DIR:D3D11Example>/assets
 )
