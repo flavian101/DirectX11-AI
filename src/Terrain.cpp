@@ -212,5 +212,5 @@ void Terrain::Render(ID3D11DeviceContext* ctx, const Camera& camera) const
 {
 	if (!IsValid()) return;
 	renderable_->SetTexture(ctx, texture_->GetShaderResourceView());
-	renderable_->Render(ctx, camera.GetViewMatrix(), camera.GetProjectionMatrix());
+	renderable_->Render(ctx);
 }

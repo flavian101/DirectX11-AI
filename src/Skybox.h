@@ -15,6 +15,7 @@ public:
 	DirectX::XMFLOAT3 GetSortPosition() const override { return {}; }
 	bool IsValid() const;
 	float GetIntensity() const { return intensity_; }
+	ID3D11ShaderResourceView* GetCubemapView() const { return cubemap_ ? cubemap_->GetShaderResourceView() : nullptr; }
 	void SetIntensity(float intensity);
 	void Update(float dt) override;
 	void Render(ID3D11DeviceContext* ctx, const Camera& camera) const override;

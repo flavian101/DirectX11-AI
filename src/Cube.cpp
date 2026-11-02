@@ -124,7 +124,7 @@ void Cube::Render(ID3D11DeviceContext* ctx, const Camera& camera) const
 {
     if (renderable_ && texture_ && texture_->IsValid()) {
         renderable_->SetTexture(ctx, texture_->GetShaderResourceView());
-        renderable_->Render(ctx, camera.GetViewMatrix(), camera.GetProjectionMatrix());
+        renderable_->Render(ctx);
     }
 }
 

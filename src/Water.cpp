@@ -67,21 +67,20 @@ void Water::SetSettings(const WaterSettings& settings)
 	if (renderable_) {
 		renderable_->SetMaterialColor({ settings_.color.x, settings_.color.y,
 										settings_.color.z, settings_.alpha });
-		renderable_->SetMaterialParameters({ settings_.waveAmplitude, settings_.waveSpeed, 0.0f });
+		renderable_->SetMaterialParameters({ settings_.waveAmplitude, settings_.waveSpeed, 0.0f, 0.0f });
 	}
 }
 
-void Water::Update(float dt)
+void Water::Update(float /*dt*/)
 {
-	elapsedTime_ += dt;
-	if (renderable_) renderable_->SetTime(elapsedTime_);
+	// Wave animation reads the shared scene clock (PerFrame.frameParams.x) on the GPU.
 }
 
 void Water::Render(ID3D11DeviceContext* ctx, const Camera& camera) const
 {
 	if (!IsValid() || !ctx) return;
 	material_.Apply(ctx);
-	renderable_->Render(ctx, camera.GetViewMatrix(), camera.GetProjectionMatrix());
+	renderable_->Render(ctx);
 }
 
 bool Water::GetEditorTransform(XMFLOAT3& position, XMFLOAT3& rotation, XMFLOAT3& scale) const

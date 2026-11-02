@@ -1,17 +1,11 @@
+#include "common.hlsli"
 struct VS_IN { float3 position : POSITION; float3 normal : NORMAL; float2 texCoord : TEXCOORD; };
 struct VS_OUT { float4 position : SV_POSITION; float3 normal : NORMAL; float2 texCoord : TEXCOORD; float3 worldPos : TEXCOORD1; };
-cbuffer Constants : register(b0) {
-    float4x4 world;
-    float4x4 view;
-    float4x4 proj;
-    float4 materialColor;
-    float time;
-    float3 materialParameters;
-};
 VS_OUT main(VS_IN input) {
     VS_OUT output;
-    float amplitude = materialParameters.x;
-    float speed = materialParameters.y;
+    float amplitude = materialParams.x;
+    float speed = materialParams.y;
+    float time = frameParams.x;
     float wave = sin(input.position.x * 2.4f + time * speed) * amplitude;
     wave += cos(input.position.z * 1.8f + time * speed * 0.8f) * amplitude * 0.65f;
     float3 position = input.position + float3(0.0f, wave, 0.0f);

@@ -42,5 +42,4 @@ private:
 	DirectX::XMFLOAT3 rotation_ = { 0.0f, 0.0f, 0.0f };
 	DirectX::XMFLOAT3 scale_ = { 1.0f, 1.0f, 1.0f };
 	Material material_;
-	float elapsedTime_ = 0.0f;
 };

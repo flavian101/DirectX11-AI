@@ -5,14 +5,15 @@
 #include <d3d11.h>
 #include <memory>
 
+// Data that changes per draw call. Must match `cbuffer PerObject : register(b2)` in
+// shaders/common.hlsli. View/projection/time are NOT here any more: they are the same
+// for every object, so FrameConstants uploads them once per frame instead.
 struct CBPerObject {
     DirectX::XMFLOAT4X4 world;
-    DirectX::XMFLOAT4X4 view;
-    DirectX::XMFLOAT4X4 proj;
     DirectX::XMFLOAT4 materialColor = { 1.0f, 1.0f, 1.0f, 1.0f };
-    float time = 0.0f;
-    DirectX::XMFLOAT3 materialParameters = {};
+    DirectX::XMFLOAT4 materialParams = {};  // meaning is defined by each shader
 };
+static_assert(sizeof(CBPerObject) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
 // Owns GPU draw state and the model it submits. Scene behavior belongs to SceneObject.
 class Renderable {
@@ -22,12 +23,10 @@ public:
     ~Renderable();
 
     bool IsValid() const { return valid_; }
-    void Render(ID3D11DeviceContext* ctx, const DirectX::XMFLOAT4X4& view,
-                const DirectX::XMFLOAT4X4& proj) const;
+    void Render(ID3D11DeviceContext* ctx) const;
     void SetWorld(const DirectX::XMFLOAT4X4& world) { if (model_) model_->SetWorld(world); }
     void SetMaterialColor(const DirectX::XMFLOAT4& color) { materialColor_ = color; }
-    void SetMaterialParameters(const DirectX::XMFLOAT3& parameters) { materialParameters_ = parameters; }
-    void SetTime(float time) { time_ = time; }
+    void SetMaterialParameters(const DirectX::XMFLOAT4& parameters) { materialParameters_ = parameters; }
     Model* GetModel() const { return model_.get(); }
     void SetTexture(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* texture)
     {
@@ -40,8 +39,7 @@ private:
     ID3D11Buffer* cb_ = nullptr;
     bool valid_ = false;
     DirectX::XMFLOAT4 materialColor_ = { 1.0f, 1.0f, 1.0f, 1.0f };
-    float time_ = 0.0f;
-    DirectX::XMFLOAT3 materialParameters_ = {};
+    DirectX::XMFLOAT4 materialParameters_ = {};
 };
 
 

@@ -3,6 +3,7 @@
 #include "SceneObject.h"
 #include "Light.h"
 #include "Terrain.h"
+#include "FrameConstants.h"
 #include <d3d11.h>
 #include <vector>
 #include <memory>
@@ -44,6 +45,8 @@ private:
     void UpdateCamera(const InputState& input, float dt);
 
     Camera camera_;
+    FrameConstants frame_;   // view/proj/camera/time, uploaded once per frame
+    float time_ = 0.0f;      // scene clock shared by every animated material
     std::unique_ptr<LightSystem> lights_;
     std::vector<SceneObject*> objects_;
     Terrain* terrain_ = nullptr;
