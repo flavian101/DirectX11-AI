@@ -14,6 +14,7 @@ public:
     void Render(Scene& scene, float dt);
     void Release();
     ID3D11Device* GetDevice() const { return m_device; }
+    ID3D11DeviceContext* GetContext() const { return m_context; }
 
 private:
     HWND _hwnd = nullptr;

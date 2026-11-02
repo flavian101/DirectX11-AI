@@ -19,6 +19,7 @@ add_executable(D3D11Example
 	src/Mesh.cpp
 	src/Renderable.cpp
 	src/Texture.cpp
+	src/Light.cpp
     src/libs/stb_image.cpp
 )
 

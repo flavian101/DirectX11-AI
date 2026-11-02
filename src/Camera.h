@@ -11,6 +11,7 @@ public:
     void Update();
     DirectX::XMFLOAT4X4 GetViewMatrix() const;
     DirectX::XMFLOAT4X4 GetProjectionMatrix() const;
+    DirectX::XMFLOAT3 GetPosition() const { return pos_; }
     void SetWindowSize(int width, int height);
 
 private:

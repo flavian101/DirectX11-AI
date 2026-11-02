@@ -1,10 +1,16 @@
 ﻿#include "Scene.h"
 
-Scene::Scene() = default;
+Scene::Scene() : lights_(std::make_unique<LightSystem>()) {}
 
 Scene::~Scene()
 {
     for (SceneObject* obj : objects_) delete obj;
+}
+
+bool Scene::Initialize(ID3D11Device* device)
+{
+    if (!device || !lights_) return false;
+    return lights_->Initialize(device);
 }
 
 void Scene::AddObject(SceneObject* obj)

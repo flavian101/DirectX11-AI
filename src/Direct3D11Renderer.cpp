@@ -99,6 +99,10 @@ void Direct3D11Renderer::Render(Scene& scene, float dt)
     m_context->ClearRenderTargetView(m_renderTargetView, clearColor);
     m_context->ClearDepthStencilView(m_depthView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
     scene.Update(dt);
+
+    // Apply lights before rendering scene objects
+    scene.GetLightSystem().Apply(m_context, scene.GetCamera().GetPosition());
+
     scene.Render(m_context);
     const HRESULT hr = m_swapChain->Present(0, 0);
     if (FAILED(hr)) LOG_HR(hr, "Swap chain Present failed");

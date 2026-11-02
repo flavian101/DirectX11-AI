@@ -2,6 +2,7 @@
 #include <chrono>
 #include "Logger.h"
 #include "Cube.h"
+#include "Light.h"
 
 Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
 {
@@ -26,7 +27,47 @@ Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
     }
 
     m_scene = new Scene();
+    if (!m_scene->Initialize(m_renderer->GetDevice())) {
+        LOG_ERROR("Failed to initialize scene lights");
+        delete m_scene;
+        m_scene = nullptr;
+        return;
+    }
     m_scene->AddObject(new Cube(m_renderer->GetDevice()));
+
+    // Add test point lights to the scene
+    LightSystem& lights = m_scene->GetLightSystem();
+
+    // Adjust directional light
+    DirectionalLight& dirLight = lights.Directional();
+    dirLight.direction = { 0.3f, -0.8f, 0.5f };
+    dirLight.color = { 1.0f, 0.95f, 0.85f };
+    dirLight.intensity = 0.8f;
+
+    // Set ambient lighting
+    lights.SetAmbient({ 0.2f, 0.2f, 0.25f });
+
+    // Add point lights around the cube
+    PointLight light1;
+    light1.position = { 3.0f, 2.0f, 3.0f };
+    light1.color = { 1.0f, 0.6f, 0.3f };
+    light1.intensity = 1.5f;
+    light1.range = 8.0f;
+    lights.AddPointLight(light1);
+
+    PointLight light2;
+    light2.position = { -3.0f, 1.0f, -3.0f };
+    light2.color = { 0.3f, 0.6f, 1.0f };
+    light2.intensity = 1.2f;
+    light2.range = 7.0f;
+    lights.AddPointLight(light2);
+
+    PointLight light3;
+    light3.position = { 0.0f, 3.0f, -4.0f };
+    light3.color = { 0.8f, 1.0f, 0.4f };
+    light3.intensity = 1.0f;
+    light3.range = 6.0f;
+    lights.AddPointLight(light3);
 }
 
 Window::~Window()
