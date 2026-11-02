@@ -8,35 +8,20 @@
 
 Scene::Scene() : lights_(std::make_unique<LightSystem>()) {}
 
-Scene::~Scene()
-{
-    for (SceneObject* obj : objects_) delete obj;
-}
+// Objects are unique_ptrs now. The owner must still destroy the Scene BEFORE the D3D device.
+Scene::~Scene() = default;
 
 bool Scene::Initialize(ID3D11Device* device)
 {
     if (!device || !lights_) return false;
     if (!lights_->Initialize(device)) return false;
     if (!frame_.Initialize(device)) return false;
-
-    camera_.SetPosition({ 0.0f, 10.0f, -20.0f });
-    camera_.SetTarget({ 0.0f, 12.0f, 0.0f });
-    terrain_ = new Terrain(device);
-    AddObject(terrain_);
     return true;
 }
 
 bool Scene::RegenerateTerrain(const TerrainSettings& settings)
 {
     return terrain_ && terrain_->Regenerate(settings);
-}
-
-void Scene::AddObject(SceneObject* obj)
-{
-    if (!obj) return;
-    objects_.push_back(obj);
-    if (auto* water = dynamic_cast<Water*>(obj)) water_ = water;
-    if (auto* skybox = dynamic_cast<Skybox*>(obj)) skybox_ = skybox;
 }
 
 void Scene::UpdateCamera(const InputState& input, float dt)
@@ -68,7 +53,7 @@ void Scene::ProcessInput(const InputState& input, float dt)
 void Scene::Update(float dt)
 {
     time_ += dt;
-    for (SceneObject* obj : objects_) if (obj) obj->Update(dt);
+    for (auto& obj : objects_) if (obj) obj->Update(dt);
 }
 
 void Scene::Render(ID3D11DeviceContext* ctx) const
@@ -81,7 +66,7 @@ void Scene::Render(ID3D11DeviceContext* ctx) const
 
     std::vector<const SceneObject*> sorted;
     sorted.reserve(objects_.size());
-    for (const SceneObject* object : objects_) if (object) sorted.push_back(object);
+    for (const auto& object : objects_) if (object) sorted.push_back(object.get());
 
     const DirectX::XMFLOAT3 cameraPosition = camera_.GetPosition();
     auto distanceSquared = [&cameraPosition](const SceneObject* object) {

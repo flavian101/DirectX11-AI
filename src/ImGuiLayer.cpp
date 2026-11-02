@@ -52,7 +52,7 @@ void ImGuiLayer::DrawCollectionWindow()
     const auto& objects = scene_->GetObjects();
     if (selectedObject_ >= static_cast<int>(objects.size())) selectedObject_ = -1;
     for (int index = 0; index < static_cast<int>(objects.size()); ++index) {
-        SceneObject* object = objects[index];
+        SceneObject* object = objects[index].get();
         if (!object) continue;
         if (ImGui::Selectable(object->GetEditorName(),
                               selectionKind_ == SelectionKind::Object && selectedObject_ == index)) {
@@ -69,7 +69,7 @@ void ImGuiLayer::DrawCollectionWindow()
     } else if (selectionKind_ == SelectionKind::Lights) {
         DrawLightsInspector();
     } else if (selectedObject_ >= 0 && selectedObject_ < static_cast<int>(objects.size())) {
-        DrawObjectInspector(objects[selectedObject_]);
+        DrawObjectInspector(objects[selectedObject_].get());
     } else {
         ImGui::Text("Select an item from the collection.");
     }

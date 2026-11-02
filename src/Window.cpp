@@ -2,11 +2,7 @@
 #include <chrono>
 #include <windowsx.h>
 #include "Logger.h"
-#include "Cube.h"
-#include "Light.h"
 #include "ImGuiLayer.h"
-#include "Skybox.h"
-#include "Water.h"
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
@@ -48,54 +44,13 @@ Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
         return;
     }
     imguiInitialized_ = true;
+}
 
-    m_scene = new Scene();
-    if (!m_scene->Initialize(m_renderer->GetDevice())) {
-        LOG_ERROR("Failed to initialize scene lights");
-        delete m_scene;
-        m_scene = nullptr;
-        return;
-    }
-    m_scene->AddObject(new Cube(m_renderer->GetDevice()));
-
-    // Add test point lights to the scene
-    LightSystem& lights = m_scene->GetLightSystem();
-
-    // Adjust directional light
-    DirectionalLight& dirLight = lights.Directional();
-    dirLight.direction = { 0.3f, -0.8f, 0.5f };
-    dirLight.color = { 1.0f, 0.95f, 0.85f };
-    dirLight.intensity = 0.8f;
-
-    // Set ambient lighting
-    lights.SetAmbient({ 0.2f, 0.2f, 0.25f });
-
-    // Add point lights around the cube
-    PointLight light1;
-    light1.position = { 3.0f, 2.0f, 3.0f };
-    light1.color = { 1.0f, 0.6f, 0.3f };
-    light1.intensity = 1.5f;
-    light1.range = 8.0f;
-    lights.AddPointLight(light1);
-
-    PointLight light2;
-    light2.position = { -3.0f, 1.0f, -3.0f };
-    light2.color = { 0.3f, 0.6f, 1.0f };
-    light2.intensity = 1.2f;
-    light2.range = 7.0f;
-    lights.AddPointLight(light2);
-
-    PointLight light3;
-    light3.position = { 0.0f, 3.0f, -4.0f };
-    light3.color = { 0.8f, 1.0f, 0.4f };
-    light3.intensity = 1.0f;
-    light3.range = 6.0f;
-    lights.AddPointLight(light3);
-
-    m_scene->AddObject(new Water(m_renderer->GetDevice()));
-    m_scene->AddObject(new Skybox(m_renderer->GetDevice()));
-
-    imguiLayer_ = std::make_unique<ImGuiLayer>(m_scene);
+void Window::SetScene(std::unique_ptr<Scene> scene)
+{
+    imguiLayer_.reset();   // it points into the old scene
+    m_scene = std::move(scene);
+    if (m_scene) imguiLayer_ = std::make_unique<ImGuiLayer>(m_scene.get());
 }
 
 Window::~Window()
@@ -108,7 +63,7 @@ Window::~Window()
         imguiInitialized_ = false;
     }
     // Destroy scene GPU resources while the D3D device is still alive.
-    delete m_scene;
+    m_scene.reset();
     delete m_renderer;
     if (windowHandle == this) windowHandle = nullptr;
 }

@@ -15,11 +15,17 @@ public:
     LRESULT MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void Run();
     bool InitD3D(HWND hwnd);
+
+    // The Window creates the OS window, D3D11 and ImGui. It does NOT decide what is in the
+    // world: whoever builds a Scene hands it over here (see main.cpp / DemoScene.cpp).
+    bool IsInitialized() const { return m_renderer && imguiInitialized_; }
+    ID3D11Device* GetDevice() const { return m_renderer ? m_renderer->GetDevice() : nullptr; }
+    void SetScene(std::unique_ptr<Scene> scene);
 private:
     HWND _hwnd = nullptr;
     HINSTANCE m_Hinstance = nullptr;
     Direct3D11Renderer* m_renderer = nullptr;
-    Scene* m_scene = nullptr;
+    std::unique_ptr<Scene> m_scene;
     std::unique_ptr<ImGuiLayer> imguiLayer_;
 
     // Input state collected from Windows messages
