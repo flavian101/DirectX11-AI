@@ -4,6 +4,9 @@
 #include <dxgi.h>
 #include "Direct3D11Renderer.h"
 #include "Scene.h"
+#include <memory>
+
+class ImGuiLayer;
 
 class Window {
 public:
@@ -17,6 +20,7 @@ private:
     HINSTANCE m_Hinstance = nullptr;
     Direct3D11Renderer* m_renderer = nullptr;
     Scene* m_scene = nullptr;
+    std::unique_ptr<ImGuiLayer> imguiLayer_;
 
     // Input state collected from Windows messages
     InputState inputState_;

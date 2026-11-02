@@ -86,11 +86,38 @@ Cube::Cube(ID3D11Device* device)
 
 void Cube::Update(float dt)
 {
-    angle_ += XMConvertToRadians(45.0f) * dt;
-    const XMMATRIX rotation = XMMatrixRotationY(angle_) * XMMatrixRotationX(angle_ * 0.5f);
+    rotation_.y += XMConvertToRadians(45.0f) * dt;
+    rotation_.x += XMConvertToRadians(22.5f) * dt;
+    UpdateWorldTransform();
+}
+
+bool Cube::GetEditorTransform(XMFLOAT3& position, XMFLOAT3& rotation, XMFLOAT3& scale) const
+{
+    position = position_;
+    rotation = rotation_;
+    scale = scale_;
+    return true;
+}
+
+bool Cube::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotation,
+                              const XMFLOAT3& scale)
+{
+    position_ = position;
+    rotation_ = rotation;
+    scale_ = scale;
+    UpdateWorldTransform();
+    return true;
+}
+
+void Cube::UpdateWorldTransform()
+{
+    const XMMATRIX transform = XMMatrixScaling(scale_.x, scale_.y, scale_.z) *
+        XMMatrixRotationX(rotation_.x) * XMMatrixRotationY(rotation_.y) *
+        XMMatrixRotationZ(rotation_.z) *
+        XMMatrixTranslation(position_.x, position_.y, position_.z);
     XMFLOAT4X4 world;
-    XMStoreFloat4x4(&world, rotation);
-    renderable_->SetWorld(world);
+    XMStoreFloat4x4(&world, transform);
+    if (renderable_) renderable_->SetWorld(world);
 }
 
 void Cube::Render(ID3D11DeviceContext* ctx, const Camera& camera) const

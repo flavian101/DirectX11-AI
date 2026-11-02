@@ -151,6 +151,7 @@ Terrain::Terrain(ID3D11Device* device) : device_(device)
 {
 	texture_ = std::make_unique<Texture>(device, "assets/dark alien/Diffuse Map.png");
 	if (!Regenerate(settings_)) LOG_ERROR("Terrain mesh initialization failed");
+	UpdateWorldTransform();
 	if (!IsValid()) LOG_ERROR("Terrain initialization failed");
 }
 
@@ -170,7 +171,37 @@ bool Terrain::Regenerate(const TerrainSettings& settings)
 
 	renderable_ = std::move(replacement);
 	settings_ = settings;
+	UpdateWorldTransform();
 	return true;
+}
+
+bool Terrain::GetEditorTransform(XMFLOAT3& position, XMFLOAT3& rotation, XMFLOAT3& scale) const
+{
+	position = position_;
+	rotation = rotation_;
+	scale = scale_;
+	return true;
+}
+
+bool Terrain::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotation,
+	const XMFLOAT3& scale)
+{
+	position_ = position;
+	rotation_ = rotation;
+	scale_ = scale;
+	UpdateWorldTransform();
+	return true;
+}
+
+void Terrain::UpdateWorldTransform()
+{
+	const XMMATRIX transform = XMMatrixScaling(scale_.x, scale_.y, scale_.z) *
+		XMMatrixRotationX(rotation_.x) * XMMatrixRotationY(rotation_.y) *
+		XMMatrixRotationZ(rotation_.z) *
+		XMMatrixTranslation(position_.x, position_.y, position_.z);
+	XMFLOAT4X4 world;
+	XMStoreFloat4x4(&world, transform);
+	if (renderable_) renderable_->SetWorld(world);
 }
 
 void Terrain::Update(float /*dt*/)

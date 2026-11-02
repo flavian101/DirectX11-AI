@@ -35,6 +35,8 @@ public:
     void Release();
 
     void SetAmbient(const DirectX::XMFLOAT3& color) { ambient_ = color; }
+    DirectX::XMFLOAT3& Ambient() { return ambient_; }
+    const DirectX::XMFLOAT3& Ambient() const { return ambient_; }
     DirectionalLight& Directional() { return directional_; }
     const DirectionalLight& Directional() const { return directional_; }
 

@@ -21,6 +21,7 @@ add_executable(D3D11Example
 	src/Texture.cpp
 	src/Light.cpp
 	src/Terrain.cpp
+	src/ImGuiLayer.cpp
     src/libs/stb_image.cpp
 	extern/imgui/imgui.cpp
 	extern/imgui/imgui_demo.cpp

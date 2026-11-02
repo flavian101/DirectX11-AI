@@ -24,8 +24,10 @@ public:
 
     bool Initialize(ID3D11Device* device);
     const Camera& GetCamera() const { return camera_; }
+    Camera& GetCamera() { return camera_; }
     Terrain* GetTerrain() const { return terrain_; }
     bool RegenerateTerrain(const TerrainSettings& settings);
+    const std::vector<SceneObject*>& GetObjects() const { return objects_; }
     LightSystem& GetLightSystem() { return *lights_; }
     const LightSystem& GetLightSystem() const { return *lights_; }
     void AddObject(SceneObject* obj);      // Scene owns the objects

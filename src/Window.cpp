@@ -4,6 +4,7 @@
 #include "Logger.h"
 #include "Cube.h"
 #include "Light.h"
+#include "ImGuiLayer.h"
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
@@ -88,10 +89,13 @@ Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
     light3.intensity = 1.0f;
     light3.range = 6.0f;
     lights.AddPointLight(light3);
+
+    imguiLayer_ = std::make_unique<ImGuiLayer>(m_scene);
 }
 
 Window::~Window()
 {
+    imguiLayer_.reset();
     if (imguiInitialized_) {
         ImGui_ImplDX11_Shutdown();
         ImGui_ImplWin32_Shutdown();
@@ -200,26 +204,7 @@ void Window::Run()
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
 
-            ImGui::Begin("Terrain Generation");
-            static TerrainSettings pendingSettings;
-            static bool settingsInitialized = false;
-            static bool lastGenerationSucceeded = true;
-            if (!settingsInitialized && m_scene->GetTerrain()) {
-                pendingSettings = m_scene->GetTerrain()->GetSettings();
-                settingsInitialized = true;
-            }
-
-            ImGui::SliderFloat("Height scale", &pendingSettings.heightScale, 1.0f, 100.0f, "%.1f");
-            ImGui::SliderFloat("Noise strength", &pendingSettings.noiseStrength, 0.0f, 1.0f, "%.3f");
-            ImGui::SliderFloat("Noise scale", &pendingSettings.noiseScale, 0.5f, 16.0f, "%.2f");
-            ImGui::InputInt("Noise seed", &pendingSettings.noiseSeed);
-            if (ImGui::Button("Generate terrain")) {
-                lastGenerationSucceeded = m_scene->RegenerateTerrain(pendingSettings);
-            }
-            if (!lastGenerationSucceeded) {
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Terrain regeneration failed");
-            }
-            ImGui::End();
+            if (imguiLayer_) imguiLayer_->Draw();
 
             ImGui::Render();
         }

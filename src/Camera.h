@@ -12,6 +12,10 @@ public:
     DirectX::XMFLOAT4X4 GetViewMatrix() const;
     DirectX::XMFLOAT4X4 GetProjectionMatrix() const;
     DirectX::XMFLOAT3 GetPosition() const { return pos_; }
+    DirectX::XMFLOAT3 GetTarget() const { return target_; }
+    DirectX::XMFLOAT3 GetUp() const { return up_; }
+    float GetMoveSpeed() const { return moveSpeed_; }
+    float GetRotationSpeed() const { return rotationSpeed_; }
     void SetWindowSize(int width, int height);
 
     // Camera movement methods
@@ -21,6 +25,8 @@ public:
     void SetRotationSpeed(float speed) { rotationSpeed_ = speed; }
 
 private:
+    void UpdateOrientation();
+
     DirectX::XMFLOAT3 pos_;
     DirectX::XMFLOAT3 target_;
     DirectX::XMFLOAT3 up_;
