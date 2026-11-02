@@ -17,8 +17,7 @@ struct InputState {
     std::array<bool, 256> keys = {};  // Keyboard state for all keys
     int mouseDeltaX = 0;
     int mouseDeltaY = 0;
-    bool leftMouseDown = false;
-    bool ctrlDown = false;
+    bool middleMouseButtonDown = false;
 };
 
 class Scene {

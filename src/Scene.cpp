@@ -19,7 +19,7 @@ bool Scene::Initialize(ID3D11Device* device)
     if (!lights_->Initialize(device)) return false;
     if (!frame_.Initialize(device)) return false;
 
-    camera_.SetPosition({ 0.0f, 62.0f, -115.0f });
+    camera_.SetPosition({ 0.0f, 10.0f, -20.0f });
     camera_.SetTarget({ 0.0f, 12.0f, 0.0f });
     terrain_ = new Terrain(device);
     AddObject(terrain_);
@@ -49,7 +49,7 @@ void Scene::UpdateCamera(const InputState& input, float dt)
     camera_.Move(forward, backward, left, right, dt);
 
     // Handle first-person camera rotation with Ctrl + Left Mouse Button
-    if (input.ctrlDown && input.leftMouseDown) {
+    if (input.middleMouseButtonDown) {
         const float smoothing = 1.0f - std::exp(-20.0f * dt);
         smoothedMouseDeltaX_ += (static_cast<float>(input.mouseDeltaX) - smoothedMouseDeltaX_) * smoothing;
         smoothedMouseDeltaY_ += (static_cast<float>(input.mouseDeltaY) - smoothedMouseDeltaY_) * smoothing;
