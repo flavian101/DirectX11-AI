@@ -21,11 +21,23 @@ add_executable(D3D11Example
 	src/Texture.cpp
 	src/Light.cpp
     src/libs/stb_image.cpp
+	extern/imgui/imgui.cpp
+	extern/imgui/imgui_demo.cpp
+	extern/imgui/imgui_draw.cpp
+	extern/imgui/imgui_tables.cpp
+	extern/imgui/imgui_widgets.cpp
+	extern/imgui/backends/imgui_impl_win32.cpp
+	extern/imgui/backends/imgui_impl_dx11.cpp
+)
+
+target_include_directories(D3D11Example PRIVATE
+	${CMAKE_SOURCE_DIR}/extern/imgui
+	${CMAKE_SOURCE_DIR}/extern/imgui/backends
 )
 
 # Link against the Windows SDK libraries for DirectX 11
 # The d3d11 and dxgi libraries are part of the SDK and are available on Windows
-target_link_libraries(D3D11Example PRIVATE d3d11 dxgi d3dcompiler)
+target_link_libraries(D3D11Example PRIVATE d3d11 dxgi d3dcompiler imm32 dwmapi)
 
 
 add_custom_command(

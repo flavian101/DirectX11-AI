@@ -4,6 +4,12 @@
 #include "Logger.h"
 #include "Cube.h"
 #include "Light.h"
+#include "imgui.h"
+#include "imgui_impl_dx11.h"
+#include "imgui_impl_win32.h"
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
+    HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
 {
@@ -26,6 +32,19 @@ Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
         LOG_ERROR("Failed to initialize Direct3D 11");
         return;
     }
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    if (!ImGui_ImplWin32_Init(_hwnd) ||
+        !ImGui_ImplDX11_Init(m_renderer->GetDevice(), m_renderer->GetContext())) {
+        LOG_ERROR("Failed to initialize Dear ImGui");
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        return;
+    }
+    imguiInitialized_ = true;
 
     m_scene = new Scene();
     if (!m_scene->Initialize(m_renderer->GetDevice())) {
@@ -73,6 +92,12 @@ Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
 
 Window::~Window()
 {
+    if (imguiInitialized_) {
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        imguiInitialized_ = false;
+    }
     // Destroy scene GPU resources while the D3D device is still alive.
     delete m_scene;
     delete m_renderer;
@@ -81,6 +106,10 @@ Window::~Window()
 
 LRESULT Window::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    if (imguiInitialized_ && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam)) {
+        return 0;
+    }
+
     switch (msg) {
     case WM_KEYDOWN:
         if (wParam < 256) {
@@ -165,6 +194,24 @@ void Window::Run()
         // Reset mouse delta after processing
         inputState_.mouseDeltaX = 0;
         inputState_.mouseDeltaY = 0;
+
+        if (imguiInitialized_) {
+            ImGui_ImplDX11_NewFrame();
+            ImGui_ImplWin32_NewFrame();
+            ImGui::NewFrame();
+
+            ImGui::Begin("Terrain Generation");
+            static int heightmapResolution = 256;
+            static float terrainSize = 100.0f;
+            static float heightScale = 20.0f;
+            ImGui::SliderInt("Heightmap resolution", &heightmapResolution, 32, 2048);
+            ImGui::SliderFloat("Terrain size", &terrainSize, 10.0f, 500.0f, "%.1f");
+            ImGui::SliderFloat("Height scale", &heightScale, 1.0f, 100.0f, "%.1f");
+            ImGui::Button("Generate terrain");
+            ImGui::End();
+
+            ImGui::Render();
+        }
 
         // Renderer will call Update and Render
         m_renderer->Render(*m_scene, dt);

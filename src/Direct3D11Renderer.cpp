@@ -1,5 +1,6 @@
 ﻿#include "Direct3D11Renderer.h"
 #include <algorithm>
+#include "imgui_impl_dx11.h"
 
 Direct3D11Renderer::Direct3D11Renderer(HWND hwnd) : _hwnd(hwnd) {}
 Direct3D11Renderer::~Direct3D11Renderer() { Release(); }
@@ -104,6 +105,7 @@ void Direct3D11Renderer::Render(Scene& scene, float dt)
     scene.GetLightSystem().Apply(m_context, scene.GetCamera().GetPosition());
 
     scene.Render(m_context);
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     const HRESULT hr = m_swapChain->Present(0, 0);
     if (FAILED(hr)) LOG_HR(hr, "Swap chain Present failed");
 }

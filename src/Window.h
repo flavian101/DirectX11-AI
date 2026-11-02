@@ -24,6 +24,7 @@ private:
     int lastMouseX_ = 0;
     int lastMouseY_ = 0;
     bool hasLastMousePosition_ = false;
+    bool imguiInitialized_ = false;
 };
 
 static Window* windowHandle = 0;
