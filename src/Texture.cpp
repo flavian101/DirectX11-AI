@@ -2,6 +2,17 @@
 #include "libs/stb_image.h"
 #include "Logger.h"
 #include <DirectXMath.h>
+#include <algorithm>
+
+namespace {
+// Number of levels in a full mip chain: 1024 -> 512 -> ... -> 1 is 11 levels.
+UINT FullMipCount(int width, int height)
+{
+    UINT levels = 1;
+    for (int size = (std::max)(width, height); size > 1; size >>= 1) ++levels;
+    return levels;
+}
+}
 
 Texture::Texture(ID3D11Device* device, const std::string& filePath)
 {
@@ -18,23 +29,22 @@ Texture::Texture(ID3D11Device* device, const std::string& filePath)
         return;
     }
 
-    // Create texture from image data
+    // Mipmaps: the GPU can only build them for a texture that is also a render target and
+    // is flagged GENERATE_MIPS, so it must be DEFAULT usage (not IMMUTABLE) and we upload
+    // only level 0 ourselves, then ask the GPU to fill in the smaller levels.
+    const UINT mipLevels = FullMipCount(width, height);
     D3D11_TEXTURE2D_DESC textureDesc{};
     textureDesc.Width = width;
     textureDesc.Height = height;
-    textureDesc.MipLevels = 1;
+    textureDesc.MipLevels = mipLevels;
     textureDesc.ArraySize = 1;
     textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     textureDesc.SampleDesc.Count = 1;
-    textureDesc.Usage = D3D11_USAGE_IMMUTABLE;
-    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    textureDesc.CPUAccessFlags = 0;
+    textureDesc.Usage = D3D11_USAGE_DEFAULT;
+    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
 
-    D3D11_SUBRESOURCE_DATA initData{};
-    initData.pSysMem = imageData;
-    initData.SysMemPitch = width * 4;
-
-    HRESULT hr = device->CreateTexture2D(&textureDesc, &initData, &texture_);
+    HRESULT hr = device->CreateTexture2D(&textureDesc, nullptr, &texture_);
     if (FAILED(hr)) {
         LOG_HR(hr, "Failed to create texture");
         stbi_image_free(imageData);
@@ -45,7 +55,7 @@ Texture::Texture(ID3D11Device* device, const std::string& filePath)
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
     srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Texture2D.MipLevels = 1;
+    srvDesc.Texture2D.MipLevels = static_cast<UINT>(-1);   // -1 = every level in the texture
     srvDesc.Texture2D.MostDetailedMip = 0;
 
     hr = device->CreateShaderResourceView(texture_, &srvDesc, &shaderResourceView_);
@@ -56,6 +66,12 @@ Texture::Texture(ID3D11Device* device, const std::string& filePath)
         stbi_image_free(imageData);
         return;
     }
+
+    ID3D11DeviceContext* context = nullptr;
+    device->GetImmediateContext(&context);
+    context->UpdateSubresource(texture_, 0, nullptr, imageData, static_cast<UINT>(width * 4), 0);
+    context->GenerateMips(shaderResourceView_);
+    context->Release();
 
     stbi_image_free(imageData);
     valid_ = true;
@@ -86,26 +102,23 @@ Texture::Texture(ID3D11Device* device, const std::array<std::string, 6>& facePat
         height = faceHeight;
     }
 
+    // Same recipe as the 2D texture. The water samples this cubemap with wobbling reflection
+    // vectors; without mips that minification shimmers.
+    const UINT mipLevels = FullMipCount(width, height);
     D3D11_TEXTURE2D_DESC textureDesc{};
     textureDesc.Width = width;
     textureDesc.Height = height;
-    textureDesc.MipLevels = 1;
+    textureDesc.MipLevels = mipLevels;
     textureDesc.ArraySize = 6;
     textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     textureDesc.SampleDesc.Count = 1;
-    textureDesc.Usage = D3D11_USAGE_IMMUTABLE;
-    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
+    textureDesc.Usage = D3D11_USAGE_DEFAULT;
+    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE | D3D11_RESOURCE_MISC_GENERATE_MIPS;
 
-    std::array<D3D11_SUBRESOURCE_DATA, 6> initData{};
-    for (size_t face = 0; face < initData.size(); ++face) {
-        initData[face].pSysMem = images[face];
-        initData[face].SysMemPitch = static_cast<UINT>(width * 4);
-    }
-
-    HRESULT hr = device->CreateTexture2D(&textureDesc, initData.data(), &texture_);
-    for (unsigned char* image : images) if (image) stbi_image_free(image);
+    HRESULT hr = device->CreateTexture2D(&textureDesc, nullptr, &texture_);
     if (FAILED(hr)) {
+        for (unsigned char* image : images) if (image) stbi_image_free(image);
         LOG_HR(hr, "Failed to create cubemap texture");
         return;
     }
@@ -113,15 +126,27 @@ Texture::Texture(ID3D11Device* device, const std::array<std::string, 6>& facePat
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
     srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
-    srvDesc.TextureCube.MipLevels = 1;
+    srvDesc.TextureCube.MipLevels = static_cast<UINT>(-1);
     srvDesc.TextureCube.MostDetailedMip = 0;
     hr = device->CreateShaderResourceView(texture_, &srvDesc, &shaderResourceView_);
     if (FAILED(hr)) {
         LOG_HR(hr, "Failed to create cubemap shader resource view");
         texture_->Release();
         texture_ = nullptr;
+        for (unsigned char* image : images) if (image) stbi_image_free(image);
         return;
     }
+
+    ID3D11DeviceContext* context = nullptr;
+    device->GetImmediateContext(&context);
+    for (UINT face = 0; face < 6; ++face) {
+        // Subresource index = mipSlice + arraySlice * mipLevels; level 0 of each face.
+        context->UpdateSubresource(texture_, D3D11CalcSubresource(0, face, mipLevels), nullptr,
+                                   images[face], static_cast<UINT>(width * 4), 0);
+    }
+    context->GenerateMips(shaderResourceView_);
+    context->Release();
+    for (unsigned char* image : images) if (image) stbi_image_free(image);
     valid_ = true;
 }
 

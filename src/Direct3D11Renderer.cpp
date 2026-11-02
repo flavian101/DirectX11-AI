@@ -68,7 +68,11 @@ bool Direct3D11Renderer::Init()
     // Nothing in the project created a sampler before, so every Sample() call relied
     // on whatever the driver does for an unbound slot. Make it explicit.
     D3D11_SAMPLER_DESC samplerDesc{};
-    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    // Anisotropic = trilinear (blends between mip levels) + extra samples along the
+    // stretched direction, so terrain seen at a grazing angle stays sharp instead of smearing.
+    // 8x is a good cost/quality point; 16 is the hardware maximum.
+    samplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
+    samplerDesc.MaxAnisotropy = 8;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
