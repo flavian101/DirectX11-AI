@@ -8,6 +8,9 @@
 #include <memory>
 #include <array>
 
+class Water;
+class Skybox;
+
 // Input state passed from Window to Scene
 struct InputState {
     std::array<bool, 256> keys = {};  // Keyboard state for all keys
@@ -26,6 +29,8 @@ public:
     const Camera& GetCamera() const { return camera_; }
     Camera& GetCamera() { return camera_; }
     Terrain* GetTerrain() const { return terrain_; }
+    Water* GetWater() const { return water_; }
+    Skybox* GetSkybox() const { return skybox_; }
     bool RegenerateTerrain(const TerrainSettings& settings);
     const std::vector<SceneObject*>& GetObjects() const { return objects_; }
     LightSystem& GetLightSystem() { return *lights_; }
@@ -42,6 +47,8 @@ private:
     std::unique_ptr<LightSystem> lights_;
     std::vector<SceneObject*> objects_;
     Terrain* terrain_ = nullptr;
+    Water* water_ = nullptr;
+    Skybox* skybox_ = nullptr;
     float smoothedMouseDeltaX_ = 0.0f;
     float smoothedMouseDeltaY_ = 0.0f;
 };

@@ -1,17 +1,17 @@
 #include "ImGuiLayer.h"
+#include "Skybox.h"
 #include "imgui.h"
 #include <DirectXMath.h>
-#include <algorithm>
 
 using namespace DirectX;
 
 namespace {
 void DrawFloat3(const char* label, XMFLOAT3& value, float speed, float minValue, float maxValue)
 {
-	float values[3] = { value.x, value.y, value.z };
-	if (ImGui::DragFloat3(label, values, speed, minValue, maxValue)) {
-		value = { values[0], values[1], values[2] };
-	}
+    float values[3] = { value.x, value.y, value.z };
+    if (ImGui::DragFloat3(label, values, speed, minValue, maxValue)) {
+        value = { values[0], values[1], values[2] };
+    }
 }
 }
 
@@ -19,206 +19,209 @@ ImGuiLayer::ImGuiLayer(Scene* scene) : scene_(scene) {}
 
 void ImGuiLayer::Draw()
 {
-	if (!scene_) return;
-	DrawMainMenuBar();
-	if (showSceneWindow_) DrawSceneWindow();
-	if (showLightsWindow_) DrawLightsWindow();
-	if (showTerrainWindow_) DrawTerrainWindow();
-	if (showCameraWindow_) DrawCameraWindow();
+    if (scene_) DrawCollectionWindow();
 }
 
-void ImGuiLayer::DrawMainMenuBar()
+void ImGuiLayer::DrawCollectionWindow()
 {
-	if (!ImGui::BeginMainMenuBar()) return;
+    if (!ImGui::Begin("Scene Collection", nullptr, ImGuiWindowFlags_MenuBar)) {
+        ImGui::End();
+        return;
+    }
 
-	if (ImGui::BeginMenu("Collections")) {
-		ImGui::MenuItem("Scene", nullptr, &showSceneWindow_);
-		ImGui::MenuItem("Lights", nullptr, &showLightsWindow_);
-		ImGui::MenuItem("Terrain", nullptr, &showTerrainWindow_);
-		ImGui::MenuItem("Camera", nullptr, &showCameraWindow_);
-		ImGui::EndMenu();
-	}
+    if (ImGui::BeginMenuBar()) {
+        if (ImGui::BeginMenu("View")) {
+            if (ImGui::MenuItem("Select Camera")) selectionKind_ = SelectionKind::Camera;
+            if (ImGui::MenuItem("Select Lights")) selectionKind_ = SelectionKind::Lights;
+            ImGui::EndMenu();
+        }
+        ImGui::EndMenuBar();
+    }
 
-	ImGui::EndMainMenuBar();
+    ImGui::BeginChild("Hierarchy", ImVec2(230.0f, 0.0f), true);
+    ImGui::Text("Collection");
+    ImGui::Separator();
+    if (ImGui::Selectable("Camera", selectionKind_ == SelectionKind::Camera)) {
+        selectionKind_ = SelectionKind::Camera;
+    }
+    if (ImGui::Selectable("Lights", selectionKind_ == SelectionKind::Lights)) {
+        selectionKind_ = SelectionKind::Lights;
+    }
+    ImGui::Separator();
+
+    const auto& objects = scene_->GetObjects();
+    if (selectedObject_ >= static_cast<int>(objects.size())) selectedObject_ = -1;
+    for (int index = 0; index < static_cast<int>(objects.size()); ++index) {
+        SceneObject* object = objects[index];
+        if (!object) continue;
+        if (ImGui::Selectable(object->GetEditorName(),
+                              selectionKind_ == SelectionKind::Object && selectedObject_ == index)) {
+            selectionKind_ = SelectionKind::Object;
+            selectedObject_ = index;
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("Inspector", ImVec2(0.0f, 0.0f), true);
+    if (selectionKind_ == SelectionKind::Camera) {
+        DrawCameraInspector();
+    } else if (selectionKind_ == SelectionKind::Lights) {
+        DrawLightsInspector();
+    } else if (selectedObject_ >= 0 && selectedObject_ < static_cast<int>(objects.size())) {
+        DrawObjectInspector(objects[selectedObject_]);
+    } else {
+        ImGui::Text("Select an item from the collection.");
+    }
+    ImGui::EndChild();
+    ImGui::End();
 }
 
-void ImGuiLayer::DrawSceneWindow()
+void ImGuiLayer::DrawObjectInspector(SceneObject* object)
 {
-	if (!ImGui::Begin("Scene")) {
-		ImGui::End();
-		return;
-	}
+    if (!object) return;
+    ImGui::Text("Object: %s", object->GetEditorName());
+    ImGui::Separator();
+    DrawTransformEditor(object);
 
-	const auto& objects = scene_->GetObjects();
-	if (selectedObject_ >= static_cast<int>(objects.size())) selectedObject_ = -1;
-	for (int index = 0; index < static_cast<int>(objects.size()); ++index) {
-		SceneObject* object = objects[index];
-		if (!object) continue;
-		if (ImGui::Selectable(object->GetEditorName(), selectedObject_ == index)) {
-			selectedObject_ = index;
-		}
-	}
-
-	if (selectedObject_ >= 0 && selectedObject_ < static_cast<int>(objects.size())) {
-		ImGui::Separator();
-		DrawTransformEditor(objects[selectedObject_]);
-	}
-	ImGui::End();
-}
-
-void ImGuiLayer::DrawCameraWindow()
-{
-	if (!ImGui::Begin("Camera", &showCameraWindow_)) {
-		ImGui::End();
-		return;
-	}
-
-	Camera& camera = scene_->GetCamera();
-	XMFLOAT3 position = camera.GetPosition();
-	XMFLOAT3 target = camera.GetTarget();
-	XMFLOAT3 up = camera.GetUp();
-
-	float positionValues[3] = { position.x, position.y, position.z };
-	if (ImGui::DragFloat3("Position", positionValues, 0.1f)) {
-		camera.SetPosition({ positionValues[0], positionValues[1], positionValues[2] });
-	}
-
-	float targetValues[3] = { target.x, target.y, target.z };
-	if (ImGui::DragFloat3("Target", targetValues, 0.1f)) {
-		camera.SetTarget({ targetValues[0], targetValues[1], targetValues[2] });
-	}
-
-	float upValues[3] = { up.x, up.y, up.z };
-	if (ImGui::DragFloat3("Up", upValues, 0.01f, -1.0f, 1.0f)) {
-		camera.SetUp({ upValues[0], upValues[1], upValues[2] });
-	}
-
-	float moveSpeed = camera.GetMoveSpeed();
-	if (ImGui::SliderFloat("Move speed", &moveSpeed, 0.1f, 100.0f)) {
-		camera.SetMoveSpeed(moveSpeed);
-	}
-
-	float rotationSpeed = camera.GetRotationSpeed();
-	if (ImGui::SliderFloat("Rotation sensitivity", &rotationSpeed, 0.0001f, 0.02f, "%.4f")) {
-		camera.SetRotationSpeed(rotationSpeed);
-	}
-	ImGui::End();
+    if (auto* terrain = dynamic_cast<Terrain*>(object)) DrawTerrainInspector(terrain);
+    if (auto* water = dynamic_cast<Water*>(object)) DrawWaterInspector(water);
+    if (auto* skybox = dynamic_cast<Skybox*>(object)) DrawSkyboxInspector(skybox);
 }
 
 void ImGuiLayer::DrawTransformEditor(SceneObject* object)
 {
-	if (!object) return;
+    XMFLOAT3 position;
+    XMFLOAT3 rotation;
+    XMFLOAT3 scale;
+    if (!object->GetEditorTransform(position, rotation, scale)) {
+        ImGui::Text("Transform editing is not available for this object.");
+        return;
+    }
 
-	XMFLOAT3 position;
-	XMFLOAT3 rotation;
-	XMFLOAT3 scale;
-	if (!object->GetEditorTransform(position, rotation, scale)) {
-		ImGui::Text("Transform editing is not available for this object.");
-		return;
-	}
+    bool changed = false;
+    float positionValues[3] = { position.x, position.y, position.z };
+    if (ImGui::DragFloat3("Position", positionValues, 0.1f)) {
+        position = { positionValues[0], positionValues[1], positionValues[2] };
+        changed = true;
+    }
 
-	ImGui::Text("Transform");
-	bool changed = false;
-	float positionValues[3] = { position.x, position.y, position.z };
-	if (ImGui::DragFloat3("Position", positionValues, 0.1f)) {
-		position = { positionValues[0], positionValues[1], positionValues[2] };
-		changed = true;
-	}
+    XMFLOAT3 rotationDegrees = {
+        XMConvertToDegrees(rotation.x), XMConvertToDegrees(rotation.y), XMConvertToDegrees(rotation.z)
+    };
+    float rotationValues[3] = { rotationDegrees.x, rotationDegrees.y, rotationDegrees.z };
+    if (ImGui::DragFloat3("Rotation", rotationValues, 1.0f)) {
+        rotation = { XMConvertToRadians(rotationValues[0]), XMConvertToRadians(rotationValues[1]),
+                     XMConvertToRadians(rotationValues[2]) };
+        changed = true;
+    }
 
-	XMFLOAT3 rotationDegrees = {
-		XMConvertToDegrees(rotation.x), XMConvertToDegrees(rotation.y), XMConvertToDegrees(rotation.z)
-	};
-	float rotationValues[3] = { rotationDegrees.x, rotationDegrees.y, rotationDegrees.z };
-	if (ImGui::DragFloat3("Rotation", rotationValues, 1.0f)) {
-		rotation = {
-			XMConvertToRadians(rotationValues[0]), XMConvertToRadians(rotationValues[1]),
-			XMConvertToRadians(rotationValues[2])
-		};
-		changed = true;
-	}
-
-	float scaleValues[3] = { scale.x, scale.y, scale.z };
-	if (ImGui::DragFloat3("Scale", scaleValues, 0.01f, 0.01f, 100.0f)) {
-		scale = { scaleValues[0], scaleValues[1], scaleValues[2] };
-		changed = true;
-	}
-
-	if (changed) object->SetEditorTransform(position, rotation, scale);
+    float scaleValues[3] = { scale.x, scale.y, scale.z };
+    if (ImGui::DragFloat3("Scale", scaleValues, 0.01f, 0.01f, 100.0f)) {
+        scale = { scaleValues[0], scaleValues[1], scaleValues[2] };
+        changed = true;
+    }
+    if (changed) object->SetEditorTransform(position, rotation, scale);
 }
 
-void ImGuiLayer::DrawLightsWindow()
+void ImGuiLayer::DrawCameraInspector()
 {
-	if (!ImGui::Begin("Lights")) {
-		ImGui::End();
-		return;
-	}
+    Camera& camera = scene_->GetCamera();
+    ImGui::Text("Camera");
+    XMFLOAT3 position = camera.GetPosition();
+    XMFLOAT3 target = camera.GetTarget();
+    XMFLOAT3 up = camera.GetUp();
 
-	LightSystem& lights = scene_->GetLightSystem();
-	XMFLOAT3& ambient = lights.Ambient();
-	float ambientValues[3] = { ambient.x, ambient.y, ambient.z };
-	if (ImGui::ColorEdit3("Ambient", ambientValues)) {
-		ambient = { ambientValues[0], ambientValues[1], ambientValues[2] };
-	}
+    float positionValues[3] = { position.x, position.y, position.z };
+    if (ImGui::DragFloat3("Position", positionValues, 0.1f))
+        camera.SetPosition({ positionValues[0], positionValues[1], positionValues[2] });
+    float targetValues[3] = { target.x, target.y, target.z };
+    if (ImGui::DragFloat3("Target", targetValues, 0.1f))
+        camera.SetTarget({ targetValues[0], targetValues[1], targetValues[2] });
+    float upValues[3] = { up.x, up.y, up.z };
+    if (ImGui::DragFloat3("Up", upValues, 0.01f, -1.0f, 1.0f))
+        camera.SetUp({ upValues[0], upValues[1], upValues[2] });
 
-	DirectionalLight& directional = lights.Directional();
-	ImGui::SeparatorText("Directional light");
-	DrawFloat3("Direction", directional.direction, 0.01f, -1.0f, 1.0f);
-	float directionalColor[3] = {
-		directional.color.x, directional.color.y, directional.color.z
-	};
-	if (ImGui::ColorEdit3("Directional color", directionalColor)) {
-		directional.color = { directionalColor[0], directionalColor[1], directionalColor[2] };
-	}
-	ImGui::SliderFloat("Directional intensity", &directional.intensity, 0.0f, 5.0f);
-
-	ImGui::SeparatorText("Point lights");
-	auto& pointLights = lights.PointLights();
-	for (int index = 0; index < static_cast<int>(pointLights.size()); ++index) {
-		PointLight& point = pointLights[index];
-		ImGui::PushID(index);
-		if (ImGui::TreeNode("Point light")) {
-			DrawFloat3("Position", point.position, 0.1f, -1000.0f, 1000.0f);
-			float color[3] = { point.color.x, point.color.y, point.color.z };
-			if (ImGui::ColorEdit3("Color", color)) {
-				point.color = { color[0], color[1], color[2] };
-			}
-			ImGui::SliderFloat("Intensity", &point.intensity, 0.0f, 10.0f);
-			ImGui::SliderFloat("Range", &point.range, 0.1f, 100.0f);
-			ImGui::TreePop();
-		}
-		ImGui::PopID();
-	}
-
-	if (pointLights.size() < LightSystem::kMaxPointLights && ImGui::Button("Add point light")) {
-		PointLight point;
-		point.position = { 0.0f, 10.0f, 0.0f };
-		lights.AddPointLight(point);
-	}
-	ImGui::End();
+    float moveSpeed = camera.GetMoveSpeed();
+    if (ImGui::SliderFloat("Move speed", &moveSpeed, 0.1f, 100.0f)) camera.SetMoveSpeed(moveSpeed);
+    float rotationSpeed = camera.GetRotationSpeed();
+    if (ImGui::SliderFloat("Rotation sensitivity", &rotationSpeed, 0.0001f, 0.02f, "%.4f"))
+        camera.SetRotationSpeed(rotationSpeed);
 }
 
-void ImGuiLayer::DrawTerrainWindow()
+void ImGuiLayer::DrawLightsInspector()
 {
-	Terrain* terrain = scene_->GetTerrain();
-	if (!terrain || !ImGui::Begin("Terrain Generation")) {
-		if (terrain) ImGui::End();
-		return;
-	}
+    LightSystem& lights = scene_->GetLightSystem();
+    XMFLOAT3& ambient = lights.Ambient();
+    float ambientValues[3] = { ambient.x, ambient.y, ambient.z };
+    if (ImGui::ColorEdit3("Ambient", ambientValues)) ambient = { ambientValues[0], ambientValues[1], ambientValues[2] };
 
-	if (!terrainSettingsInitialized_) {
-		pendingTerrainSettings_ = terrain->GetSettings();
-		terrainSettingsInitialized_ = true;
-	}
+    DirectionalLight& directional = lights.Directional();
+    ImGui::SeparatorText("Directional light");
+    DrawFloat3("Direction", directional.direction, 0.01f, -1.0f, 1.0f);
+    float directionalColor[3] = { directional.color.x, directional.color.y, directional.color.z };
+    if (ImGui::ColorEdit3("Directional color", directionalColor))
+        directional.color = { directionalColor[0], directionalColor[1], directionalColor[2] };
+    ImGui::SliderFloat("Directional intensity", &directional.intensity, 0.0f, 5.0f);
 
-	ImGui::SliderFloat("Height scale", &pendingTerrainSettings_.heightScale, 1.0f, 100.0f, "%.1f");
-	ImGui::SliderFloat("Noise strength", &pendingTerrainSettings_.noiseStrength, 0.0f, 1.0f, "%.3f");
-	ImGui::SliderFloat("Noise scale", &pendingTerrainSettings_.noiseScale, 0.5f, 16.0f, "%.2f");
-	ImGui::InputInt("Noise seed", &pendingTerrainSettings_.noiseSeed);
-	if (ImGui::Button("Generate terrain")) {
-		lastTerrainGenerationSucceeded_ = scene_->RegenerateTerrain(pendingTerrainSettings_);
-	}
-	if (!lastTerrainGenerationSucceeded_) {
-		ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Terrain regeneration failed");
-	}
-	ImGui::End();
+    ImGui::SeparatorText("Point lights");
+    auto& pointLights = lights.PointLights();
+    for (int index = 0; index < static_cast<int>(pointLights.size()); ++index) {
+        PointLight& point = pointLights[index];
+        ImGui::PushID(index);
+        if (ImGui::TreeNode("Point light")) {
+            DrawFloat3("Position", point.position, 0.1f, -1000.0f, 1000.0f);
+            float color[3] = { point.color.x, point.color.y, point.color.z };
+            if (ImGui::ColorEdit3("Color", color)) point.color = { color[0], color[1], color[2] };
+            ImGui::SliderFloat("Intensity", &point.intensity, 0.0f, 10.0f);
+            ImGui::SliderFloat("Range", &point.range, 0.1f, 100.0f);
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+    if (pointLights.size() < LightSystem::kMaxPointLights && ImGui::Button("Add point light")) {
+        PointLight point;
+        point.position = { 0.0f, 10.0f, 0.0f };
+        lights.AddPointLight(point);
+    }
+}
+
+void ImGuiLayer::DrawTerrainInspector(Terrain* terrain)
+{
+    ImGui::SeparatorText("Terrain generation");
+    if (!terrainSettingsInitialized_) {
+        pendingTerrainSettings_ = terrain->GetSettings();
+        terrainSettingsInitialized_ = true;
+    }
+    ImGui::SliderFloat("Height scale", &pendingTerrainSettings_.heightScale, 1.0f, 100.0f, "%.1f");
+    ImGui::SliderFloat("Noise strength", &pendingTerrainSettings_.noiseStrength, 0.0f, 1.0f, "%.3f");
+    ImGui::SliderFloat("Noise scale", &pendingTerrainSettings_.noiseScale, 0.5f, 16.0f, "%.2f");
+    ImGui::InputInt("Noise seed", &pendingTerrainSettings_.noiseSeed);
+    if (ImGui::Button("Generate terrain")) lastTerrainGenerationSucceeded_ = scene_->RegenerateTerrain(pendingTerrainSettings_);
+    if (!lastTerrainGenerationSucceeded_) ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Terrain regeneration failed");
+}
+
+void ImGuiLayer::DrawWaterInspector(Water* water)
+{
+    ImGui::SeparatorText("Water material");
+    if (!waterSettingsInitialized_) {
+        pendingWaterSettings_ = water->GetSettings();
+        waterSettingsInitialized_ = true;
+    }
+    ImGui::SliderFloat("Height", &pendingWaterSettings_.height, -100.0f, 100.0f);
+    ImGui::SliderFloat("Size", &pendingWaterSettings_.size, 1.0f, 1000.0f);
+    float color[3] = { pendingWaterSettings_.color.x, pendingWaterSettings_.color.y, pendingWaterSettings_.color.z };
+    if (ImGui::ColorEdit3("Color", color)) pendingWaterSettings_.color = { color[0], color[1], color[2] };
+    ImGui::SliderFloat("Opacity", &pendingWaterSettings_.alpha, 0.05f, 1.0f);
+    ImGui::SliderFloat("Wave amplitude", &pendingWaterSettings_.waveAmplitude, 0.0f, 2.0f);
+    ImGui::SliderFloat("Wave speed", &pendingWaterSettings_.waveSpeed, 0.0f, 5.0f);
+    if (ImGui::Button("Apply water settings")) water->SetSettings(pendingWaterSettings_);
+}
+
+void ImGuiLayer::DrawSkyboxInspector(Skybox* skybox)
+{
+    ImGui::SeparatorText("Skybox material");
+    float intensity = skybox->GetIntensity();
+    if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 3.0f)) skybox->SetIntensity(intensity);
+    ImGui::Text("Cubemap: assets/Skybox");
 }

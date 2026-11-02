@@ -18,9 +18,12 @@ add_executable(D3D11Example
 	src/Camera.cpp
 	src/Mesh.cpp
 	src/Renderable.cpp
+	src/Material.cpp
 	src/Texture.cpp
 	src/Light.cpp
 	src/Terrain.cpp
+	src/Water.cpp
+	src/Skybox.cpp
 	src/ImGuiLayer.cpp
     src/libs/stb_image.cpp
 	extern/imgui/imgui.cpp

@@ -57,6 +57,9 @@ void Renderable::Render(ID3D11DeviceContext* ctx, const XMFLOAT4X4& view,
     XMStoreFloat4x4(&data->world, worldTransposed);
     XMStoreFloat4x4(&data->view, viewTransposed);
     XMStoreFloat4x4(&data->proj, projTransposed);
+    data->materialColor = materialColor_;
+    data->time = time_;
+    data->materialParameters = materialParameters_;
 
     ctx->Unmap(cb_, 0);
     shader_.Apply(ctx);

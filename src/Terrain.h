@@ -16,6 +16,7 @@ public:
 	explicit Terrain(ID3D11Device* device);
 
 	const char* GetEditorName() const override { return "Terrain"; }
+	DirectX::XMFLOAT3 GetSortPosition() const override { return position_; }
 	bool GetEditorTransform(DirectX::XMFLOAT3& position,
 		DirectX::XMFLOAT3& rotation,
 		DirectX::XMFLOAT3& scale) const override;

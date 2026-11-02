@@ -5,6 +5,8 @@
 #include "Cube.h"
 #include "Light.h"
 #include "ImGuiLayer.h"
+#include "Skybox.h"
+#include "Water.h"
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
@@ -89,6 +91,9 @@ Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
     light3.intensity = 1.0f;
     light3.range = 6.0f;
     lights.AddPointLight(light3);
+
+    m_scene->AddObject(new Water(m_renderer->GetDevice()));
+    m_scene->AddObject(new Skybox(m_renderer->GetDevice()));
 
     imguiLayer_ = std::make_unique<ImGuiLayer>(m_scene);
 }

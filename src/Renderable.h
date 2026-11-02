@@ -9,6 +9,9 @@ struct CBPerObject {
     DirectX::XMFLOAT4X4 world;
     DirectX::XMFLOAT4X4 view;
     DirectX::XMFLOAT4X4 proj;
+    DirectX::XMFLOAT4 materialColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+    float time = 0.0f;
+    DirectX::XMFLOAT3 materialParameters = {};
 };
 
 // Owns GPU draw state and the model it submits. Scene behavior belongs to SceneObject.
@@ -22,6 +25,9 @@ public:
     void Render(ID3D11DeviceContext* ctx, const DirectX::XMFLOAT4X4& view,
                 const DirectX::XMFLOAT4X4& proj) const;
     void SetWorld(const DirectX::XMFLOAT4X4& world) { if (model_) model_->SetWorld(world); }
+    void SetMaterialColor(const DirectX::XMFLOAT4& color) { materialColor_ = color; }
+    void SetMaterialParameters(const DirectX::XMFLOAT3& parameters) { materialParameters_ = parameters; }
+    void SetTime(float time) { time_ = time; }
     Model* GetModel() const { return model_.get(); }
     void SetTexture(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* texture)
     {
@@ -33,6 +39,9 @@ private:
     Shader shader_;
     ID3D11Buffer* cb_ = nullptr;
     bool valid_ = false;
+    DirectX::XMFLOAT4 materialColor_ = { 1.0f, 1.0f, 1.0f, 1.0f };
+    float time_ = 0.0f;
+    DirectX::XMFLOAT3 materialParameters_ = {};
 };
 
 
