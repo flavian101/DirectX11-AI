@@ -12,7 +12,8 @@ Renderable::Renderable(ID3D11Device* device, Model* model,
         LOG_ERROR("Renderable requires a valid device and model");
         return;
     }
-    if (!shader_.Load(vsPath, psPath, device)) {
+    shader_ = ShaderCache::Get(device, vsPath, psPath);
+    if (!shader_) {
         LOG_ERROR("Failed to load renderable shaders");
         return;
     }
@@ -51,7 +52,7 @@ void Renderable::Render(ID3D11DeviceContext* ctx) const
     data->materialParams = materialParameters_;
 
     ctx->Unmap(cb_, 0);
-    shader_.Apply(ctx);
+    shader_->Apply(ctx);
     // Bind to BOTH stages: the water/skybox pixel shaders read materialColor from here.
     // (An unbound constant buffer reads as zeros - that was the original black-sky /
     // invisible-water bug.)

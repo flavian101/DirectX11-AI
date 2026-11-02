@@ -30,12 +30,12 @@ public:
     Model* GetModel() const { return model_.get(); }
     void SetTexture(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* texture)
     {
-        shader_.SetTexture(ctx, texture);
+        if (shader_) shader_->SetTexture(ctx, texture);
     }
 
 private:
     std::unique_ptr<Model> model_;
-    Shader shader_;
+    std::shared_ptr<Shader> shader_;   // shared through ShaderCache
     ID3D11Buffer* cb_ = nullptr;
     bool valid_ = false;
     DirectX::XMFLOAT4 materialColor_ = { 1.0f, 1.0f, 1.0f, 1.0f };

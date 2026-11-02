@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <vector>
 
 Shader::~Shader() { Release(); }
@@ -106,3 +107,20 @@ void Shader::Release()
     if (psBlob_) { psBlob_->Release(); psBlob_ = nullptr; }
 }
 
+
+std::shared_ptr<Shader> ShaderCache::Get(ID3D11Device* device, const wchar_t* vsPath, const wchar_t* psPath)
+{
+    static std::map<std::wstring, std::weak_ptr<Shader>> cache;
+    if (!vsPath || !psPath) return nullptr;
+
+    const std::wstring key = std::wstring(vsPath) + L"|" + psPath;
+    const auto found = cache.find(key);
+    if (found != cache.end()) {
+        if (std::shared_ptr<Shader> existing = found->second.lock()) return existing;
+    }
+
+    auto shader = std::make_shared<Shader>();
+    if (!shader->Load(vsPath, psPath, device)) return nullptr;
+    cache[key] = shader;
+    return shader;
+}

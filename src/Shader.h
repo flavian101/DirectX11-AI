@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <memory>
 #include <string>
 
 class Shader {
@@ -26,5 +27,15 @@ private:
     ID3DBlob* psBlob_ = nullptr;
     ID3D11InputLayout* layout_ = nullptr;
     void Release();
+};
+
+// Hands out ONE compiled Shader per vertex/pixel file pair. Before this, every Renderable
+// read and compiled its own copy from disk, so N objects meant N compiles (and each press
+// of "Generate terrain" recompiled the terrain shaders). The cache only holds weak
+// references, so a shader is freed when the last Renderable using it goes away and nothing
+// outlives the D3D device. Single-threaded, like the rest of the renderer.
+class ShaderCache {
+public:
+    static std::shared_ptr<Shader> Get(ID3D11Device* device, const wchar_t* vsPath, const wchar_t* psPath);
 };
 
