@@ -22,6 +22,8 @@ public:
     ID3D11Device* GetDevice() const { return m_renderer ? m_renderer->GetDevice() : nullptr; }
     void SetScene(std::unique_ptr<Scene> scene);
 private:
+    void OnResize(UINT width, UINT height);
+
     HWND _hwnd = nullptr;
     HINSTANCE m_Hinstance = nullptr;
     Direct3D11Renderer* m_renderer = nullptr;
@@ -35,6 +37,8 @@ private:
     int lastMouseY_ = 0;
     bool hasLastMousePosition_ = false;
     bool imguiInitialized_ = false;
+    bool minimized_ = false;   // client area is 0x0: skip rendering
+    bool resizing_ = false;    // user is dragging the window border
 };
 
 static Window* windowHandle = 0;

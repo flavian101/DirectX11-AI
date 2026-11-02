@@ -14,10 +14,23 @@ public:
     // Draws one frame. const Scene&: the renderer READS the world, it never advances it.
     void Render(const Scene& scene);
     void Release();
+
+    // Call when the window's client area changes size. Rebuilds everything that is
+    // sized like the back buffer (render target + depth buffer). Returns false on failure.
+    bool Resize(UINT width, UINT height);
+    UINT GetWidth() const { return m_width; }
+    UINT GetHeight() const { return m_height; }
+
     ID3D11Device* GetDevice() const { return m_device; }
     ID3D11DeviceContext* GetContext() const { return m_context; }
 
 private:
+    bool CreateSizeDependentResources(UINT width, UINT height);
+    void ReleaseSizeDependentResources();
+    void BindBackBuffer();   // render target + depth + viewport for the current size
+
+    UINT m_width = 0;
+    UINT m_height = 0;
     HWND _hwnd = nullptr;
     ID3D11Device* m_device = nullptr;
     ID3D11DeviceContext* m_context = nullptr;

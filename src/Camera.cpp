@@ -12,7 +12,7 @@ Camera::Camera() : pos_{ 0,0,-5 }, target_{ 0,0,0 }, up_{ 0,1,0 }, width_(800), 
 void Camera::SetPosition(const XMFLOAT3 &pos){ pos_=pos; UpdateOrientation(); Update(); }
 void Camera::SetTarget(const XMFLOAT3 &tar){ target_=tar; UpdateOrientation(); Update(); }
 void Camera::SetUp(const XMFLOAT3 &up){ up_=up; UpdateOrientation(); Update(); }
-void Camera::SetWindowSize(int w, int h){ width_=w; height_=h; Update(); }
+void Camera::SetWindowSize(int w, int h){ if (w <= 0 || h <= 0) return; width_=w; height_=h; Update(); }
 
 void Camera::Move(bool forward, bool backward, bool left, bool right, float dt)
 {

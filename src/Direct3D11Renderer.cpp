@@ -49,34 +49,7 @@ bool Direct3D11Renderer::Init()
         return false;
     }
 
-    ID3D11Texture2D* backBuffer = nullptr;
-    hr = m_swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
-    if (FAILED(hr)) {
-        LOG_HR(hr, "Swap chain back buffer retrieval failed");
-        Release();
-        return false;
-    }
-    hr = m_device->CreateRenderTargetView(backBuffer, nullptr, &m_renderTargetView);
-    backBuffer->Release();
-    if (FAILED(hr)) {
-        LOG_HR(hr, "Render target view creation failed");
-        Release();
-        return false;
-    }
-
-    D3D11_TEXTURE2D_DESC depthDesc{};
-    depthDesc.Width = width;
-    depthDesc.Height = height;
-    depthDesc.MipLevels = 1;
-    depthDesc.ArraySize = 1;
-    depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    depthDesc.SampleDesc.Count = 1;
-    depthDesc.Usage = D3D11_USAGE_DEFAULT;
-    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-    hr = m_device->CreateTexture2D(&depthDesc, nullptr, &m_depthBuffer);
-    if (SUCCEEDED(hr)) hr = m_device->CreateDepthStencilView(m_depthBuffer, nullptr, &m_depthView);
-    if (FAILED(hr)) {
-        LOG_HR(hr, "Depth buffer creation failed");
+    if (!CreateSizeDependentResources(width, height)) {
         Release();
         return false;
     }
@@ -109,22 +82,91 @@ bool Direct3D11Renderer::Init()
     }
     m_context->PSSetSamplers(0, 1, &m_linearSampler);
 
-    m_context->OMSetRenderTargets(1, &m_renderTargetView, m_depthView);
     m_context->OMSetDepthStencilState(m_depthState, 0);
-    D3D11_VIEWPORT viewport{};
-    viewport.Width = static_cast<float>(width);
-    viewport.Height = static_cast<float>(height);
-    viewport.MinDepth = 0.0f;
-    viewport.MaxDepth = 1.0f;
-    m_context->RSSetViewports(1, &viewport);
+    BindBackBuffer();
 
     LOG_INFO("Direct3D 11 device, swap chain, render target, and depth buffer initialized");
     return true;
 }
 
+bool Direct3D11Renderer::CreateSizeDependentResources(UINT width, UINT height)
+{
+    ID3D11Texture2D* backBuffer = nullptr;
+    HRESULT hr = m_swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
+    if (FAILED(hr)) {
+        LOG_HR(hr, "Swap chain back buffer retrieval failed");
+        return false;
+    }
+    hr = m_device->CreateRenderTargetView(backBuffer, nullptr, &m_renderTargetView);
+    backBuffer->Release();
+    if (FAILED(hr)) {
+        LOG_HR(hr, "Render target view creation failed");
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC depthDesc{};
+    depthDesc.Width = width;
+    depthDesc.Height = height;
+    depthDesc.MipLevels = 1;
+    depthDesc.ArraySize = 1;
+    depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depthDesc.SampleDesc.Count = 1;
+    depthDesc.Usage = D3D11_USAGE_DEFAULT;
+    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    hr = m_device->CreateTexture2D(&depthDesc, nullptr, &m_depthBuffer);
+    if (SUCCEEDED(hr)) hr = m_device->CreateDepthStencilView(m_depthBuffer, nullptr, &m_depthView);
+    if (FAILED(hr)) {
+        LOG_HR(hr, "Depth buffer creation failed");
+        return false;
+    }
+    m_width = width;
+    m_height = height;
+    return true;
+}
+
+void Direct3D11Renderer::ReleaseSizeDependentResources()
+{
+    if (m_depthView) { m_depthView->Release(); m_depthView = nullptr; }
+    if (m_depthBuffer) { m_depthBuffer->Release(); m_depthBuffer = nullptr; }
+    if (m_renderTargetView) { m_renderTargetView->Release(); m_renderTargetView = nullptr; }
+}
+
+bool Direct3D11Renderer::Resize(UINT width, UINT height)
+{
+    if (!m_swapChain || !m_context || width == 0 || height == 0) return false;   // minimized
+    if (width == m_width && height == m_height) return true;
+
+    // ResizeBuffers fails while anything still references the old back buffer, so:
+    // unbind it from the pipeline, release OUR views of it, flush the queued work, then resize.
+    m_context->OMSetRenderTargets(0, nullptr, nullptr);
+    ReleaseSizeDependentResources();
+    m_context->Flush();
+
+    const HRESULT hr = m_swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(hr)) {
+        LOG_HR(hr, "Swap chain ResizeBuffers failed");
+        return false;   // Render() skips frames while there is no render target
+    }
+    return CreateSizeDependentResources(width, height);
+}
+
+void Direct3D11Renderer::BindBackBuffer()
+{
+    // Done every frame (not once in Init): the size can change, and later passes that
+    // render into other textures (shadows, planar reflection) must restore this state.
+    m_context->OMSetRenderTargets(1, &m_renderTargetView, m_depthView);
+    D3D11_VIEWPORT viewport{};
+    viewport.Width = static_cast<float>(m_width);
+    viewport.Height = static_cast<float>(m_height);
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+    m_context->RSSetViewports(1, &viewport);
+}
+
 void Direct3D11Renderer::Render(const Scene& scene)
 {
-    if (!m_context || !m_renderTargetView || !m_swapChain) return;
+    if (!m_context || !m_renderTargetView || !m_depthView || !m_swapChain) return;
+    BindBackBuffer();
     const float clearColor[] = { 0.1f, 0.1f, 0.2f, 1.0f };
     m_context->ClearRenderTargetView(m_renderTargetView, clearColor);
     m_context->ClearDepthStencilView(m_depthView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
@@ -142,9 +184,7 @@ void Direct3D11Renderer::Release()
 {
     if (m_linearSampler) { m_linearSampler->Release(); m_linearSampler = nullptr; }
     if (m_depthState) { m_depthState->Release(); m_depthState = nullptr; }
-    if (m_depthView) { m_depthView->Release(); m_depthView = nullptr; }
-    if (m_depthBuffer) { m_depthBuffer->Release(); m_depthBuffer = nullptr; }
-    if (m_renderTargetView) { m_renderTargetView->Release(); m_renderTargetView = nullptr; }
+    ReleaseSizeDependentResources();
     if (m_swapChain) { m_swapChain->Release(); m_swapChain = nullptr; }
     if (m_context) { m_context->Release(); m_context = nullptr; }
     if (m_device) { m_device->Release(); m_device = nullptr; }

@@ -51,7 +51,11 @@ void Window::SetScene(std::unique_ptr<Scene> scene)
 {
     imguiLayer_.reset();   // it points into the old scene
     m_scene = std::move(scene);
-    if (m_scene) imguiLayer_ = std::make_unique<ImGuiLayer>(m_scene.get());
+    if (!m_scene) return;
+    // The camera defaults to 800x600 but the real client area is smaller (title bar, borders).
+    if (m_renderer) m_scene->GetCamera().SetWindowSize(static_cast<int>(m_renderer->GetWidth()),
+                                                       static_cast<int>(m_renderer->GetHeight()));
+    imguiLayer_ = std::make_unique<ImGuiLayer>(m_scene.get());
 }
 
 Window::~Window()
@@ -69,6 +73,14 @@ Window::~Window()
     if (windowHandle == this) windowHandle = nullptr;
 }
 
+void Window::OnResize(UINT width, UINT height)
+{
+    if (!m_renderer || width == 0 || height == 0) return;
+    if (!m_renderer->Resize(width, height)) return;
+    // Same field of view, new aspect ratio - otherwise the image is stretched.
+    if (m_scene) m_scene->GetCamera().SetWindowSize(static_cast<int>(width), static_cast<int>(height));
+}
+
 LRESULT Window::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (imguiInitialized_ && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam)) {
@@ -76,6 +88,23 @@ LRESULT Window::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
     }
 
     switch (msg) {
+    case WM_SIZE:
+        minimized_ = (wParam == SIZE_MINIMIZED);
+        // While the user drags a border, WM_SIZE fires for every pixel. Rebuilding
+        // the swap chain each time is wasteful, so wait for WM_EXITSIZEMOVE.
+        // (Maximize/restore arrive here with resizing_ == false and resize at once.)
+        if (!minimized_ && !resizing_) OnResize(LOWORD(lParam), HIWORD(lParam));
+        return 0;
+    case WM_ENTERSIZEMOVE:
+        resizing_ = true;
+        return 0;
+    case WM_EXITSIZEMOVE:
+    {
+        resizing_ = false;
+        RECT client{};
+        if (GetClientRect(hwnd, &client)) OnResize(client.right - client.left, client.bottom - client.top);
+        return 0;
+    }
     case WM_KEYDOWN:
         if (wParam < 256) {
             inputState_.keys[wParam] = true;
@@ -158,6 +187,11 @@ void Window::Run()
                 }
                 return;
             }
+        }
+        if (minimized_) {          // nothing to draw into: sleep until the next message
+            WaitMessage();
+            lastTime = std::chrono::steady_clock::now();
+            continue;
         }
         const auto now = std::chrono::steady_clock::now();
         // Clamp: after a stall (dragging the window, a breakpoint) one giant dt would
