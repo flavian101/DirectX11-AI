@@ -11,7 +11,8 @@ public:
     ~Direct3D11Renderer();
 
     bool Init();
-    void Render(Scene& scene, float dt);
+    // Draws one frame. const Scene&: the renderer READS the world, it never advances it.
+    void Render(const Scene& scene);
     void Release();
     ID3D11Device* GetDevice() const { return m_device; }
     ID3D11DeviceContext* GetContext() const { return m_context; }

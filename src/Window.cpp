@@ -1,4 +1,5 @@
 #include "Window.h"
+#include <algorithm>
 #include <chrono>
 #include <windowsx.h>
 #include "Logger.h"
@@ -159,11 +160,14 @@ void Window::Run()
             }
         }
         const auto now = std::chrono::steady_clock::now();
-        const float dt = std::chrono::duration<float>(now - lastTime).count();
+        // Clamp: after a stall (dragging the window, a breakpoint) one giant dt would
+        // teleport the camera and fast-forward every animation.
+        const float dt = (std::min)(std::chrono::duration<float>(now - lastTime).count(), 0.1f);
         lastTime = now;
 
-        // Pass input to scene - Scene owns and controls the camera
+        // 1. input -> camera, 2. advance the simulation, 3. build UI, 4. draw.
         m_scene->ProcessInput(inputState_, dt);
+        m_scene->Update(dt);
 
         // Reset mouse delta after processing
         inputState_.mouseDeltaX = 0;
@@ -179,8 +183,7 @@ void Window::Run()
             ImGui::Render();
         }
 
-        // Renderer will call Update and Render
-        m_renderer->Render(*m_scene, dt);
+        m_renderer->Render(*m_scene);
     }
 }
 

@@ -122,13 +122,12 @@ bool Direct3D11Renderer::Init()
     return true;
 }
 
-void Direct3D11Renderer::Render(Scene& scene, float dt)
+void Direct3D11Renderer::Render(const Scene& scene)
 {
     if (!m_context || !m_renderTargetView || !m_swapChain) return;
     const float clearColor[] = { 0.1f, 0.1f, 0.2f, 1.0f };
     m_context->ClearRenderTargetView(m_renderTargetView, clearColor);
     m_context->ClearDepthStencilView(m_depthView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
-    scene.Update(dt);
 
     // Apply lights before rendering scene objects
     scene.GetLightSystem().Apply(m_context, scene.GetCamera().GetPosition());
