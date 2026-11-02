@@ -52,6 +52,7 @@ Texture::Texture(ID3D11Device* device, const std::string& filePath)
     if (FAILED(hr)) {
         LOG_HR(hr, "Failed to create shader resource view");
         texture_->Release();
+        texture_ = nullptr;   // otherwise ~Texture() releases it a second time
         stbi_image_free(imageData);
         return;
     }

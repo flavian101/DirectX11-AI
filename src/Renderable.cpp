@@ -63,6 +63,10 @@ void Renderable::Render(ID3D11DeviceContext* ctx, const XMFLOAT4X4& view,
 
     ctx->Unmap(cb_, 0);
     shader_.Apply(ctx);
+    // The skybox and water PIXEL shaders read materialColor/time from this same
+    // buffer, so it must be bound to the pixel stage too. An unbound constant
+    // buffer reads as all zeros: skybox = texture * 0 (black), water alpha = 0.
     ctx->VSSetConstantBuffers(0, 1, &cb_);
+    ctx->PSSetConstantBuffers(0, 1, &cb_);
     model_->Draw(ctx);
 }

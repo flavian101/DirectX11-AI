@@ -29,8 +29,20 @@ bool Direct3D11Renderer::Init()
     desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
     const D3D_FEATURE_LEVEL requested[] = { D3D_FEATURE_LEVEL_11_0 };
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+    UINT deviceFlags = 0;
+#if defined(_DEBUG)
+    // The debug layer prints "constant buffer not bound" style mistakes to the
+    // Output window. It needs the "Graphics Tools" Windows feature installed.
+    deviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+    HRESULT hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, deviceFlags,
         requested, 1, D3D11_SDK_VERSION, &desc, &m_swapChain, &m_device, nullptr, &m_context);
+    if (FAILED(hr) && (deviceFlags & D3D11_CREATE_DEVICE_DEBUG)) {
+        LOG_WARNING("D3D11 debug layer unavailable (install 'Graphics Tools'); retrying without it");
+        deviceFlags &= ~static_cast<UINT>(D3D11_CREATE_DEVICE_DEBUG);
+        hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, deviceFlags,
+            requested, 1, D3D11_SDK_VERSION, &desc, &m_swapChain, &m_device, nullptr, &m_context);
+    }
     if (FAILED(hr)) {
         LOG_HR(hr, "D3D11CreateDeviceAndSwapChain failed");
         Release();
@@ -80,6 +92,23 @@ bool Direct3D11Renderer::Init()
         return false;
     }
 
+    // Nothing in the project created a sampler before, so every Sample() call relied
+    // on whatever the driver does for an unbound slot. Make it explicit.
+    D3D11_SAMPLER_DESC samplerDesc{};
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    hr = m_device->CreateSamplerState(&samplerDesc, &m_linearSampler);
+    if (FAILED(hr)) {
+        LOG_HR(hr, "Sampler state creation failed");
+        Release();
+        return false;
+    }
+    m_context->PSSetSamplers(0, 1, &m_linearSampler);
+
     m_context->OMSetRenderTargets(1, &m_renderTargetView, m_depthView);
     m_context->OMSetDepthStencilState(m_depthState, 0);
     D3D11_VIEWPORT viewport{};
@@ -112,6 +141,7 @@ void Direct3D11Renderer::Render(Scene& scene, float dt)
 
 void Direct3D11Renderer::Release()
 {
+    if (m_linearSampler) { m_linearSampler->Release(); m_linearSampler = nullptr; }
     if (m_depthState) { m_depthState->Release(); m_depthState = nullptr; }
     if (m_depthView) { m_depthView->Release(); m_depthView = nullptr; }
     if (m_depthBuffer) { m_depthBuffer->Release(); m_depthBuffer = nullptr; }
