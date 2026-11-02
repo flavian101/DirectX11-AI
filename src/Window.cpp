@@ -1,5 +1,6 @@
 #include "Window.h"
 #include <chrono>
+#include <windowsx.h>
 #include "Logger.h"
 #include "Cube.h"
 #include "Light.h"
@@ -80,23 +81,92 @@ Window::~Window()
 
 LRESULT Window::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    switch (msg) {
+    case WM_KEYDOWN:
+        if (wParam < 256) {
+            inputState_.keys[wParam] = true;
+            if (wParam == VK_CONTROL && !inputState_.ctrlDown) {
+                inputState_.ctrlDown = true;
+                if (!cursorHidden_) {
+                    ShowCursor(FALSE);
+                    cursorHidden_ = true;
+                }
+            }
+        }
+        break;
+    case WM_KEYUP:
+        if (wParam < 256) {
+            inputState_.keys[wParam] = false;
+            if (wParam == VK_CONTROL) {
+                inputState_.ctrlDown = false;
+                if (cursorHidden_) {
+                    ShowCursor(TRUE);
+                    cursorHidden_ = false;
+                }
+            }
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        inputState_.leftMouseDown = true;
+        lastMouseX_ = GET_X_LPARAM(lParam);
+        lastMouseY_ = GET_Y_LPARAM(lParam);
+        hasLastMousePosition_ = true;
+        break;
+    case WM_LBUTTONUP:
+        inputState_.leftMouseDown = false;
+        inputState_.mouseDeltaX = 0;
+        inputState_.mouseDeltaY = 0;
+        hasLastMousePosition_ = false;
+        break;
+    case WM_MOUSEMOVE:
+        if (inputState_.leftMouseDown) {
+            int mouseX = GET_X_LPARAM(lParam);
+            int mouseY = GET_Y_LPARAM(lParam);
+
+            if (hasLastMousePosition_ && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+                inputState_.mouseDeltaX += mouseX - lastMouseX_;
+                inputState_.mouseDeltaY += mouseY - lastMouseY_;
+            }
+
+            lastMouseX_ = mouseX;
+            lastMouseY_ = mouseY;
+            hasLastMousePosition_ = true;
+        }
+        break;
+    }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
 void Window::Run()
 {
     if (!m_renderer || !m_scene) return;
+
     MSG msg{};
     auto lastTime = std::chrono::steady_clock::now();
     while (true) {
         while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
-            if (msg.message == WM_QUIT) return;
+            if (msg.message == WM_QUIT) {
+                if (cursorHidden_) {
+                    ShowCursor(TRUE);  // Restore cursor before exiting
+                    cursorHidden_ = false;
+                }
+                return;
+            }
         }
         const auto now = std::chrono::steady_clock::now();
         const float dt = std::chrono::duration<float>(now - lastTime).count();
         lastTime = now;
+
+        // Pass input to scene - Scene owns and controls the camera
+        m_scene->ProcessInput(inputState_, dt);
+
+        // Reset mouse delta after processing
+        inputState_.mouseDeltaX = 0;
+        inputState_.mouseDeltaY = 0;
+
+        // Renderer will call Update and Render
         m_renderer->Render(*m_scene, dt);
     }
 }

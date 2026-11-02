@@ -14,6 +14,12 @@ public:
     DirectX::XMFLOAT3 GetPosition() const { return pos_; }
     void SetWindowSize(int width, int height);
 
+    // Camera movement methods
+    void Move(bool forward, bool backward, bool left, bool right, float dt);
+    void Rotate(float deltaX, float deltaY);
+    void SetMoveSpeed(float speed) { moveSpeed_ = speed; }
+    void SetRotationSpeed(float speed) { rotationSpeed_ = speed; }
+
 private:
     DirectX::XMFLOAT3 pos_;
     DirectX::XMFLOAT3 target_;
@@ -22,4 +28,10 @@ private:
     DirectX::XMFLOAT4X4 proj_;
     int width_;
     int height_;
+
+    // Camera movement
+    float moveSpeed_ = 5.0f;
+    float rotationSpeed_ = 0.002f;
+    DirectX::XMFLOAT3 forward_ = {0.0f, 0.0f, 1.0f};
+    DirectX::XMFLOAT3 right_ = {1.0f, 0.0f, 0.0f};
 };

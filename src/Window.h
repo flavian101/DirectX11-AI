@@ -17,6 +17,13 @@ private:
     HINSTANCE m_Hinstance = nullptr;
     Direct3D11Renderer* m_renderer = nullptr;
     Scene* m_scene = nullptr;
+
+    // Input state collected from Windows messages
+    InputState inputState_;
+    bool cursorHidden_ = false;
+    int lastMouseX_ = 0;
+    int lastMouseY_ = 0;
+    bool hasLastMousePosition_ = false;
 };
 
 static Window* windowHandle = 0;

@@ -44,9 +44,20 @@ void Renderable::Render(ID3D11DeviceContext* ctx, const XMFLOAT4X4& view,
         return;
     }
     auto* data = static_cast<CBPerObject*>(mapped.pData);
-    data->world = model_->GetWorld();
-    data->view = view;
-    data->proj = proj;
+
+    // Transpose matrices before uploading to match column-major layout in shader
+    XMMATRIX worldMat = XMLoadFloat4x4(&model_->GetWorld());
+    XMMATRIX viewMat = XMLoadFloat4x4(&view);
+    XMMATRIX projMat = XMLoadFloat4x4(&proj);
+
+    XMMATRIX worldTransposed = XMMatrixTranspose(worldMat);
+    XMMATRIX viewTransposed = XMMatrixTranspose(viewMat);
+    XMMATRIX projTransposed = XMMatrixTranspose(projMat);
+
+    XMStoreFloat4x4(&data->world, worldTransposed);
+    XMStoreFloat4x4(&data->view, viewTransposed);
+    XMStoreFloat4x4(&data->proj, projTransposed);
+
     ctx->Unmap(cb_, 0);
     shader_.Apply(ctx);
     ctx->VSSetConstantBuffers(0, 1, &cb_);
