@@ -9,8 +9,10 @@ struct WaterSettings {
 	float size = 180.0f;
 	DirectX::XMFLOAT3 color = { 0.05f, 0.25f, 0.45f };
 	float alpha = 0.68f;
-	float waveAmplitude = 0.12f;
-	float waveSpeed = 0.7f;
+	float waveAmplitude = 0.35f;
+	float waveSpeed = 1.0f;
+	float waveFrequency = 0.6f;   // radians per world unit of the base wave (0.6 = ~10 unit wavelength)
+	float reflectivity = 1.0f;    // 0 = no sky reflection, 1 = full Fresnel reflection
 };
 
 class Water final : public SceneObject {
@@ -42,5 +44,4 @@ private:
 	DirectX::XMFLOAT3 rotation_ = { 0.0f, 0.0f, 0.0f };
 	DirectX::XMFLOAT3 scale_ = { 1.0f, 1.0f, 1.0f };
 	Material material_;
-	float elapsedTime_ = 0.0f;
 };

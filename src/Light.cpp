@@ -1,5 +1,6 @@
 #include "Light.h"
 #include "Logger.h"
+#include "ShaderSlots.h"
 #include <algorithm>
 
 using namespace DirectX;
@@ -70,5 +71,5 @@ void LightSystem::Apply(ID3D11DeviceContext* ctx, const XMFLOAT3& cameraPos) con
                                         static_cast<float>(count));
 
     ctx->Unmap(cb_, 0);
-    ctx->PSSetConstantBuffers(1, 1, &cb_);
+    ctx->PSSetConstantBuffers(Slots::kCbLights, 1, &cb_);
 }

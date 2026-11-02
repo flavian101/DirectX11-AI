@@ -25,4 +25,5 @@ private:
     ID3D11Texture2D* m_depthBuffer = nullptr;
     ID3D11DepthStencilView* m_depthView = nullptr;
     ID3D11DepthStencilState* m_depthState = nullptr;
+    ID3D11SamplerState* m_linearSampler = nullptr;   // bound to PS slot s0 for every material
 };

@@ -1,4 +1,5 @@
 ﻿#include "Scene.h"
+#include "ShaderSlots.h"
 #include "Skybox.h"
 #include "Water.h"
 #include <algorithm>
@@ -16,8 +17,9 @@ bool Scene::Initialize(ID3D11Device* device)
 {
     if (!device || !lights_) return false;
     if (!lights_->Initialize(device)) return false;
+    if (!frame_.Initialize(device)) return false;
 
-    camera_.SetPosition({ 0.0f, 62.0f, -115.0f });
+    camera_.SetPosition({ 0.0f, 10.0f, -20.0f });
     camera_.SetTarget({ 0.0f, 12.0f, 0.0f });
     terrain_ = new Terrain(device);
     AddObject(terrain_);
@@ -47,7 +49,7 @@ void Scene::UpdateCamera(const InputState& input, float dt)
     camera_.Move(forward, backward, left, right, dt);
 
     // Handle first-person camera rotation with Ctrl + Left Mouse Button
-    if (input.ctrlDown && input.leftMouseDown) {
+    if (input.middleMouseButtonDown) {
         const float smoothing = 1.0f - std::exp(-20.0f * dt);
         smoothedMouseDeltaX_ += (static_cast<float>(input.mouseDeltaX) - smoothedMouseDeltaX_) * smoothing;
         smoothedMouseDeltaY_ += (static_cast<float>(input.mouseDeltaY) - smoothedMouseDeltaY_) * smoothing;
@@ -65,11 +67,18 @@ void Scene::ProcessInput(const InputState& input, float dt)
 
 void Scene::Update(float dt)
 {
+    time_ += dt;
     for (SceneObject* obj : objects_) if (obj) obj->Update(dt);
 }
 
 void Scene::Render(ID3D11DeviceContext* ctx) const
 {
+    // Per-frame state: bound once here, then every object just draws.
+    frame_.Apply(ctx, camera_, time_);
+    ID3D11ShaderResourceView* environment =
+        (skybox_ && skybox_->IsValid()) ? skybox_->GetCubemapView() : nullptr;
+    ctx->PSSetShaderResources(Slots::kSrvEnvironment, 1, &environment);
+
     std::vector<const SceneObject*> sorted;
     sorted.reserve(objects_.size());
     for (const SceneObject* object : objects_) if (object) sorted.push_back(object);

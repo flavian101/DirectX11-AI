@@ -1,17 +1,7 @@
+#include "common.hlsli"
+
 Texture2D colorTexture : register(t0);
 SamplerState colorSampler : register(s0);
-
-#define MAX_POINT_LIGHTS 4
-
-// Matches LightSystem::CBLights in Light.h; uploaded once per frame.
-cbuffer Lights : register(b1) {
-    float4 ambientColor;                          // rgb ambient term
-    float4 dirDirection;                          // xyz direction light travels, w intensity
-    float4 dirColor;                              // rgb directional color
-    float4 pointPosRange[MAX_POINT_LIGHTS];       // xyz position, w range
-    float4 pointColorIntensity[MAX_POINT_LIGHTS]; // rgb color, w intensity
-    float4 cameraPosNumLights;                    // xyz camera position, w point light count
-};
 
 struct PS_IN { float4 position : SV_POSITION; float3 normal : NORMAL; float2 texCoord : TEXCOORD; float3 worldPos : TEXCOORD1; };
 

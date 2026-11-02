@@ -21,6 +21,7 @@ add_executable(D3D11Example
 	src/Material.cpp
 	src/Texture.cpp
 	src/Light.cpp
+	src/FrameConstants.cpp
 	src/Terrain.cpp
 	src/Water.cpp
 	src/Skybox.cpp
@@ -45,12 +46,15 @@ target_include_directories(D3D11Example PRIVATE
 target_link_libraries(D3D11Example PRIVATE d3d11 dxgi d3dcompiler imm32 dwmapi)
 
 
-add_custom_command(
-    TARGET D3D11Example POST_BUILD
+# Shaders are loaded from disk at runtime. A POST_BUILD step only runs when the exe
+# relinks, so editing just a .hlsl file used to leave a stale copy next to the exe.
+# A custom target in ALL re-copies them on every build instead.
+add_custom_target(SyncShaders ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/shaders
         $<TARGET_FILE_DIR:D3D11Example>/shaders
 )
+add_dependencies(D3D11Example SyncShaders)
 
 add_custom_command(
     TARGET D3D11Example POST_BUILD

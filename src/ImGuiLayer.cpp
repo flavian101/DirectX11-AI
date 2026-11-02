@@ -215,6 +215,8 @@ void ImGuiLayer::DrawWaterInspector(Water* water)
     ImGui::SliderFloat("Opacity", &pendingWaterSettings_.alpha, 0.05f, 1.0f);
     ImGui::SliderFloat("Wave amplitude", &pendingWaterSettings_.waveAmplitude, 0.0f, 2.0f);
     ImGui::SliderFloat("Wave speed", &pendingWaterSettings_.waveSpeed, 0.0f, 5.0f);
+    ImGui::SliderFloat("Wave frequency", &pendingWaterSettings_.waveFrequency, 0.05f, 2.0f);
+    ImGui::SliderFloat("Sky reflection", &pendingWaterSettings_.reflectivity, 0.0f, 1.0f);
     if (ImGui::Button("Apply water settings")) water->SetSettings(pendingWaterSettings_);
 }
 

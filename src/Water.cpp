@@ -7,15 +7,38 @@
 using namespace DirectX;
 
 namespace {
+// The vertex shader displaces vertices, so it can only make waves where vertices exist.
+// The old mesh was ONE quad (4 vertices): the "waves" just wobbled its corners.
+// A 128x128 grid gives ~16k vertices over the plane, plenty for the wave sizes we use.
+constexpr int kGridCells = 128;
+
 Model* CreateWaterModel(ID3D11Device* device)
 {
-	const std::vector<Vertex> vertices = {
-		Vertex({ -1.0f, 0.0f, -1.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f }),
-		Vertex({ -1.0f, 0.0f,  1.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f }),
-		Vertex({  1.0f, 0.0f,  1.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f }),
-		Vertex({  1.0f, 0.0f, -1.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f })
-	};
-	const std::vector<uint32_t> indices = { 0, 1, 2, 0, 2, 3 };
+	const int vertsPerRow = kGridCells + 1;
+	std::vector<Vertex> vertices;
+	vertices.reserve(static_cast<size_t>(vertsPerRow) * vertsPerRow);
+	for (int z = 0; z < vertsPerRow; ++z) {
+		const float v = static_cast<float>(z) / kGridCells;
+		for (int x = 0; x < vertsPerRow; ++x) {
+			const float u = static_cast<float>(x) / kGridCells;
+			// Local space is [-1, 1]; Water::UpdateWorldTransform scales it to settings_.size.
+			vertices.emplace_back(XMFLOAT3(u * 2.0f - 1.0f, 0.0f, v * 2.0f - 1.0f),
+								  XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT2(u, v));
+		}
+	}
+
+	std::vector<uint32_t> indices;
+	indices.reserve(static_cast<size_t>(kGridCells) * kGridCells * 6);
+	for (int z = 0; z < kGridCells; ++z) {
+		for (int x = 0; x < kGridCells; ++x) {
+			const uint32_t a = static_cast<uint32_t>(z * vertsPerRow + x);  // (x,   z)
+			const uint32_t b = a + vertsPerRow;                              // (x,   z+1)
+			const uint32_t c = b + 1;                                        // (x+1, z+1)
+			const uint32_t d = a + 1;                                        // (x+1, z)
+			// Same winding as the original quad: clockwise seen from above = front face.
+			indices.insert(indices.end(), { a, b, c,  a, c, d });
+		}
+	}
 	return new Model({ new Mesh(device, vertices, indices) });
 }
 }
@@ -67,21 +90,21 @@ void Water::SetSettings(const WaterSettings& settings)
 	if (renderable_) {
 		renderable_->SetMaterialColor({ settings_.color.x, settings_.color.y,
 										settings_.color.z, settings_.alpha });
-		renderable_->SetMaterialParameters({ settings_.waveAmplitude, settings_.waveSpeed, 0.0f });
+		renderable_->SetMaterialParameters({ settings_.waveAmplitude, settings_.waveSpeed,
+											 settings_.waveFrequency, settings_.reflectivity });
 	}
 }
 
-void Water::Update(float dt)
+void Water::Update(float /*dt*/)
 {
-	elapsedTime_ += dt;
-	if (renderable_) renderable_->SetTime(elapsedTime_);
+	// Wave animation reads the shared scene clock (PerFrame.frameParams.x) on the GPU.
 }
 
 void Water::Render(ID3D11DeviceContext* ctx, const Camera& camera) const
 {
 	if (!IsValid() || !ctx) return;
 	material_.Apply(ctx);
-	renderable_->Render(ctx, camera.GetViewMatrix(), camera.GetProjectionMatrix());
+	renderable_->Render(ctx);
 }
 
 bool Water::GetEditorTransform(XMFLOAT3& position, XMFLOAT3& rotation, XMFLOAT3& scale) const

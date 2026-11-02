@@ -36,7 +36,7 @@ private:
     int height_;
 
     // Camera movement
-    float moveSpeed_ = 5.0f;
+    float moveSpeed_ = 30.0f;
     float rotationSpeed_ = 0.002f;
     DirectX::XMFLOAT3 forward_ = {0.0f, 0.0f, 1.0f};
     DirectX::XMFLOAT3 right_ = {1.0f, 0.0f, 0.0f};
