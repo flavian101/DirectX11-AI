@@ -2,6 +2,7 @@
 #include "Camera.h"
 #include "SceneObject.h"
 #include "Light.h"
+#include "Terrain.h"
 #include <d3d11.h>
 #include <vector>
 #include <memory>
@@ -23,6 +24,8 @@ public:
 
     bool Initialize(ID3D11Device* device);
     const Camera& GetCamera() const { return camera_; }
+    Terrain* GetTerrain() const { return terrain_; }
+    bool RegenerateTerrain(const TerrainSettings& settings);
     LightSystem& GetLightSystem() { return *lights_; }
     const LightSystem& GetLightSystem() const { return *lights_; }
     void AddObject(SceneObject* obj);      // Scene owns the objects
@@ -36,6 +39,7 @@ private:
     Camera camera_;
     std::unique_ptr<LightSystem> lights_;
     std::vector<SceneObject*> objects_;
+    Terrain* terrain_ = nullptr;
     float smoothedMouseDeltaX_ = 0.0f;
     float smoothedMouseDeltaY_ = 0.0f;
 };

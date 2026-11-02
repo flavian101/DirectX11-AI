@@ -11,7 +11,18 @@ Scene::~Scene()
 bool Scene::Initialize(ID3D11Device* device)
 {
     if (!device || !lights_) return false;
-    return lights_->Initialize(device);
+    if (!lights_->Initialize(device)) return false;
+
+    camera_.SetPosition({ 0.0f, 62.0f, -115.0f });
+    camera_.SetTarget({ 0.0f, 12.0f, 0.0f });
+    terrain_ = new Terrain(device);
+    AddObject(terrain_);
+    return true;
+}
+
+bool Scene::RegenerateTerrain(const TerrainSettings& settings)
+{
+    return terrain_ && terrain_->Regenerate(settings);
 }
 
 void Scene::AddObject(SceneObject* obj)

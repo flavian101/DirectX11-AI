@@ -201,13 +201,24 @@ void Window::Run()
             ImGui::NewFrame();
 
             ImGui::Begin("Terrain Generation");
-            static int heightmapResolution = 256;
-            static float terrainSize = 100.0f;
-            static float heightScale = 20.0f;
-            ImGui::SliderInt("Heightmap resolution", &heightmapResolution, 32, 2048);
-            ImGui::SliderFloat("Terrain size", &terrainSize, 10.0f, 500.0f, "%.1f");
-            ImGui::SliderFloat("Height scale", &heightScale, 1.0f, 100.0f, "%.1f");
-            ImGui::Button("Generate terrain");
+            static TerrainSettings pendingSettings;
+            static bool settingsInitialized = false;
+            static bool lastGenerationSucceeded = true;
+            if (!settingsInitialized && m_scene->GetTerrain()) {
+                pendingSettings = m_scene->GetTerrain()->GetSettings();
+                settingsInitialized = true;
+            }
+
+            ImGui::SliderFloat("Height scale", &pendingSettings.heightScale, 1.0f, 100.0f, "%.1f");
+            ImGui::SliderFloat("Noise strength", &pendingSettings.noiseStrength, 0.0f, 1.0f, "%.3f");
+            ImGui::SliderFloat("Noise scale", &pendingSettings.noiseScale, 0.5f, 16.0f, "%.2f");
+            ImGui::InputInt("Noise seed", &pendingSettings.noiseSeed);
+            if (ImGui::Button("Generate terrain")) {
+                lastGenerationSucceeded = m_scene->RegenerateTerrain(pendingSettings);
+            }
+            if (!lastGenerationSucceeded) {
+                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Terrain regeneration failed");
+            }
             ImGui::End();
 
             ImGui::Render();
