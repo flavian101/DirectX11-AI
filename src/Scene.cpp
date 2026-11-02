@@ -19,11 +19,6 @@ bool Scene::Initialize(ID3D11Device* device)
     return true;
 }
 
-bool Scene::RegenerateTerrain(const TerrainSettings& settings)
-{
-    return terrain_ && terrain_->Regenerate(settings);
-}
-
 void Scene::UpdateCamera(const InputState& input, float dt)
 {
     // Handle camera movement with WASD

@@ -24,7 +24,6 @@ private:
 	SelectionKind selectionKind_ = SelectionKind::Object;
 	int selectedObject_ = -1;
 	TerrainSettings pendingTerrainSettings_;
-	bool terrainSettingsInitialized_ = false;
 	bool lastTerrainGenerationSucceeded_ = true;
 	WaterSettings pendingWaterSettings_;
 	bool waterSettingsInitialized_ = false;

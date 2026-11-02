@@ -8,7 +8,7 @@ VS_OUT main(VS_IN input) {
     float4 pos = mul(worldPos, view);
     output.position = mul(pos, proj);
     output.normal = mul(input.normal, (float3x3)world);
-    output.texCoord = input.texCoord;
+    output.texCoord = input.texCoord * materialParams.x;   // x = UV tiling (1 = texture covers the mesh once)
     output.worldPos = worldPos.xyz;
     return output;
 }

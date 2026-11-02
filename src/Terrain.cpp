@@ -15,9 +15,6 @@
 using namespace DirectX;
 
 namespace {
-constexpr int maxTerrainCells = 512;
-constexpr float terrainWidth = 240.0f;
-
 float SmoothStep(float value)
 {
 	return value * value * (3.0f - 2.0f * value);
@@ -48,13 +45,13 @@ float ValueNoise(float x, float z, int seed)
 	return ab + (cd - ab) * tz;
 }
 
-float FractalNoise(float x, float z, int seed)
+float FractalNoise(float x, float z, int seed, int octaves)
 {
 	float value = 0.0f;
 	float amplitude = 0.5f;
 	float frequency = 1.0f;
 	float amplitudeTotal = 0.0f;
-	for (int octave = 0; octave < 4; ++octave) {
+	for (int octave = 0; octave < octaves; ++octave) {
 		value += ValueNoise(x * frequency, z * frequency, seed + octave * 31) * amplitude;
 		amplitudeTotal += amplitude;
 		frequency *= 2.0f;
@@ -63,27 +60,54 @@ float FractalNoise(float x, float z, int seed)
 	return value / amplitudeTotal;
 }
 
-Model* CreateTerrainModel(ID3D11Device* device, const char* heightmapPath,
-						  const TerrainSettings& settings)
+// Decodes the heightmap once (red channel, 0..1).
+bool LoadHeightmapFile(const char* path, int& width, int& height, std::vector<float>& values)
 {
-	if (!device || !heightmapPath) return nullptr;
-
-	int imageWidth = 0;
-	int imageHeight = 0;
 	int channels = 0;
-	unsigned char* image = stbi_load(heightmapPath, &imageWidth, &imageHeight, &channels, STBI_rgb_alpha);
-	if (!image || imageWidth < 2 || imageHeight < 2) {
-		LOG_ERROR("Failed to load terrain heightmap: " + std::string(heightmapPath));
+	unsigned char* image = stbi_load(path, &width, &height, &channels, STBI_rgb_alpha);
+	if (!image || width < 2 || height < 2) {
+		LOG_ERROR("Failed to load terrain heightmap: " + std::string(path));
 		if (image) stbi_image_free(image);
-		return nullptr;
+		return false;
 	}
+	values.resize(static_cast<size_t>(width) * height);
+	for (size_t i = 0; i < values.size(); ++i) values[i] = image[i * 4] / 255.0f;
+	stbi_image_free(image);
+	return true;
+}
 
-	const int sampleStep = std::max(1, std::max(imageWidth, imageHeight) / maxTerrainCells);
-	const int gridWidth = (imageWidth - 1) / sampleStep + 1;
-	const int gridHeight = (imageHeight - 1) / sampleStep + 1;
-	const float depth = terrainWidth * static_cast<float>(imageHeight) / static_cast<float>(imageWidth);
-	const float cellWidth = terrainWidth / static_cast<float>(gridWidth - 1);
-	const float cellDepth = depth / static_cast<float>(gridHeight - 1);
+// Bilinear lookup so the mesh can have ANY resolution, not just integer divisions of the image.
+float SampleHeightmap(const std::vector<float>& values, int width, int height, float u, float v)
+{
+	const float fx = std::clamp(u, 0.0f, 1.0f) * static_cast<float>(width - 1);
+	const float fz = std::clamp(v, 0.0f, 1.0f) * static_cast<float>(height - 1);
+	const int x0 = std::min(static_cast<int>(fx), width - 1);
+	const int z0 = std::min(static_cast<int>(fz), height - 1);
+	const int x1 = std::min(x0 + 1, width - 1);
+	const int z1 = std::min(z0 + 1, height - 1);
+	const float tx = fx - static_cast<float>(x0);
+	const float tz = fz - static_cast<float>(z0);
+	auto at = [&](int x, int z) { return values[static_cast<size_t>(z) * width + x]; };
+	const float top = at(x0, z0) + (at(x1, z0) - at(x0, z0)) * tx;
+	const float bottom = at(x0, z1) + (at(x1, z1) - at(x0, z1)) * tx;
+	return top + (bottom - top) * tz;
+}
+
+Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, int mapWidth, int mapHeight,
+						 const TerrainSettings& settings, float& outDepth)
+{
+	if (!device || map.empty()) return nullptr;
+
+	const float terrainWidth = settings.width;
+	const int cellsX = settings.maxCells;
+	const int cellsZ = std::max(2, static_cast<int>(std::lround(
+		static_cast<float>(cellsX) * static_cast<float>(mapHeight) / static_cast<float>(mapWidth))));
+	const int gridWidth = cellsX + 1;
+	const int gridHeight = cellsZ + 1;
+	const float depth = terrainWidth * static_cast<float>(mapHeight) / static_cast<float>(mapWidth);
+	const float cellWidth = terrainWidth / static_cast<float>(cellsX);
+	const float cellDepth = depth / static_cast<float>(cellsZ);
+	outDepth = depth;
 
 	std::vector<float> heights(static_cast<size_t>(gridWidth) * gridHeight);
 	auto heightAt = [&](int x, int z) {
@@ -93,20 +117,16 @@ Model* CreateTerrainModel(ID3D11Device* device, const char* heightmapPath,
 	};
 
 	for (int z = 0; z < gridHeight; ++z) {
-		const int sourceZ = std::min(z * sampleStep, imageHeight - 1);
+		const float v = static_cast<float>(z) / static_cast<float>(cellsZ);
 		for (int x = 0; x < gridWidth; ++x) {
-			const int sourceX = std::min(x * sampleStep, imageWidth - 1);
-			const size_t sourceIndex = (static_cast<size_t>(sourceZ) * imageWidth + sourceX) * 4;
-			const float baseHeight = image[sourceIndex] / 255.0f;
-			const float noise = FractalNoise(
-				(static_cast<float>(x) / static_cast<float>(gridWidth - 1)) * settings.noiseScale,
-				(static_cast<float>(z) / static_cast<float>(gridHeight - 1)) * settings.noiseScale,
-				settings.noiseSeed);
+			const float u = static_cast<float>(x) / static_cast<float>(cellsX);
+			const float baseHeight = SampleHeightmap(map, mapWidth, mapHeight, u, v);
+			const float noise = FractalNoise(u * settings.noiseScale, v * settings.noiseScale,
+				settings.noiseSeed, settings.noiseOctaves);
 			heights[static_cast<size_t>(z) * gridWidth + x] = std::clamp(
 				baseHeight + noise * settings.noiseStrength, 0.0f, 1.0f);
 		}
 	}
-	stbi_image_free(image);
 
 	std::vector<Vertex> vertices;
 	vertices.reserve(static_cast<size_t>(gridWidth) * gridHeight);
@@ -147,10 +167,30 @@ Model* CreateTerrainModel(ID3D11Device* device, const char* heightmapPath,
 }
 }
 
+void TerrainSettings::Clamp()
+{
+	width = std::clamp(width, kWidthMin, kWidthMax);
+	heightScale = std::clamp(heightScale, kHeightMin, kHeightMax);
+	maxCells = std::clamp(maxCells, kCellsMin, kCellsMax);
+	noiseStrength = std::clamp(noiseStrength, 0.0f, 1.0f);
+	noiseScale = std::clamp(noiseScale, kNoiseScaleMin, kNoiseScaleMax);
+	noiseOctaves = std::clamp(noiseOctaves, kOctavesMin, kOctavesMax);
+	uvTiling = std::clamp(uvTiling, kTilingMin, kTilingMax);
+}
+
+bool TerrainSettings::SameShape(const TerrainSettings& o) const
+{
+	return width == o.width && heightScale == o.heightScale && maxCells == o.maxCells &&
+		noiseStrength == o.noiseStrength && noiseScale == o.noiseScale &&
+		noiseOctaves == o.noiseOctaves && noiseSeed == o.noiseSeed;
+}
+
 Terrain::Terrain(ID3D11Device* device) : device_(device)
 {
 	texture_ = std::make_unique<Texture>(device, "assets/dark alien/Diffuse Map.png");
-	if (!Regenerate(settings_)) LOG_ERROR("Terrain mesh initialization failed");
+	LoadHeightmapFile("assets/dark alien/Height Map.png", heightmap_.width, heightmap_.height, heightmap_.values);
+	settings_.Clamp();
+	if (!Rebuild(settings_)) LOG_ERROR("Terrain mesh initialization failed");
 	UpdateWorldTransform();
 	if (!IsValid()) LOG_ERROR("Terrain initialization failed");
 }
@@ -160,19 +200,50 @@ bool Terrain::IsValid() const
 	return renderable_ && renderable_->IsValid() && texture_ && texture_->IsValid();
 }
 
-bool Terrain::Regenerate(const TerrainSettings& settings)
+bool Terrain::ApplySettings(TerrainSettings settings)
 {
-	if (!device_ || !texture_ || !texture_->IsValid()) return false;
+	settings.Clamp();
+	if (renderable_ && settings.SameShape(settings_)) {   // only the tiling changed
+		settings_ = settings;
+		UpdateMaterial();
+		return true;
+	}
+	return Rebuild(settings);
+}
 
-	auto replacement = std::make_unique<Renderable>(
-		device_, CreateTerrainModel(device_, "assets/dark alien/Height Map.png", settings),
-		L"shaders/vs.hlsl", L"shaders/ps.hlsl");
+bool Terrain::Rebuild(const TerrainSettings& settings)
+{
+	if (!device_ || !texture_ || !texture_->IsValid() || heightmap_.values.empty()) return false;
+
+	float depth = 0.0f;
+	Model* model = BuildTerrainModel(device_, heightmap_.values, heightmap_.width, heightmap_.height,
+									 settings, depth);
+	if (!model) return false;
+	auto replacement = std::make_unique<Renderable>(device_, model, L"shaders/vs.hlsl", L"shaders/ps.hlsl");
 	if (!replacement->IsValid()) return false;
 
 	renderable_ = std::move(replacement);
 	settings_ = settings;
+	depth_ = depth;
+	UpdateMaterial();
 	UpdateWorldTransform();
 	return true;
+}
+
+void Terrain::UpdateMaterial()
+{
+	if (renderable_) renderable_->SetMaterialParameters({ settings_.uvTiling, 1.0f, 1.0f, 1.0f });
+}
+
+XMFLOAT2 Terrain::GetWorldExtent() const
+{
+	return { settings_.width * scale_.x, depth_ * scale_.z };
+}
+
+void Terrain::GetHeightRange(float& minY, float& maxY) const
+{
+	minY = position_.y;
+	maxY = position_.y + settings_.heightScale * scale_.y;   // ignores rotation
 }
 
 bool Terrain::GetEditorTransform(XMFLOAT3& position, XMFLOAT3& rotation, XMFLOAT3& scale) const

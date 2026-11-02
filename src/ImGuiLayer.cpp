@@ -188,17 +188,58 @@ void ImGuiLayer::DrawLightsInspector()
 
 void ImGuiLayer::DrawTerrainInspector(Terrain* terrain)
 {
-    ImGui::SeparatorText("Terrain generation");
-    if (!terrainSettingsInitialized_) {
-        pendingTerrainSettings_ = terrain->GetSettings();
-        terrainSettingsInitialized_ = true;
+    // Mesh-shaping values rebuild ~half a million vertices, so they are applied when you
+    // RELEASE the control, not on every frame of a drag. While a control is being edited we keep
+    // our own copy; otherwise we follow the terrain so changes made elsewhere show up.
+    if (!ImGui::IsAnyItemActive()) pendingTerrainSettings_ = terrain->GetSettings();
+    TerrainSettings& s = pendingTerrainSettings_;
+
+    bool commit = false;
+    auto commitOnRelease = [&commit] { if (ImGui::IsItemDeactivatedAfterEdit()) commit = true; };
+
+    ImGui::SeparatorText("Shape");
+    ImGui::SliderFloat("Width", &s.width, TerrainSettings::kWidthMin, TerrainSettings::kWidthMax, "%.0f");
+    commitOnRelease();
+    ImGui::SliderFloat("Height scale", &s.heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax, "%.1f");
+    commitOnRelease();
+    ImGui::SliderInt("Mesh resolution", &s.maxCells, TerrainSettings::kCellsMin, TerrainSettings::kCellsMax);
+    commitOnRelease();
+    ImGui::SetItemTooltip("Grid cells across the terrain. Higher = smoother and slower to rebuild.");
+
+    ImGui::SeparatorText("Noise");
+    ImGui::SliderFloat("Strength", &s.noiseStrength, 0.0f, 1.0f, "%.3f");
+    commitOnRelease();
+    ImGui::SliderFloat("Scale", &s.noiseScale, TerrainSettings::kNoiseScaleMin, TerrainSettings::kNoiseScaleMax, "%.2f");
+    commitOnRelease();
+    ImGui::SliderInt("Octaves", &s.noiseOctaves, TerrainSettings::kOctavesMin, TerrainSettings::kOctavesMax);
+    commitOnRelease();
+    ImGui::SetItemTooltip("Layers of detail. Each octave doubles the frequency and halves the amplitude.");
+    ImGui::InputInt("Seed", &s.noiseSeed);
+    commitOnRelease();
+    ImGui::SameLine();
+    if (ImGui::Button("Random")) {
+        s.noiseSeed = static_cast<int>(ImGui::GetTime() * 1000.0) & 0xffff;
+        commit = true;
     }
-    ImGui::SliderFloat("Height scale", &pendingTerrainSettings_.heightScale, 1.0f, 100.0f, "%.1f");
-    ImGui::SliderFloat("Noise strength", &pendingTerrainSettings_.noiseStrength, 0.0f, 1.0f, "%.3f");
-    ImGui::SliderFloat("Noise scale", &pendingTerrainSettings_.noiseScale, 0.5f, 16.0f, "%.2f");
-    ImGui::InputInt("Noise seed", &pendingTerrainSettings_.noiseSeed);
-    if (ImGui::Button("Generate terrain")) lastTerrainGenerationSucceeded_ = scene_->RegenerateTerrain(pendingTerrainSettings_);
-    if (!lastTerrainGenerationSucceeded_) ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Terrain regeneration failed");
+
+    ImGui::SeparatorText("Material");
+    // Tiling is just a shader constant, so it applies live while you drag.
+    if (ImGui::SliderFloat("Texture tiling", &s.uvTiling, TerrainSettings::kTilingMin,
+                           TerrainSettings::kTilingMax, "%.2f", ImGuiSliderFlags_Logarithmic)) {
+        terrain->ApplySettings(s);
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Reset terrain")) {
+        s = TerrainSettings{};
+        commit = true;
+    }
+    if (commit) lastTerrainGenerationSucceeded_ = terrain->ApplySettings(s);
+    if (!lastTerrainGenerationSucceeded_) ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Terrain rebuild failed");
+
+    float minY = 0.0f, maxY = 0.0f;
+    terrain->GetHeightRange(minY, maxY);
+    ImGui::TextDisabled("Surface spans Y %.1f to %.1f", minY, maxY);
 }
 
 void ImGuiLayer::DrawWaterInspector(Water* water)

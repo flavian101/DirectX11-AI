@@ -34,7 +34,6 @@ public:
     Terrain* GetTerrain() const { return terrain_; }
     Water* GetWater() const { return water_; }
     Skybox* GetSkybox() const { return skybox_; }
-    bool RegenerateTerrain(const TerrainSettings& settings);
     const std::vector<std::unique_ptr<SceneObject>>& GetObjects() const { return objects_; }
     LightSystem& GetLightSystem() { return *lights_; }
     const LightSystem& GetLightSystem() const { return *lights_; }

@@ -39,7 +39,7 @@ private:
     ID3D11Buffer* cb_ = nullptr;
     bool valid_ = false;
     DirectX::XMFLOAT4 materialColor_ = { 1.0f, 1.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 materialParameters_ = {};
+    DirectX::XMFLOAT4 materialParameters_ = { 1.0f, 1.0f, 1.0f, 1.0f };   // x = UV tiling for vs.hlsl
 };
 
 
