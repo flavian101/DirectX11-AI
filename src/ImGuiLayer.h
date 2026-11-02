@@ -25,6 +25,4 @@ private:
 	int selectedObject_ = -1;
 	TerrainSettings pendingTerrainSettings_;
 	bool lastTerrainGenerationSucceeded_ = true;
-	WaterSettings pendingWaterSettings_;
-	bool waterSettingsInitialized_ = false;
 };

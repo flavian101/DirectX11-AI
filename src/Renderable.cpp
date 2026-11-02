@@ -50,6 +50,7 @@ void Renderable::Render(ID3D11DeviceContext* ctx) const
     XMStoreFloat4x4(&data->world, XMMatrixTranspose(XMLoadFloat4x4(&model_->GetWorld())));
     data->materialColor = materialColor_;
     data->materialParams = materialParameters_;
+    data->materialExtra = materialExtra_;
 
     ctx->Unmap(cb_, 0);
     shader_->Apply(ctx);

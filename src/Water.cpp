@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include "Mesh.h"
 #include <DirectXMath.h>
+#include <algorithm>
 #include <vector>
 
 using namespace DirectX;
@@ -82,9 +83,36 @@ bool Water::IsValid() const
 		material_.HasBlendState() && material_.HasDepthStencilState();
 }
 
+void WaterSettings::Clamp()
+{
+	height = std::clamp(height, kHeightMin, kHeightMax);
+	size = std::clamp(size, kSizeMin, kSizeMax);
+	color.x = std::clamp(color.x, 0.0f, 1.0f);
+	color.y = std::clamp(color.y, 0.0f, 1.0f);
+	color.z = std::clamp(color.z, 0.0f, 1.0f);
+	alpha = std::clamp(alpha, 0.05f, 1.0f);
+	waveAmplitude = std::clamp(waveAmplitude, 0.0f, kAmplitudeMax);
+	waveSpeed = std::clamp(waveSpeed, 0.0f, kSpeedMax);
+	waveFrequency = std::clamp(waveFrequency, kFrequencyMin, kFrequencyMax);
+	reflectivity = std::clamp(reflectivity, 0.0f, 1.0f);
+	glintStrength = std::clamp(glintStrength, 0.0f, kGlintMax);
+	glintSharpness = std::clamp(glintSharpness, kSharpnessMin, kSharpnessMax);
+}
+
+void WaterSettings::ApplyWavePreset(WavePreset preset)
+{
+	// Max wave slope is roughly 3.4 * amplitude * frequency, so keep that product around 1 or less.
+	switch (preset) {
+	case WavePreset::Calm:   waveAmplitude = 0.12f; waveSpeed = 0.6f; waveFrequency = 0.45f; break;
+	case WavePreset::Choppy: waveAmplitude = 0.35f; waveSpeed = 1.0f; waveFrequency = 0.6f;  break;
+	case WavePreset::Stormy: waveAmplitude = 0.6f;  waveSpeed = 1.8f; waveFrequency = 0.5f;  break;
+	}
+}
+
 void Water::SetSettings(const WaterSettings& settings)
 {
 	settings_ = settings;
+	settings_.Clamp();
 	position_.y = settings_.height;
 	UpdateWorldTransform();
 	if (renderable_) {
@@ -92,6 +120,7 @@ void Water::SetSettings(const WaterSettings& settings)
 										settings_.color.z, settings_.alpha });
 		renderable_->SetMaterialParameters({ settings_.waveAmplitude, settings_.waveSpeed,
 											 settings_.waveFrequency, settings_.reflectivity });
+		renderable_->SetMaterialExtra({ settings_.glintStrength, settings_.glintSharpness, 0.0f, 0.0f });
 	}
 }
 
@@ -121,6 +150,7 @@ bool Water::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotatio
 	position_ = position;
 	rotation_ = rotation;
 	scale_ = scale;
+	settings_.height = position_.y;   // one source of truth: otherwise the next SetSettings() snaps Y back
 	UpdateWorldTransform();
 	return true;
 }

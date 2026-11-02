@@ -28,7 +28,8 @@ cbuffer Lights : register(b1) {
 cbuffer PerObject : register(b2) {
     float4x4 world;
     float4   materialColor;
-    float4   materialParams;  // meaning is defined by each shader (water: amp, speed, freq, reflectivity)
+    float4   materialParams;  // meaning is defined by each shader (vs.hlsl: x = UV tiling; water: amp, speed, freq, reflectivity)
+    float4   materialExtra;   // a second set for shaders that need more (water: glint strength, glint sharpness)
 };
 
 #endif

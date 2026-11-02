@@ -1,15 +1,19 @@
-#include "common.hlsli"
+#include "waves.hlsli"
 
 TextureCube  environmentMap : register(t1);   // the skybox cubemap, bound once per frame by Scene
 SamplerState linearSampler  : register(s0);
 
-struct PS_IN { float4 position : SV_POSITION; float3 normal : NORMAL; float2 texCoord : TEXCOORD; float3 worldPos : TEXCOORD1; };
+struct PS_IN { float4 position : SV_POSITION; float2 texCoord : TEXCOORD; float3 worldPos : TEXCOORD1; };
 
 float4 main(PS_IN input) : SV_Target
 {
     const float reflectivity = materialParams.w;
 
-    float3 N = normalize(input.normal);
+    // Per-pixel normal from the analytic wave slope: a hill rising toward +x tilts the normal toward -x.
+    float height;
+    float2 slope;
+    EvaluateWaves(input.worldPos.xz, height, slope);
+    float3 N = normalize(float3(-slope.x, 1.0f, -slope.y));
     float3 V = normalize(cameraPos.xyz - input.worldPos);   // surface -> eye
     float3 L = normalize(-dirDirection.xyz);                // surface -> sun
 
@@ -26,7 +30,8 @@ float4 main(PS_IN input) : SV_Target
 
     // Sun glint: a tight Blinn-Phong highlight on the wave normals.
     float3 H = normalize(L + V);
-    float3 glint = dirColor.rgb * dirDirection.w * pow(saturate(dot(N, H)), 128.0f);
+    // materialExtra = (glint strength, glint sharpness)
+    float3 glint = dirColor.rgb * dirDirection.w * materialExtra.x * pow(saturate(dot(N, H)), materialExtra.y);
 
     float3 color = lerp(body, sky, fresnel) + glint;
     // More reflective -> more opaque, so the sky is not blended away over the terrain behind.

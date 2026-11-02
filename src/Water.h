@@ -4,15 +4,34 @@
 #include "Material.h"
 #include <memory>
 
+enum class WavePreset { Calm, Choppy, Stormy };
+
 struct WaterSettings {
-	float height = 4.0f;
-	float size = 180.0f;
+	// --- surface ---
+	float height = 4.0f;          // world Y of the water plane (kept in sync with the editor transform)
+	float size = 180.0f;          // side length of the square plane
 	DirectX::XMFLOAT3 color = { 0.05f, 0.25f, 0.45f };
 	float alpha = 0.68f;
+
+	// --- waves ---
 	float waveAmplitude = 0.35f;
 	float waveSpeed = 1.0f;
 	float waveFrequency = 0.6f;   // radians per world unit of the base wave (0.6 = ~10 unit wavelength)
+
+	// --- lighting ---
 	float reflectivity = 1.0f;    // 0 = no sky reflection, 1 = full Fresnel reflection
+	float glintStrength = 1.0f;   // brightness of the sun highlight
+	float glintSharpness = 128.0f;// higher = smaller, tighter highlight
+
+	static constexpr float kHeightMin = -100.0f, kHeightMax = 200.0f;
+	static constexpr float kSizeMin = 10.0f, kSizeMax = 2000.0f;
+	static constexpr float kAmplitudeMax = 2.0f, kSpeedMax = 5.0f;
+	static constexpr float kFrequencyMin = 0.05f, kFrequencyMax = 2.0f;
+	static constexpr float kGlintMax = 3.0f;
+	static constexpr float kSharpnessMin = 8.0f, kSharpnessMax = 512.0f;
+
+	void Clamp();
+	void ApplyWavePreset(WavePreset preset);   // only touches the three wave values
 };
 
 class Water final : public SceneObject {

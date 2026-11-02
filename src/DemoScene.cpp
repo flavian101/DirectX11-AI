@@ -4,6 +4,7 @@
 #include "Skybox.h"
 #include "Terrain.h"
 #include "Water.h"
+#include <algorithm>
 
 bool BuildDemoScene(Scene& scene, ID3D11Device* device)
 {
@@ -46,9 +47,15 @@ bool BuildDemoScene(Scene& scene, ID3D11Device* device)
     lights.AddPointLight(lime);
 
     // --- objects (the scene owns them) ---
-    scene.Add<Terrain>(device);
+    Terrain* terrain = scene.Add<Terrain>(device);
     scene.Add<Cube>(device);
-    scene.Add<Water>(device);
+    Water* water = scene.Add<Water>(device);
     scene.Add<Skybox>(device);
+
+    // Cover the whole terrain (plus a margin) whatever its width setting is.
+    WaterSettings waterSettings = water->GetSettings();
+    const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();
+    waterSettings.size = (std::max)(extent.x, extent.y) * 1.2f;
+    water->SetSettings(waterSettings);
     return true;
 }

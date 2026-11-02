@@ -1,4 +1,5 @@
 #include "ImGuiLayer.h"
+#include <algorithm>
 #include "Skybox.h"
 #include "imgui.h"
 #include <DirectXMath.h>
@@ -244,21 +245,58 @@ void ImGuiLayer::DrawTerrainInspector(Terrain* terrain)
 
 void ImGuiLayer::DrawWaterInspector(Water* water)
 {
-    ImGui::SeparatorText("Water material");
-    if (!waterSettingsInitialized_) {
-        pendingWaterSettings_ = water->GetSettings();
-        waterSettingsInitialized_ = true;
+    // Every water value is just a shader constant, so changes apply live - no pending copy,
+    // no Apply button. We read the current settings, edit them, and write back if anything moved.
+    WaterSettings s = water->GetSettings();
+    bool changed = false;
+
+    ImGui::SeparatorText("Surface");
+    changed |= ImGui::SliderFloat("Level", &s.height, WaterSettings::kHeightMin, WaterSettings::kHeightMax, "%.1f");
+    changed |= ImGui::SliderFloat("Size", &s.size, WaterSettings::kSizeMin, WaterSettings::kSizeMax, "%.0f");
+    if (Terrain* terrain = scene_->GetTerrain()) {
+        if (ImGui::Button("Fit size to terrain")) {
+            const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();
+            s.size = (std::max)(extent.x, extent.y) * 1.2f;   // a little larger: no gap at the shore
+            changed = true;
+        }
+        float minY = 0.0f, maxY = 0.0f;
+        terrain->GetHeightRange(minY, maxY);
+        ImGui::SameLine();
+        ImGui::TextDisabled("terrain Y %.1f to %.1f", minY, maxY);
     }
-    ImGui::SliderFloat("Height", &pendingWaterSettings_.height, -100.0f, 100.0f);
-    ImGui::SliderFloat("Size", &pendingWaterSettings_.size, 1.0f, 1000.0f);
-    float color[3] = { pendingWaterSettings_.color.x, pendingWaterSettings_.color.y, pendingWaterSettings_.color.z };
-    if (ImGui::ColorEdit3("Color", color)) pendingWaterSettings_.color = { color[0], color[1], color[2] };
-    ImGui::SliderFloat("Opacity", &pendingWaterSettings_.alpha, 0.05f, 1.0f);
-    ImGui::SliderFloat("Wave amplitude", &pendingWaterSettings_.waveAmplitude, 0.0f, 2.0f);
-    ImGui::SliderFloat("Wave speed", &pendingWaterSettings_.waveSpeed, 0.0f, 5.0f);
-    ImGui::SliderFloat("Wave frequency", &pendingWaterSettings_.waveFrequency, 0.05f, 2.0f);
-    ImGui::SliderFloat("Sky reflection", &pendingWaterSettings_.reflectivity, 0.0f, 1.0f);
-    if (ImGui::Button("Apply water settings")) water->SetSettings(pendingWaterSettings_);
+    float color[3] = { s.color.x, s.color.y, s.color.z };
+    if (ImGui::ColorEdit3("Color", color)) {
+        s.color = { color[0], color[1], color[2] };
+        changed = true;
+    }
+    changed |= ImGui::SliderFloat("Opacity", &s.alpha, 0.05f, 1.0f);
+
+    ImGui::SeparatorText("Waves");
+    if (ImGui::Button("Calm"))   { s.ApplyWavePreset(WavePreset::Calm);   changed = true; }
+    ImGui::SameLine();
+    if (ImGui::Button("Choppy")) { s.ApplyWavePreset(WavePreset::Choppy); changed = true; }
+    ImGui::SameLine();
+    if (ImGui::Button("Stormy")) { s.ApplyWavePreset(WavePreset::Stormy); changed = true; }
+    changed |= ImGui::SliderFloat("Amplitude", &s.waveAmplitude, 0.0f, WaterSettings::kAmplitudeMax);
+    changed |= ImGui::SliderFloat("Speed", &s.waveSpeed, 0.0f, WaterSettings::kSpeedMax);
+    changed |= ImGui::SliderFloat("Frequency", &s.waveFrequency, WaterSettings::kFrequencyMin, WaterSettings::kFrequencyMax);
+    ImGui::SetItemTooltip("Radians per world unit. Lower = longer, lazier waves.");
+
+    ImGui::SeparatorText("Lighting");
+    changed |= ImGui::SliderFloat("Sky reflection", &s.reflectivity, 0.0f, 1.0f);
+    changed |= ImGui::SliderFloat("Sun glint", &s.glintStrength, 0.0f, WaterSettings::kGlintMax);
+    changed |= ImGui::SliderFloat("Glint sharpness", &s.glintSharpness, WaterSettings::kSharpnessMin,
+                                  WaterSettings::kSharpnessMax, "%.0f", ImGuiSliderFlags_Logarithmic);
+
+    ImGui::Separator();
+    if (ImGui::Button("Reset water look")) {     // keeps level and size, resets everything else
+        WaterSettings defaults;
+        defaults.height = s.height;
+        defaults.size = s.size;
+        s = defaults;
+        changed = true;
+    }
+    if (changed) water->SetSettings(s);
 }
 
 void ImGuiLayer::DrawSkyboxInspector(Skybox* skybox)
