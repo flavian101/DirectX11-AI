@@ -12,8 +12,8 @@ Shader::~Shader() { Release(); }
 bool Shader::Load(const wchar_t* vsPath, const wchar_t* psPath, ID3D11Device* device)
 {
     Release();
-    if (!device || !vsPath || !psPath) {
-        LOG_ERROR("Shader::Load received a null device or path");
+    if (!device || !vsPath) {
+        LOG_ERROR("Shader::Load received a null device or vertex shader path");
         return false;
     }
 
@@ -29,7 +29,7 @@ bool Shader::Load(const wchar_t* vsPath, const wchar_t* psPath, ID3D11Device* de
     };
 
     std::vector<char> vsSource, psSource;
-    if (!readFile(vsPath, vsSource) || !readFile(psPath, psSource)) return false;
+    if (!readFile(vsPath, vsSource) || (psPath && !readFile(psPath, psSource))) return false;
 
     // pSourceName + D3D_COMPILE_STANDARD_FILE_INCLUDE lets `#include "common.hlsli"`
     // resolve relative to the shader's own folder (and puts the file name in error messages).
@@ -55,9 +55,9 @@ bool Shader::Load(const wchar_t* vsPath, const wchar_t* psPath, ID3D11Device* de
     };
 
     const std::string vsName = std::filesystem::path(vsPath).string();
-    const std::string psName = std::filesystem::path(psPath).string();
+    const std::string psName = psPath ? std::filesystem::path(psPath).string() : std::string();
     if (!compile(vsSource, vsName, "vs_5_0", &vsBlob_, "Vertex shader") ||
-        !compile(psSource, psName, "ps_5_0", &psBlob_, "Pixel shader")) {
+        (psPath && !compile(psSource, psName, "ps_5_0", &psBlob_, "Pixel shader"))) {
         Release();
         return false;
     }
@@ -68,7 +68,7 @@ bool Shader::Load(const wchar_t* vsPath, const wchar_t* psPath, ID3D11Device* de
         Release();
         return false;
     }
-    hr = device->CreatePixelShader(psBlob_->GetBufferPointer(), psBlob_->GetBufferSize(), nullptr, &ps_);
+    hr = psBlob_ ? device->CreatePixelShader(psBlob_->GetBufferPointer(), psBlob_->GetBufferSize(), nullptr, &ps_) : S_OK;
     if (FAILED(hr)) {
         LOG_HR(hr, "Pixel shader object creation failed");
         Release();
@@ -92,10 +92,10 @@ bool Shader::Load(const wchar_t* vsPath, const wchar_t* psPath, ID3D11Device* de
 
 void Shader::Apply(ID3D11DeviceContext* ctx) const
 {
-    if (!ctx || !vs_ || !ps_ || !layout_) return;
+    if (!ctx || !vs_ || !layout_) return;
     ctx->IASetInputLayout(layout_);
     ctx->VSSetShader(vs_, nullptr, 0);
-    ctx->PSSetShader(ps_, nullptr, 0);
+    ctx->PSSetShader(ps_, nullptr, 0);   // ps_ is nullptr for depth-only programs: that UNBINDS the old one
 }
 
 void Shader::Release()
@@ -111,9 +111,9 @@ void Shader::Release()
 std::shared_ptr<Shader> ShaderCache::Get(ID3D11Device* device, const wchar_t* vsPath, const wchar_t* psPath)
 {
     static std::map<std::wstring, std::weak_ptr<Shader>> cache;
-    if (!vsPath || !psPath) return nullptr;
+    if (!vsPath) return nullptr;
 
-    const std::wstring key = std::wstring(vsPath) + L"|" + psPath;
+    const std::wstring key = std::wstring(vsPath) + L"|" + (psPath ? psPath : L"");
     const auto found = cache.find(key);
     if (found != cache.end()) {
         if (std::shared_ptr<Shader> existing = found->second.lock()) return existing;

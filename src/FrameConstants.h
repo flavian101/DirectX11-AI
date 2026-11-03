@@ -14,6 +14,18 @@ struct CBPerFrame {
 };
 static_assert(sizeof(CBPerFrame) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
+// Everything the per-frame buffer needs, WITHOUT assuming it comes from a Camera. The sun
+// is not a Camera, but a shadow pass still wants "view + projection + eye position" -
+// so the pass fills one of these by hand and the shaders cannot tell the difference.
+struct FrameData {
+    DirectX::XMFLOAT4X4 view{};
+    DirectX::XMFLOAT4X4 proj{};
+    DirectX::XMFLOAT3 cameraPos{};
+    float time = 0.0f;
+
+    static FrameData FromCamera(const Camera& camera, float timeSeconds);
+};
+
 class FrameConstants {
 public:
     FrameConstants() = default;
@@ -25,7 +37,11 @@ public:
     void Release();
 
     // Uploads the data and binds the buffer to VS + PS slot b0.
-    void Apply(ID3D11DeviceContext* ctx, const Camera& camera, float timeSeconds) const;
+    void Apply(ID3D11DeviceContext* ctx, const FrameData& frame) const;
+    void Apply(ID3D11DeviceContext* ctx, const Camera& camera, float timeSeconds) const
+    {
+        Apply(ctx, FrameData::FromCamera(camera, timeSeconds));
+    }
 
 private:
     ID3D11Buffer* cb_ = nullptr;

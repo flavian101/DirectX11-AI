@@ -11,6 +11,8 @@ public:
     Shader(const Shader&) = delete;
     Shader& operator=(const Shader&) = delete;
 
+    // psPath may be nullptr: a vertex-shader-only program for depth-only passes (shadow maps).
+    // With no pixel shader bound the GPU skips all colour work and just writes depth.
     bool Load(const wchar_t* vsPath, const wchar_t* psPath, ID3D11Device* device);
     void Apply(ID3D11DeviceContext* ctx) const;
     void SetTexture(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* texture)

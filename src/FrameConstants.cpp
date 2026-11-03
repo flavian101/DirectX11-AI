@@ -31,7 +31,17 @@ bool FrameConstants::Initialize(ID3D11Device* device)
     return true;
 }
 
-void FrameConstants::Apply(ID3D11DeviceContext* ctx, const Camera& camera, float timeSeconds) const
+FrameData FrameData::FromCamera(const Camera& camera, float timeSeconds)
+{
+    FrameData data;
+    data.view = camera.GetViewMatrix();
+    data.proj = camera.GetProjectionMatrix();
+    data.cameraPos = camera.GetPosition();
+    data.time = timeSeconds;
+    return data;
+}
+
+void FrameConstants::Apply(ID3D11DeviceContext* ctx, const FrameData& frame) const
 {
     if (!ctx || !cb_) return;
 
@@ -45,14 +55,10 @@ void FrameConstants::Apply(ID3D11DeviceContext* ctx, const Camera& camera, float
 
     // XMMATRIX is row-major; HLSL reads cbuffer matrices column-major by default.
     // Transposing on the CPU makes `mul(vector, matrix)` in the shaders correct.
-    const XMFLOAT4X4 view = camera.GetViewMatrix();
-    const XMFLOAT4X4 proj = camera.GetProjectionMatrix();
-    XMStoreFloat4x4(&data->view, XMMatrixTranspose(XMLoadFloat4x4(&view)));
-    XMStoreFloat4x4(&data->proj, XMMatrixTranspose(XMLoadFloat4x4(&proj)));
-
-    const XMFLOAT3 pos = camera.GetPosition();
-    data->cameraPos = XMFLOAT4(pos.x, pos.y, pos.z, 1.0f);
-    data->frameParams = XMFLOAT4(timeSeconds, 0.0f, 0.0f, 0.0f);
+    XMStoreFloat4x4(&data->view, XMMatrixTranspose(XMLoadFloat4x4(&frame.view)));
+    XMStoreFloat4x4(&data->proj, XMMatrixTranspose(XMLoadFloat4x4(&frame.proj)));
+    data->cameraPos = XMFLOAT4(frame.cameraPos.x, frame.cameraPos.y, frame.cameraPos.z, 1.0f);
+    data->frameParams = XMFLOAT4(frame.time, 0.0f, 0.0f, 0.0f);
 
     ctx->Unmap(cb_, 0);
     ctx->VSSetConstantBuffers(Slots::kCbPerFrame, 1, &cb_);
