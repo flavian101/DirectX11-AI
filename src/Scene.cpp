@@ -106,10 +106,12 @@ void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
     shadow_->End(ctx);
 }
 
-void Scene::BeginFrame(ID3D11DeviceContext* ctx) const
+void Scene::BeginFrame(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewportHeight) const
 {
     // Per-frame state: bound once here, then every object just draws.
     FrameData frame = FrameData::FromCamera(camera_, time_);
+    frame.viewportWidth = static_cast<float>(viewportWidth);
+    frame.viewportHeight = static_cast<float>(viewportHeight);
     shadow_->FillFrameData(frame);       // the sun's matrix + shadow parameters
     frame_.Apply(ctx, frame);
     shadow_->Bind(ctx);                  // shadow map -> t2, comparison sampler -> s1

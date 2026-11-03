@@ -13,6 +13,7 @@ struct CBPerFrame {
     DirectX::XMFLOAT4   frameParams;  // x = elapsed time in seconds
     DirectX::XMFLOAT4X4 lightViewProj;
     DirectX::XMFLOAT4   shadowParams; // x = 1/mapSize, y = world units per texel, z = strength, w = normal offset
+    DirectX::XMFLOAT4   screenParams; // x = 1/width, y = 1/height (of the viewport being drawn), z = near, w = far
 };
 static_assert(sizeof(CBPerFrame) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
@@ -24,6 +25,10 @@ struct FrameData {
     DirectX::XMFLOAT4X4 proj{};
     DirectX::XMFLOAT3 cameraPos{};
     float time = 0.0f;
+    float viewportWidth = 1.0f;     // size of the target being drawn, in pixels
+    float viewportHeight = 1.0f;
+    float nearPlane = Camera::kNearPlane;
+    float farPlane = Camera::kFarPlane;
     DirectX::XMFLOAT4X4 lightViewProj{};   // identity-free zero matrix is fine while strength is 0
     DirectX::XMFLOAT4 shadowParams{};      // z = 0 means "no shadows this frame"
 

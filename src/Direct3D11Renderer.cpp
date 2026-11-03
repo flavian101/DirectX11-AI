@@ -204,7 +204,7 @@ void Direct3D11Renderer::Render(const Scene& scene)
 
     // Per-frame bindings (camera matrices, shadow map, environment), then the OPAQUE phase:
     // sky, terrain, cube - everything that writes depth.
-    scene.BeginFrame(m_context);
+    scene.BeginFrame(m_context, m_width, m_height);
     scene.RenderPhase(m_context, ScenePhase::Opaque);
 
     // TRANSPARENT phase (the water). Depth is now complete, so make it read-only and hand it to

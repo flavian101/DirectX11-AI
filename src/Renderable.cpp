@@ -56,6 +56,8 @@ void Renderable::RenderWith(ID3D11DeviceContext* ctx, const Shader& shader) cons
     data->materialColor = materialColor_;
     data->materialParams = materialParameters_;
     data->materialExtra = materialExtra_;
+    data->materialColor2 = materialColor2_;
+    data->materialExtra2 = materialExtra2_;
 
     ctx->Unmap(cb_, 0);
     shader.Apply(ctx);

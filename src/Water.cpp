@@ -92,6 +92,13 @@ void WaterSettings::Clamp()
 	color.y = std::clamp(color.y, 0.0f, 1.0f);
 	color.z = std::clamp(color.z, 0.0f, 1.0f);
 	alpha = std::clamp(alpha, 0.05f, 1.0f);
+	shallowColor.x = std::clamp(shallowColor.x, 0.0f, 1.0f);
+	shallowColor.y = std::clamp(shallowColor.y, 0.0f, 1.0f);
+	shallowColor.z = std::clamp(shallowColor.z, 0.0f, 1.0f);
+	absorption = std::clamp(absorption, kAbsorptionMin, kAbsorptionMax);
+	fadeDistance = std::clamp(fadeDistance, kFadeMin, kFadeMax);
+	foamDistance = std::clamp(foamDistance, 0.0f, kFoamDistanceMax);
+	foamStrength = std::clamp(foamStrength, 0.0f, 1.0f);
 	waveAmplitude = std::clamp(waveAmplitude, 0.0f, kAmplitudeMax);
 	waveSpeed = std::clamp(waveSpeed, 0.0f, kSpeedMax);
 	waveFrequency = std::clamp(waveFrequency, kFrequencyMin, kFrequencyMax);
@@ -122,6 +129,10 @@ void Water::SetSettings(const WaterSettings& settings)
 		renderable_->SetMaterialParameters({ settings_.waveAmplitude, settings_.waveSpeed,
 											 settings_.waveFrequency, settings_.reflectivity });
 		renderable_->SetMaterialExtra({ settings_.glintStrength, settings_.glintSharpness, 0.0f, 0.0f });
+		const DirectX::XMFLOAT3 shallow = SrgbToLinear(settings_.shallowColor);
+		renderable_->SetMaterialColor2({ shallow.x, shallow.y, shallow.z, 1.0f });
+		renderable_->SetMaterialExtra2({ settings_.fadeDistance, settings_.foamDistance,
+										 settings_.foamStrength, settings_.absorption });
 	}
 }
 

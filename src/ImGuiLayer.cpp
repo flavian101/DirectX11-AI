@@ -329,11 +329,26 @@ void ImGuiLayer::DrawWaterInspector(Water* water)
         ImGui::TextDisabled("terrain Y %.1f to %.1f", minY, maxY);
     }
     float color[3] = { s.color.x, s.color.y, s.color.z };
-    if (ImGui::ColorEdit3("Color", color)) {
+    if (ImGui::ColorEdit3("Deep color", color)) {
         s.color = { color[0], color[1], color[2] };
         changed = true;
     }
     changed |= ImGui::SliderFloat("Opacity", &s.alpha, 0.05f, 1.0f);
+
+    ImGui::SeparatorText("Depth and shoreline");
+    float shallow[3] = { s.shallowColor.x, s.shallowColor.y, s.shallowColor.z };
+    if (ImGui::ColorEdit3("Shallow color", shallow)) {
+        s.shallowColor = { shallow[0], shallow[1], shallow[2] };
+        changed = true;
+    }
+    changed |= ImGui::SliderFloat("Absorption", &s.absorption, WaterSettings::kAbsorptionMin,
+                                  WaterSettings::kAbsorptionMax, "%.2f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("How quickly the colour goes from shallow to deep as the water gets thicker.");
+    changed |= ImGui::SliderFloat("Shore softness", &s.fadeDistance, WaterSettings::kFadeMin,
+                                  WaterSettings::kFadeMax, "%.1f");
+    ImGui::SetItemTooltip("Depth at which the water becomes fully opaque. Smaller = sharper shoreline.");
+    changed |= ImGui::SliderFloat("Foam width", &s.foamDistance, 0.0f, WaterSettings::kFoamDistanceMax, "%.2f");
+    changed |= ImGui::SliderFloat("Foam strength", &s.foamStrength, 0.0f, 1.0f);
 
     ImGui::SeparatorText("Waves");
     if (ImGui::Button("Calm"))   { s.ApplyWavePreset(WavePreset::Calm);   changed = true; }

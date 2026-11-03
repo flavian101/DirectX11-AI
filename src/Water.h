@@ -10,8 +10,15 @@ struct WaterSettings {
 	// --- surface ---
 	float height = 4.0f;          // world Y of the water plane (kept in sync with the editor transform)
 	float size = 180.0f;          // side length of the square plane
-	DirectX::XMFLOAT3 color = { 0.05f, 0.25f, 0.45f };
-	float alpha = 0.68f;
+	DirectX::XMFLOAT3 color = { 0.05f, 0.25f, 0.45f };   // DEEP water colour
+	float alpha = 0.68f;                                 // opacity of deep water
+
+	// --- depth: how the water changes between shore and open sea ---
+	DirectX::XMFLOAT3 shallowColor = { 0.10f, 0.55f, 0.60f };
+	float absorption = 0.35f;     // how fast light is absorbed with depth (per world unit)
+	float fadeDistance = 2.5f;    // depth at which the water becomes fully opaque (shore softness)
+	float foamDistance = 0.9f;    // width of the shoreline foam band, in depth units
+	float foamStrength = 0.9f;
 
 	// --- waves ---
 	float waveAmplitude = 0.35f;
@@ -29,6 +36,9 @@ struct WaterSettings {
 	static constexpr float kFrequencyMin = 0.05f, kFrequencyMax = 2.0f;
 	static constexpr float kGlintMax = 3.0f;
 	static constexpr float kSharpnessMin = 8.0f, kSharpnessMax = 512.0f;
+	static constexpr float kAbsorptionMin = 0.02f, kAbsorptionMax = 2.0f;
+	static constexpr float kFadeMin = 0.1f, kFadeMax = 20.0f;
+	static constexpr float kFoamDistanceMax = 5.0f;
 
 	void Clamp();
 	void ApplyWavePreset(WavePreset preset);   // only touches the three wave values

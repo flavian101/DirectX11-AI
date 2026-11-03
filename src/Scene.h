@@ -66,7 +66,7 @@ public:
     // Pass 2 is split in two so the renderer can do something between the halves:
     //   BeginFrame      - bind everything that is the same for every draw this frame
     //   RenderPhase     - Opaque (sky + solid objects, write depth), then Transparent (water)
-    void BeginFrame(ID3D11DeviceContext* ctx) const;
+    void BeginFrame(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewportHeight) const;
     void RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase) const;
     ShadowMap& GetShadowMap() { return *shadow_; }
     PostSettings& GetPostSettings() { return post_; }

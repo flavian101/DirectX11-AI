@@ -13,6 +13,7 @@ cbuffer PerFrame : register(b0) {
     float4   frameParams;   // x = elapsed time in seconds
     float4x4 lightViewProj; // world -> the sun's clip space (see shadow.hlsli)
     float4   shadowParams;  // x = 1/mapSize, y = world units per texel, z = strength (0 = off), w = normal offset in texels
+    float4   screenParams;  // x = 1/viewport width, y = 1/viewport height, z = near plane, w = far plane
 };
 
 // b1 – lights, once per frame (CPU: LightSystem). Pixel shaders only.
@@ -32,6 +33,8 @@ cbuffer PerObject : register(b2) {
     float4   materialColor;
     float4   materialParams;  // meaning is defined by each shader (vs.hlsl: x = UV tiling; water: amp, speed, freq, reflectivity)
     float4   materialExtra;   // a second set for shaders that need more (water: glint strength, glint sharpness)
+    float4   materialColor2;  // a second colour (water: shallow-water colour)
+    float4   materialExtra2;  // a third set of numbers (water: fade distance, foam distance, foam strength, absorption)
 };
 
 #endif

@@ -13,6 +13,8 @@ struct CBPerObject {
     DirectX::XMFLOAT4 materialColor = { 1.0f, 1.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT4 materialParams = {};  // meaning is defined by each shader
     DirectX::XMFLOAT4 materialExtra = {};   // a second set of 4 floats
+    DirectX::XMFLOAT4 materialColor2 = {};  // a second colour
+    DirectX::XMFLOAT4 materialExtra2 = {};  // a third set of 4 floats
 };
 static_assert(sizeof(CBPerObject) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
@@ -31,6 +33,8 @@ public:
     void SetMaterialColor(const DirectX::XMFLOAT4& color) { materialColor_ = color; }
     void SetMaterialParameters(const DirectX::XMFLOAT4& parameters) { materialParameters_ = parameters; }
     void SetMaterialExtra(const DirectX::XMFLOAT4& extra) { materialExtra_ = extra; }
+    void SetMaterialColor2(const DirectX::XMFLOAT4& color) { materialColor2_ = color; }
+    void SetMaterialExtra2(const DirectX::XMFLOAT4& extra) { materialExtra2_ = extra; }
     Model* GetModel() const { return model_.get(); }
     void SetTexture(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* texture)
     {
@@ -45,6 +49,8 @@ private:
     DirectX::XMFLOAT4 materialColor_ = { 1.0f, 1.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT4 materialParameters_ = { 1.0f, 1.0f, 1.0f, 1.0f };   // x = UV tiling for vs.hlsl
     DirectX::XMFLOAT4 materialExtra_ = {};
+    DirectX::XMFLOAT4 materialColor2_ = {};
+    DirectX::XMFLOAT4 materialExtra2_ = {};
 };
 
 
