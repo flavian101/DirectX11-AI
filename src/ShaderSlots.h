@@ -7,6 +7,7 @@ namespace Slots {
     constexpr unsigned int kCbPerFrame  = 0;  // view, proj, camera, time   -> FrameConstants
     constexpr unsigned int kCbLights    = 1;  // ambient + dir + point lights (PS only) -> LightSystem
     constexpr unsigned int kCbPerObject = 2;  // world, material             -> Renderable
+    constexpr unsigned int kCbPost      = 3;  // post-process settings (PS)  -> PostProcess
 
     // Shader resource views (PS)
     constexpr unsigned int kSrvAlbedo      = 0;  // Texture2D / skybox TextureCube, set per draw

@@ -1,5 +1,6 @@
 #include "Light.h"
 #include "Logger.h"
+#include "Color.h"
 #include "ShaderSlots.h"
 #include <algorithm>
 
@@ -53,18 +54,22 @@ void LightSystem::Apply(ID3D11DeviceContext* ctx, const XMFLOAT3& cameraPos) con
     auto* data = static_cast<CBLights*>(mapped.pData);
     *data = {};
 
-    data->ambientColor = XMFLOAT4(ambient_.x, ambient_.y, ambient_.z, 0.0f);
+    // Colours are stored as sRGB (what the picker shows) and uploaded as LINEAR light.
+    const XMFLOAT3 ambient = SrgbToLinear(ambient_);
+    data->ambientColor = XMFLOAT4(ambient.x, ambient.y, ambient.z, 0.0f);
 
     const XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&directional_.direction));
     XMStoreFloat4(&data->dirDirection, dir);
     data->dirDirection.w = directional_.intensity;
-    data->dirColor = XMFLOAT4(directional_.color.x, directional_.color.y, directional_.color.z, 0.0f);
+    const XMFLOAT3 sunColor = SrgbToLinear(directional_.color);
+    data->dirColor = XMFLOAT4(sunColor.x, sunColor.y, sunColor.z, 0.0f);
 
     const size_t count = (std::min)(pointLights_.size(), kMaxPointLights);
     for (size_t i = 0; i < count; ++i) {
         const PointLight& p = pointLights_[i];
         data->pointPosRange[i] = XMFLOAT4(p.position.x, p.position.y, p.position.z, p.range);
-        data->pointColorIntensity[i] = XMFLOAT4(p.color.x, p.color.y, p.color.z, p.intensity);
+        const XMFLOAT3 color = SrgbToLinear(p.color);
+        data->pointColorIntensity[i] = XMFLOAT4(color.x, color.y, color.z, p.intensity);
     }
 
     data->cameraPosNumLights = XMFLOAT4(cameraPos.x, cameraPos.y, cameraPos.z,

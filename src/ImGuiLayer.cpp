@@ -149,6 +149,11 @@ void ImGuiLayer::DrawCameraInspector()
     float rotationSpeed = camera.GetRotationSpeed();
     if (ImGui::SliderFloat("Rotation sensitivity", &rotationSpeed, 0.0001f, 0.02f, "%.4f"))
         camera.SetRotationSpeed(rotationSpeed);
+
+    ImGui::SeparatorText("Display");
+    PostSettings& post = scene_->GetPostSettings();
+    ImGui::Checkbox("sRGB encode (gamma)", &post.srgbEncode);
+    ImGui::SetItemTooltip("The HDR buffer is linear light; monitors expect the sRGB curve.\nTurn it off to see how dark and harsh un-encoded linear light looks.");
 }
 
 void ImGuiLayer::DrawLightsInspector()

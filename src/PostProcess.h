@@ -1,4 +1,5 @@
 #pragma once
+#include "PostSettings.h"
 #include "Shader.h"
 #include <d3d11.h>
 #include <memory>
@@ -19,9 +20,11 @@ public:
     // Reads hdrScene, writes the displayable image into target. Leaves target bound as the
     // only render target (so the UI can draw on top) and unbinds hdrScene from the pixel stage.
     void Resolve(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* hdrScene,
-                 ID3D11RenderTargetView* target, UINT width, UINT height) const;
+                 ID3D11RenderTargetView* target, UINT width, UINT height,
+                 const PostSettings& settings) const;
 
 private:
     std::shared_ptr<Shader> shader_;
     ID3D11RasterizerState* rasterState_ = nullptr;
+    ID3D11Buffer* settingsBuffer_ = nullptr;   // cbuffer b3: this pass's parameters
 };

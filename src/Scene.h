@@ -6,6 +6,7 @@
 #include "Water.h"
 #include "Skybox.h"
 #include "FrameConstants.h"
+#include "PostSettings.h"
 #include "ShadowMap.h"
 #include <d3d11.h>
 #include <vector>
@@ -62,6 +63,8 @@ public:
     void RenderShadows(ID3D11DeviceContext* ctx) const;
     void Render(ID3D11DeviceContext* ctx) const;
     ShadowMap& GetShadowMap() { return *shadow_; }
+    PostSettings& GetPostSettings() { return post_; }
+    const PostSettings& GetPostSettings() const { return post_; }
 
 private:
     void UpdateCamera(const InputState& input, float dt);
@@ -69,6 +72,7 @@ private:
 
     Camera camera_;
     FrameConstants frame_;   // view/proj/camera/time, uploaded once per frame
+    PostSettings post_;      // how the HDR image is converted for display (a property of the "camera")
     float time_ = 0.0f;      // scene clock shared by every animated material
     std::unique_ptr<LightSystem> lights_;
     std::unique_ptr<ShadowMap> shadow_;

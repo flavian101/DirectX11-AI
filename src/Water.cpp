@@ -1,4 +1,5 @@
 #include "Water.h"
+#include "Color.h"
 #include "Logger.h"
 #include "Mesh.h"
 #include <DirectXMath.h>
@@ -116,8 +117,8 @@ void Water::SetSettings(const WaterSettings& settings)
 	position_.y = settings_.height;
 	UpdateWorldTransform();
 	if (renderable_) {
-		renderable_->SetMaterialColor({ settings_.color.x, settings_.color.y,
-										settings_.color.z, settings_.alpha });
+		const DirectX::XMFLOAT3 linearColor = SrgbToLinear(settings_.color);   // picker = sRGB, shader = linear
+		renderable_->SetMaterialColor({ linearColor.x, linearColor.y, linearColor.z, settings_.alpha });
 		renderable_->SetMaterialParameters({ settings_.waveAmplitude, settings_.waveSpeed,
 											 settings_.waveFrequency, settings_.reflectivity });
 		renderable_->SetMaterialExtra({ settings_.glintStrength, settings_.glintSharpness, 0.0f, 0.0f });

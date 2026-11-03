@@ -1,4 +1,5 @@
 ﻿#include "Direct3D11Renderer.h"
+#include "Color.h"
 #include "ShaderSlots.h"
 #include <algorithm>
 #include "imgui_impl_dx11.h"
@@ -206,14 +207,16 @@ void Direct3D11Renderer::Render(const Scene& scene)
 
     // PASS 2 - the camera's view into the HDR scene buffer (NOT the window any more).
     BindSceneTarget();
-    const float clearColor[] = { 0.1f, 0.1f, 0.2f, 1.0f };
+    // The background colour is picked as sRGB, but the HDR buffer holds LINEAR light.
+    const float clearColor[] = { SrgbToLinear(0.1f), SrgbToLinear(0.1f), SrgbToLinear(0.2f), 1.0f };
     m_hdrScene.Clear(m_context, clearColor);
     m_context->ClearDepthStencilView(m_depthView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
     scene.Render(m_context);
 
     // PASS 3 - turn the HDR buffer into the window's image. The UI is drawn after this,
     // straight onto the back buffer, because it is already designed for display colours.
-    m_post.Resolve(m_context, m_hdrScene.GetShaderView(), m_renderTargetView, m_width, m_height);
+    m_post.Resolve(m_context, m_hdrScene.GetShaderView(), m_renderTargetView, m_width, m_height,
+                   scene.GetPostSettings());
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     const HRESULT hr = m_swapChain->Present(0, 0);
     if (FAILED(hr)) LOG_HR(hr, "Swap chain Present failed");

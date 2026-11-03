@@ -14,8 +14,10 @@ UINT FullMipCount(int width, int height)
 }
 }
 
-Texture::Texture(ID3D11Device* device, const std::string& filePath)
+Texture::Texture(ID3D11Device* device, const std::string& filePath, ColorSpace colorSpace)
 {
+    const DXGI_FORMAT format = (colorSpace == ColorSpace::SRGB) ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                                                                 : DXGI_FORMAT_R8G8B8A8_UNORM;
     if (!device) {
         LOG_ERROR("Cannot create texture without a valid device");
         return;
@@ -38,7 +40,7 @@ Texture::Texture(ID3D11Device* device, const std::string& filePath)
     textureDesc.Height = height;
     textureDesc.MipLevels = mipLevels;
     textureDesc.ArraySize = 1;
-    textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    textureDesc.Format = format;
     textureDesc.SampleDesc.Count = 1;
     textureDesc.Usage = D3D11_USAGE_DEFAULT;
     textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
@@ -53,7 +55,7 @@ Texture::Texture(ID3D11Device* device, const std::string& filePath)
 
     // Create shader resource view
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.Format = format;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MipLevels = static_cast<UINT>(-1);   // -1 = every level in the texture
     srvDesc.Texture2D.MostDetailedMip = 0;
@@ -77,8 +79,10 @@ Texture::Texture(ID3D11Device* device, const std::string& filePath)
     valid_ = true;
 }
 
-Texture::Texture(ID3D11Device* device, const std::array<std::string, 6>& facePaths)
+Texture::Texture(ID3D11Device* device, const std::array<std::string, 6>& facePaths, ColorSpace colorSpace)
 {
+    const DXGI_FORMAT format = (colorSpace == ColorSpace::SRGB) ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                                                                 : DXGI_FORMAT_R8G8B8A8_UNORM;
     if (!device) {
         LOG_ERROR("Cannot create cubemap without a valid device");
         return;
@@ -110,7 +114,7 @@ Texture::Texture(ID3D11Device* device, const std::array<std::string, 6>& facePat
     textureDesc.Height = height;
     textureDesc.MipLevels = mipLevels;
     textureDesc.ArraySize = 6;
-    textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    textureDesc.Format = format;
     textureDesc.SampleDesc.Count = 1;
     textureDesc.Usage = D3D11_USAGE_DEFAULT;
     textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
@@ -124,7 +128,7 @@ Texture::Texture(ID3D11Device* device, const std::array<std::string, 6>& facePat
     }
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.Format = format;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
     srvDesc.TextureCube.MipLevels = static_cast<UINT>(-1);
     srvDesc.TextureCube.MostDetailedMip = 0;
