@@ -1,5 +1,6 @@
 #include "ImGuiLayer.h"
 #include <algorithm>
+#include <cstdio>
 #include "Skybox.h"
 #include "imgui.h"
 #include <DirectXMath.h>
@@ -165,7 +166,7 @@ void ImGuiLayer::DrawLightsInspector()
         directional.color = { directionalColor[0], directionalColor[1], directionalColor[2] };
     ImGui::SliderFloat("Directional intensity", &directional.intensity, 0.0f, 5.0f);
 
-    DrawShadowDebug();
+    DrawShadowInspector();
 
     ImGui::SeparatorText("Point lights");
     auto& pointLights = lights.PointLights();
@@ -189,11 +190,46 @@ void ImGuiLayer::DrawLightsInspector()
     }
 }
 
-void ImGuiLayer::DrawShadowDebug()
+void ImGuiLayer::DrawShadowInspector()
 {
-    ImGui::SeparatorText("Shadow map");
+    ImGui::SeparatorText("Shadows");
     ShadowMap& shadow = scene_->GetShadowMap();
     if (!shadow.IsValid()) { ImGui::TextDisabled("Shadow map unavailable"); return; }
+
+    // Every value is cheap to change, so edits apply live (see ShadowMap::SetSettings for what
+    // actually gets rebuilt: only the resolution reallocates, only the biases rebuild a state).
+    ShadowSettings s = shadow.GetSettings();
+    bool changed = false;
+    changed |= ImGui::Checkbox("Enabled", &s.enabled);
+
+    char label[32];
+    std::snprintf(label, sizeof(label), "%d x %d", s.resolution, s.resolution);
+    if (ImGui::BeginCombo("Resolution", label)) {
+        for (int size = ShadowSettings::kResolutionMin; size <= ShadowSettings::kResolutionMax; size *= 2) {
+            std::snprintf(label, sizeof(label), "%d x %d", size, size);
+            if (ImGui::Selectable(label, size == s.resolution)) { s.resolution = size; changed = true; }
+        }
+        ImGui::EndCombo();
+    }
+    changed |= ImGui::SliderFloat("Strength", &s.strength, 0.0f, 1.0f);
+    ImGui::SetItemTooltip("How dark shadowed areas get. Only the sun is shadowed; ambient light remains.");
+
+    ImGui::SeparatorText("Bias (fights shadow acne)");
+    changed |= ImGui::SliderInt("Depth bias", &s.depthBias, 0, ShadowSettings::kDepthBiasMax);
+    ImGui::SetItemTooltip("Constant push away from the sun while drawing the map. Too high: shadows detach from objects.");
+    changed |= ImGui::SliderFloat("Slope bias", &s.slopeBias, 0.0f, ShadowSettings::kSlopeBiasMax);
+    ImGui::SetItemTooltip("Extra push that grows on surfaces tilted away from the sun.");
+    changed |= ImGui::SliderFloat("Normal offset", &s.normalOffset, 0.0f, ShadowSettings::kNormalOffsetMax, "%.2f texels");
+    ImGui::SetItemTooltip("Moves the lookup point off the surface along its normal. Best against stripes on slopes.");
+
+    if (ImGui::Button("Reset shadows")) { s = ShadowSettings{}; changed = true; }
+    if (changed) shadow.SetSettings(s);
+
+    // What the current settings cost and cover.
+    const double megabytes = static_cast<double>(shadow.GetResolution()) * shadow.GetResolution() * 4.0 / (1024.0 * 1024.0);
+    ImGui::TextDisabled("Map memory: %.0f MB", megabytes);
+    if (shadow.GetTexelWorldSize() > 0.0f) ImGui::TextDisabled("One texel covers %.3f world units", shadow.GetTexelWorldSize());
+
     ImGui::Checkbox("Show sun depth map", &showShadowMap_);
     if (showShadowMap_) {
         // Depth is stored in one channel, so ImGui draws it in red: darker = closer to the sun.

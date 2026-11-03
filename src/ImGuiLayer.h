@@ -15,7 +15,7 @@ private:
 	void DrawObjectInspector(SceneObject* object);
 	void DrawCameraInspector();
 	void DrawLightsInspector();
-	void DrawShadowDebug();
+	void DrawShadowInspector();
 	void DrawTerrainInspector(Terrain* terrain);
 	void DrawWaterInspector(Water* water);
 	void DrawSkyboxInspector(Skybox* skybox);

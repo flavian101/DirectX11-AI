@@ -56,6 +56,7 @@ public:
     const DirectX::XMFLOAT3& GetLightPosition() const { return lightPosition_; }
     ID3D11ShaderResourceView* GetShaderView() const { return target_.GetShaderView(); }
     UINT GetResolution() const { return target_.GetWidth(); }
+    float GetTexelWorldSize() const { return texelWorldSize_; }   // world units covered by one texel (0 before the first pass)
 
 private:
     bool CreateRasterizerState();

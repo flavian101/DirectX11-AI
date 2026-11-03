@@ -83,7 +83,7 @@ void ShadowMap::SetSettings(const ShadowSettings& requested)
     settings_ = next;
     if (resolutionChanged) {
         const UINT size = static_cast<UINT>(settings_.resolution);
-        target_.Create(device_, size, size);
+        if (!target_.Create(device_, size, size)) LOG_ERROR("Shadow map resize failed; shadows disabled until it is recreated");
     }
     // A rasterizer state is IMMUTABLE once created, so a new bias means a new state object.
     if (biasChanged) CreateRasterizerState();
