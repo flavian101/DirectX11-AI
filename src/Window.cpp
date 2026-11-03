@@ -27,6 +27,18 @@ Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
         LOG_ERROR("Failed to create window");
         return;
     }
+
+    RAWINPUTDEVICE rid{};
+    rid.usUsagePage = 0x01;   // Generic desktop controls
+    rid.usUsage = 0x02;       // Mouse
+    rid.dwFlags = 0;
+    rid.hwndTarget = _hwnd;
+
+    if (!RegisterRawInputDevices(&rid, 1, sizeof(rid)))
+    {
+        LOG_ERROR("Failed to register raw input");
+    }
+
     ShowWindow(_hwnd, SW_SHOW);
     if (!InitD3D(_hwnd)) {
         LOG_ERROR("Failed to initialize Direct3D 11");
@@ -119,16 +131,54 @@ LRESULT Window::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
             }
         }
         break;
+
+    case WM_INPUT:
+    {
+        UINT size = 0;
+
+        if (GetRawInputData(
+            reinterpret_cast<HRAWINPUT>(lParam),
+            RID_INPUT,
+            nullptr,
+            &size,
+            sizeof(RAWINPUTHEADER)) == static_cast<UINT>(-1))
+        {
+            return 0;
+        }
+
+        std::vector<BYTE> buffer(size);
+
+        if (GetRawInputData(
+            reinterpret_cast<HRAWINPUT>(lParam),
+            RID_INPUT,
+            buffer.data(),
+            &size,
+            sizeof(RAWINPUTHEADER)) == size)
+        {
+            RAWINPUT* raw =
+                reinterpret_cast<RAWINPUT*>(buffer.data());
+
+            if (raw->header.dwType == RIM_TYPEMOUSE &&
+                inputState_.middleMouseButtonDown)
+            {
+                inputState_.mouseDeltaX += raw->data.mouse.lLastX;
+                inputState_.mouseDeltaY += raw->data.mouse.lLastY;
+            }
+        }
+
+        return 0;
+    }
     case WM_MBUTTONDOWN:
     {
         SetCapture(hwnd);
-        ShowCursor(FALSE);
+
+        if (!cursorHidden_)
+        {
+            ShowCursor(FALSE);
+            cursorHidden_ = true;
+        }
 
         inputState_.middleMouseButtonDown = true;
-
-        lastMouseX_ = GET_X_LPARAM(lParam);
-        lastMouseY_ = GET_Y_LPARAM(lParam);
-        hasLastMousePosition_ = true;
 
         return 0;
     }
@@ -136,35 +186,18 @@ LRESULT Window::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
     case WM_MBUTTONUP:
     {
         ReleaseCapture();
-        ShowCursor(TRUE);
+
+        if (cursorHidden_)
+        {
+            ShowCursor(TRUE);
+            cursorHidden_ = false;
+        }
 
         inputState_.middleMouseButtonDown = false;
         inputState_.mouseDeltaX = 0;
         inputState_.mouseDeltaY = 0;
-        hasLastMousePosition_ = false;
 
         return 0;
-    }
-
-    case WM_MOUSEMOVE:
-    {
-        if (inputState_.middleMouseButtonDown)
-        {
-            int x = GET_X_LPARAM(lParam);
-            int y = GET_Y_LPARAM(lParam);
-
-            if (hasLastMousePosition_)
-            {
-                inputState_.mouseDeltaX += x - lastMouseX_;
-                inputState_.mouseDeltaY += y - lastMouseY_;
-            }
-
-            lastMouseX_ = x;
-            lastMouseY_ = y;
-        }
-
-        return 0;
-    
     }
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);

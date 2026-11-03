@@ -33,8 +33,6 @@ private:
     // Input state collected from Windows messages
     InputState inputState_;
     bool cursorHidden_ = false;
-    int lastMouseX_ = 0;
-    int lastMouseY_ = 0;
     bool hasLastMousePosition_ = false;
     bool imguiInitialized_ = false;
     bool minimized_ = false;   // client area is 0x0: skip rendering

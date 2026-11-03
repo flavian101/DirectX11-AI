@@ -1,5 +1,6 @@
 #include "Camera.h"
 #include <DirectXMath.h>
+#include <algorithm>
 
 using namespace DirectX;
 
@@ -59,28 +60,34 @@ void Camera::Rotate(float deltaX, float deltaY)
     float yaw = deltaX * rotationSpeed_;
     float pitch = deltaY * rotationSpeed_;
 
-    // Rotate forward vector around up vector (yaw)
     XMVECTOR fwdVec = XMLoadFloat3(&forward_);
     XMVECTOR upVec = XMLoadFloat3(&up_);
+    XMVECTOR rgtVec = XMLoadFloat3(&right_);
+
     XMMATRIX yawMat = XMMatrixRotationAxis(upVec, yaw);
     fwdVec = XMVector3TransformNormal(fwdVec, yawMat);
 
-    // Rotate forward vector around right vector (pitch)
-    XMVECTOR rgtVec = XMLoadFloat3(&right_);
-    rgtVec = XMVector3TransformNormal(rgtVec, yawMat);
-    XMMATRIX pitchMat = XMMatrixRotationAxis(rgtVec, pitch);
-    fwdVec = XMVector3TransformNormal(fwdVec, pitchMat);
+    // Pitch limit: stay ~5° away from straight up/down.
+    const float kMaxPitch = XMConvertToRadians(85.0f);
+    XMVECTOR upAfterYaw = XMVector3Cross(fwdVec, rgtVec);   // forward × right = up
+    float currentPitch = asin(XMVectorGetY(fwdVec));
+    float allowedPitch = std::clamp(pitch, -kMaxPitch - currentPitch, kMaxPitch - currentPitch);
 
-    // Recalculate right vector as cross product
-    XMVECTOR newRight = XMVector3Cross(upVec, fwdVec);
+    XMMATRIX pitchMat = XMMatrixRotationAxis(rgtVec, allowedPitch);
+    fwdVec = XMVector3TransformNormal(fwdVec, pitchMat);
+    fwdVec = XMVector3Normalize(fwdVec);
+
+    XMVECTOR newRight = XMVector3Normalize(XMVector3Cross(upVec, fwdVec));
+    // Also rebuild right after yaw so it stays orthogonal:
+    newRight = XMVector3Normalize(XMVector3Cross(fwdVec, upVec));   // flips handedness care
+    // Use the version that is consistent with the shader convention:
+    newRight = XMVector3Normalize(XMVector3Cross(upVec, fwdVec));
 
     XMStoreFloat3(&forward_, fwdVec);
     XMStoreFloat3(&right_, newRight);
 
-    // Update target based on new forward direction
     XMVECTOR posVec = XMLoadFloat3(&pos_);
-    XMVECTOR newTarget = posVec + fwdVec;
-    XMStoreFloat3(&target_, newTarget);
+    XMStoreFloat3(&target_, posVec + fwdVec);
     Update();
 }
 

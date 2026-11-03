@@ -30,7 +30,7 @@ Skybox::Skybox(ID3D11Device* device) : material_(device)
 	const std::array<std::string, 6> faces = {
 		"assets/Skybox/right.png", "assets/Skybox/left.png",
 		"assets/Skybox/top.png", "assets/Skybox/bottom.png",
-		"assets/Skybox/front.png", "assets/Skybox/back.png"
+		"assets/Skybox/back.png", "assets/Skybox/front.png"
 	};
 	cubemap_ = std::make_unique<Texture>(device, faces);
 	renderable_ = std::make_unique<Renderable>(
