@@ -1,6 +1,8 @@
 ﻿#include "Cube.h"
 #include "Logger.h"
 #include "Mesh.h"
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 using namespace DirectX;
@@ -118,6 +120,19 @@ void Cube::UpdateWorldTransform()
     XMFLOAT4X4 world;
     XMStoreFloat4x4(&world, transform);
     if (renderable_) renderable_->SetWorld(world);
+}
+
+bool Cube::GetBoundingSphere(XMFLOAT3& center, float& radius) const
+{
+    center = position_;
+    // The cube spans [-1,1] on each axis, so its corner is sqrt(3) away from the centre.
+    radius = 1.7320508f * (std::max)({ std::fabs(scale_.x), std::fabs(scale_.y), std::fabs(scale_.z) });
+    return true;
+}
+
+void Cube::RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader) const
+{
+    if (renderable_ && renderable_->IsValid()) renderable_->RenderWith(ctx, shader);
 }
 
 void Cube::Render(ID3D11DeviceContext* ctx, const Camera& camera) const

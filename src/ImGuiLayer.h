@@ -15,6 +15,7 @@ private:
 	void DrawObjectInspector(SceneObject* object);
 	void DrawCameraInspector();
 	void DrawLightsInspector();
+	void DrawShadowDebug();
 	void DrawTerrainInspector(Terrain* terrain);
 	void DrawWaterInspector(Water* water);
 	void DrawSkyboxInspector(Skybox* skybox);
@@ -25,4 +26,5 @@ private:
 	int selectedObject_ = -1;
 	TerrainSettings pendingTerrainSettings_;
 	bool lastTerrainGenerationSucceeded_ = true;
+	bool showShadowMap_ = false;
 };

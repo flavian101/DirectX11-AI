@@ -11,4 +11,5 @@ namespace Slots {
     // Shader resource views (PS)
     constexpr unsigned int kSrvAlbedo      = 0;  // Texture2D / skybox TextureCube, set per draw
     constexpr unsigned int kSrvEnvironment = 1;  // TextureCube bound once per frame by Scene
+    constexpr unsigned int kSrvShadow      = 2;  // the sun's depth map (Texture2D<float>)
 }

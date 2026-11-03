@@ -23,6 +23,7 @@ add_executable(D3D11Example
 	src/Light.cpp
 	src/FrameConstants.cpp
 	src/DepthTarget.cpp
+	src/ShadowMap.cpp
 	src/DemoScene.cpp
 	src/Terrain.cpp
 	src/Water.cpp

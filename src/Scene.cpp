@@ -1,4 +1,5 @@
 ﻿#include "Scene.h"
+#include "Logger.h"
 #include "ShaderSlots.h"
 #include "Skybox.h"
 #include "Water.h"
@@ -6,7 +7,7 @@
 #include <cmath>
 #include <vector>
 
-Scene::Scene() : lights_(std::make_unique<LightSystem>()) {}
+Scene::Scene() : lights_(std::make_unique<LightSystem>()), shadow_(std::make_unique<ShadowMap>()) {}
 
 // Objects are unique_ptrs now. The owner must still destroy the Scene BEFORE the D3D device.
 Scene::~Scene() = default;
@@ -16,6 +17,8 @@ bool Scene::Initialize(ID3D11Device* device)
     if (!device || !lights_) return false;
     if (!lights_->Initialize(device)) return false;
     if (!frame_.Initialize(device)) return false;
+    // Shadows are a bonus, not a requirement: if the map or its shader fails, keep rendering.
+    if (!shadow_->Initialize(device, ShadowSettings{})) LOG_WARNING("Shadow map unavailable; shadows are disabled");
     return true;
 }
 
@@ -49,6 +52,57 @@ void Scene::Update(float dt)
 {
     time_ += dt;
     for (auto& obj : objects_) if (obj) obj->Update(dt);
+}
+
+// Smallest sphere containing both input spheres.
+static void MergeSpheres(DirectX::XMFLOAT3& centerA, float& radiusA,
+                         const DirectX::XMFLOAT3& centerB, float radiusB)
+{
+    using namespace DirectX;
+    const XMVECTOR a = XMLoadFloat3(&centerA);
+    const XMVECTOR b = XMLoadFloat3(&centerB);
+    const float distance = XMVectorGetX(XMVector3Length(b - a));
+    if (distance + radiusB <= radiusA) return;                       // B is inside A
+    if (distance + radiusA <= radiusB) { centerA = centerB; radiusA = radiusB; return; }
+    const float radius = 0.5f * (distance + radiusA + radiusB);
+    XMStoreFloat3(&centerA, a + (b - a) * ((radius - radiusA) / distance));
+    radiusA = radius;
+}
+
+bool Scene::ComputeShadowBounds(DirectX::XMFLOAT3& center, float& radius) const
+{
+    bool any = false;
+    for (const auto& object : objects_) {
+        DirectX::XMFLOAT3 objectCenter;
+        float objectRadius = 0.0f;
+        if (!object || !object->CastsShadow() || !object->GetBoundingSphere(objectCenter, objectRadius)) continue;
+        if (!any) { center = objectCenter; radius = objectRadius; any = true; }
+        else MergeSpheres(center, radius, objectCenter, objectRadius);
+    }
+    return any && radius > 0.0f;
+}
+
+void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
+{
+    if (!ctx || !shadow_ || !shadow_->IsEnabled()) return;
+    DirectX::XMFLOAT3 center;
+    float radius = 0.0f;
+    if (!ComputeShadowBounds(center, radius)) return;
+
+    shadow_->Begin(ctx, lights_->Directional().direction, center, radius);
+
+    // Reuse the per-frame buffer, but the "camera" is the sun.
+    FrameData sunView;
+    sunView.view = shadow_->GetView();
+    sunView.proj = shadow_->GetProj();
+    sunView.cameraPos = shadow_->GetLightPosition();
+    sunView.time = time_;
+    frame_.Apply(ctx, sunView);
+
+    for (const auto& object : objects_) {
+        if (object && object->CastsShadow()) object->RenderShadow(ctx, shadow_->GetShader());
+    }
+    shadow_->End(ctx);
 }
 
 void Scene::Render(ID3D11DeviceContext* ctx) const

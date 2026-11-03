@@ -54,6 +54,10 @@ public:
 	DirectX::XMFLOAT2 GetWorldExtent() const;               // x/z size in world units
 	void GetHeightRange(float& minY, float& maxY) const;    // world-space Y range of the surface
 
+	bool CastsShadow() const override { return true; }
+	bool GetBoundingSphere(DirectX::XMFLOAT3& center, float& radius) const override;
+	void RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader) const override;
+
 	void Update(float dt) override;
 	void Render(ID3D11DeviceContext* ctx, const Camera& camera) const override;
 

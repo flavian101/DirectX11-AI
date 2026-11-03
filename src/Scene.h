@@ -6,6 +6,7 @@
 #include "Water.h"
 #include "Skybox.h"
 #include "FrameConstants.h"
+#include "ShadowMap.h"
 #include <d3d11.h>
 #include <vector>
 #include <memory>
@@ -56,15 +57,21 @@ public:
     }
     void ProcessInput(const InputState& input, float dt);  // Handle input and update camera
     void Update(float dt);  // Update scene objects
+    // Pass 1: draw every shadow caster's depth from the sun into the shadow map.
+    // Pass 2 (Render) is the normal camera view. The renderer calls them in that order.
+    void RenderShadows(ID3D11DeviceContext* ctx) const;
     void Render(ID3D11DeviceContext* ctx) const;
+    ShadowMap& GetShadowMap() { return *shadow_; }
 
 private:
     void UpdateCamera(const InputState& input, float dt);
+    bool ComputeShadowBounds(DirectX::XMFLOAT3& center, float& radius) const;
 
     Camera camera_;
     FrameConstants frame_;   // view/proj/camera/time, uploaded once per frame
     float time_ = 0.0f;      // scene clock shared by every animated material
     std::unique_ptr<LightSystem> lights_;
+    std::unique_ptr<ShadowMap> shadow_;
     std::vector<std::unique_ptr<SceneObject>> objects_;   // owning
     Terrain* terrain_ = nullptr;
     Water* water_ = nullptr;

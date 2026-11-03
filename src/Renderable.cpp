@@ -37,6 +37,11 @@ Renderable::~Renderable()
 
 void Renderable::Render(ID3D11DeviceContext* ctx) const
 {
+    if (valid_ && shader_) RenderWith(ctx, *shader_);
+}
+
+void Renderable::RenderWith(ID3D11DeviceContext* ctx, const Shader& shader) const
+{
     if (!valid_ || !ctx) return;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     const HRESULT hr = ctx->Map(cb_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
@@ -53,7 +58,7 @@ void Renderable::Render(ID3D11DeviceContext* ctx) const
     data->materialExtra = materialExtra_;
 
     ctx->Unmap(cb_, 0);
-    shader_->Apply(ctx);
+    shader.Apply(ctx);
     // Bind to BOTH stages: the water/skybox pixel shaders read materialColor from here.
     // (An unbound constant buffer reads as zeros - that was the original black-sky /
     // invisible-water bug.)

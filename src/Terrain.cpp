@@ -230,6 +230,20 @@ bool Terrain::Rebuild(const TerrainSettings& settings)
 	return true;
 }
 
+bool Terrain::GetBoundingSphere(XMFLOAT3& center, float& radius) const
+{
+	const XMFLOAT2 extent = GetWorldExtent();
+	const float height = settings_.heightScale * scale_.y;
+	center = { position_.x, position_.y + height * 0.5f, position_.z };
+	radius = 0.5f * std::sqrt(extent.x * extent.x + extent.y * extent.y + height * height);
+	return true;
+}
+
+void Terrain::RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader) const
+{
+	if (renderable_ && renderable_->IsValid()) renderable_->RenderWith(ctx, shader);
+}
+
 void Terrain::UpdateMaterial()
 {
 	if (renderable_) renderable_->SetMaterialParameters({ settings_.uvTiling, 1.0f, 1.0f, 1.0f });

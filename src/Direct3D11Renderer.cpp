@@ -170,14 +170,18 @@ void Direct3D11Renderer::BindBackBuffer()
 void Direct3D11Renderer::Render(const Scene& scene)
 {
     if (!m_context || !m_renderTargetView || !m_depthView || !m_swapChain) return;
+    // Lights first: both passes below read them.
+    scene.GetLightSystem().Apply(m_context, scene.GetCamera().GetPosition());
+
+    // PASS 1 - depth from the sun's point of view, into the shadow map.
+    scene.RenderShadows(m_context);
+
+    // PASS 2 - the camera's view into the back buffer. BindBackBuffer() points the output
+    // back at the window (the shadow pass left it aimed at the shadow map) and resets the viewport.
     BindBackBuffer();
     const float clearColor[] = { 0.1f, 0.1f, 0.2f, 1.0f };
     m_context->ClearRenderTargetView(m_renderTargetView, clearColor);
     m_context->ClearDepthStencilView(m_depthView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
-
-    // Apply lights before rendering scene objects
-    scene.GetLightSystem().Apply(m_context, scene.GetCamera().GetPosition());
-
     scene.Render(m_context);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     const HRESULT hr = m_swapChain->Present(0, 0);

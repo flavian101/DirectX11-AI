@@ -3,6 +3,8 @@
 #include <d3d11.h>
 #include <DirectXMath.h>
 
+class Shader;
+
 class SceneObject {
 public:
     enum class RenderCategory { Opaque, Transparent, Background };
@@ -28,6 +30,23 @@ public:
         (void)scale;
         return false;
     }
+
+    // --- shadow casting (opt-in: most objects, like water and the sky, cast none) ---
+    virtual bool CastsShadow() const { return false; }
+    // A sphere that fully contains the object; the scene merges these to size the sun's view.
+    virtual bool GetBoundingSphere(DirectX::XMFLOAT3& center, float& radius) const
+    {
+        (void)center;
+        (void)radius;
+        return false;
+    }
+    // Draw geometry only, with the depth-only shader the shadow pass supplies.
+    virtual void RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader) const
+    {
+        (void)ctx;
+        (void)shader;
+    }
+
     virtual void Update(float dt) = 0;
     virtual void Render(ID3D11DeviceContext* ctx, const Camera& camera) const = 0;
 };

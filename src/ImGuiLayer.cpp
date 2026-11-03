@@ -165,6 +165,8 @@ void ImGuiLayer::DrawLightsInspector()
         directional.color = { directionalColor[0], directionalColor[1], directionalColor[2] };
     ImGui::SliderFloat("Directional intensity", &directional.intensity, 0.0f, 5.0f);
 
+    DrawShadowDebug();
+
     ImGui::SeparatorText("Point lights");
     auto& pointLights = lights.PointLights();
     for (int index = 0; index < static_cast<int>(pointLights.size()); ++index) {
@@ -184,6 +186,18 @@ void ImGuiLayer::DrawLightsInspector()
         PointLight point;
         point.position = { 0.0f, 10.0f, 0.0f };
         lights.AddPointLight(point);
+    }
+}
+
+void ImGuiLayer::DrawShadowDebug()
+{
+    ImGui::SeparatorText("Shadow map");
+    ShadowMap& shadow = scene_->GetShadowMap();
+    if (!shadow.IsValid()) { ImGui::TextDisabled("Shadow map unavailable"); return; }
+    ImGui::Checkbox("Show sun depth map", &showShadowMap_);
+    if (showShadowMap_) {
+        // Depth is stored in one channel, so ImGui draws it in red: darker = closer to the sun.
+        ImGui::Image(reinterpret_cast<ImTextureID>(shadow.GetShaderView()), ImVec2(256.0f, 256.0f));
     }
 }
 
