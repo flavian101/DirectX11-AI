@@ -152,8 +152,17 @@ void ImGuiLayer::DrawCameraInspector()
 
     ImGui::SeparatorText("Display");
     PostSettings& post = scene_->GetPostSettings();
+    ImGui::SliderFloat("Exposure (stops)", &post.exposureEV, PostSettings::kExposureMin, PostSettings::kExposureMax, "%+.1f EV");
+    ImGui::SetItemTooltip("Each +1 doubles the light, each -1 halves it - like a camera's exposure compensation.");
+    static const char* const kToneMapperNames[] = { "None (clamp)", "Reinhard", "ACES filmic", "Uncharted 2 filmic" };
+    int toneMapper = static_cast<int>(post.toneMapper);
+    if (ImGui::Combo("Tone mapping", &toneMapper, kToneMapperNames, IM_ARRAYSIZE(kToneMapperNames))) {
+        post.toneMapper = static_cast<ToneMapper>(toneMapper);
+    }
+    ImGui::SetItemTooltip("Squeezes unlimited HDR brightness into what a screen can show.\n'None' clips everything above 1.0 to white.");
     ImGui::Checkbox("sRGB encode (gamma)", &post.srgbEncode);
     ImGui::SetItemTooltip("The HDR buffer is linear light; monitors expect the sRGB curve.\nTurn it off to see how dark and harsh un-encoded linear light looks.");
+    if (ImGui::Button("Reset display")) post = PostSettings{};
 }
 
 void ImGuiLayer::DrawLightsInspector()

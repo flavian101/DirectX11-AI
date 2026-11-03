@@ -2,11 +2,12 @@
 #include "Logger.h"
 #include "ShaderSlots.h"
 #include <DirectXMath.h>
+#include <cmath>
 
 namespace {
 // Must match `cbuffer Post : register(b3)` in shaders/resolve_ps.hlsl.
 struct CBPost {
-    DirectX::XMFLOAT4 params;   // x = sRGB encode on/off
+    DirectX::XMFLOAT4 params;   // x = sRGB encode on/off, y = exposure multiplier, z = tone mapper id
 };
 static_assert(sizeof(CBPost) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 }
@@ -53,8 +54,12 @@ void PostProcess::Resolve(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* hd
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (SUCCEEDED(ctx->Map(settingsBuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+        PostSettings safe = settings;
+        safe.Clamp();
         auto* data = static_cast<CBPost*>(mapped.pData);
-        data->params = DirectX::XMFLOAT4(settings.srgbEncode ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+        data->params = DirectX::XMFLOAT4(safe.srgbEncode ? 1.0f : 0.0f,
+                                         std::exp2(safe.exposureEV),            // stops -> a plain multiplier
+                                         static_cast<float>(safe.toneMapper), 0.0f);
         ctx->Unmap(settingsBuffer_, 0);
     }
     ctx->PSSetConstantBuffers(Slots::kCbPost, 1, &settingsBuffer_);

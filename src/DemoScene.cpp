@@ -22,7 +22,9 @@ bool BuildDemoScene(Scene& scene, ID3D11Device* device)
     DirectionalLight& sun = lights.Directional();
     sun.direction = { 0.3f, -0.8f, 0.5f };
     sun.color = { 1.0f, 0.95f, 0.85f };
-    sun.intensity = 0.8f;
+    // HDR: the sun is far brighter than "1.0 = white". The tone mapper brings it back into range;
+    // set the tone mapper to "None" in the Camera panel to see what clipping looks like.
+    sun.intensity = 2.5f;
     lights.SetAmbient({ 0.2f, 0.2f, 0.25f });
 
     PointLight warm;
