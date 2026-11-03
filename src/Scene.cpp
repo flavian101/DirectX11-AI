@@ -106,7 +106,7 @@ void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
     shadow_->End(ctx);
 }
 
-void Scene::Render(ID3D11DeviceContext* ctx) const
+void Scene::BeginFrame(ID3D11DeviceContext* ctx) const
 {
     // Per-frame state: bound once here, then every object just draws.
     FrameData frame = FrameData::FromCamera(camera_, time_);
@@ -116,10 +116,17 @@ void Scene::Render(ID3D11DeviceContext* ctx) const
     ID3D11ShaderResourceView* environment =
         (skybox_ && skybox_->IsValid()) ? skybox_->GetCubemapView() : nullptr;
     ctx->PSSetShaderResources(Slots::kSrvEnvironment, 1, &environment);
+}
 
+void Scene::RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase) const
+{
     std::vector<const SceneObject*> sorted;
     sorted.reserve(objects_.size());
-    for (const auto& object : objects_) if (object) sorted.push_back(object.get());
+    for (const auto& object : objects_) {
+        if (!object) continue;
+        const bool transparent = object->GetRenderCategory() == SceneObject::RenderCategory::Transparent;
+        if (transparent == (phase == ScenePhase::Transparent)) sorted.push_back(object.get());
+    }
 
     const DirectX::XMFLOAT3 cameraPosition = camera_.GetPosition();
     auto distanceSquared = [&cameraPosition](const SceneObject* object) {

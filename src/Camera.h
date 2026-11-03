@@ -4,6 +4,11 @@
 
 class Camera {
 public:
+    // 0.1 instead of 0.01: depth precision is spent mostly near the camera, so a tiny near
+    // plane makes distant depth values coarse (lesson 8). Nothing in the scene is closer than this.
+    static constexpr float kNearPlane = 0.1f;
+    static constexpr float kFarPlane = 1000.0f;
+
     Camera();
     void SetPosition(const DirectX::XMFLOAT3 &pos);
     void SetTarget(const DirectX::XMFLOAT3 &tar);

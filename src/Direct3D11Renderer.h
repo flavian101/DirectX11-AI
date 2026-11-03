@@ -3,6 +3,7 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include "Logger.h"
+#include "DepthTarget.h"
 #include "PostProcess.h"
 #include "RenderTarget.h"
 #include "Scene.h"
@@ -30,7 +31,9 @@ private:
     bool CreateSizeDependentResources(UINT width, UINT height);
     void ReleaseSizeDependentResources();
     void BindBackBuffer();   // window's render target + depth + viewport for the current size
-    void BindSceneTarget();  // the HDR scene buffer + depth + viewport: where the 3D world is drawn
+    // The HDR scene buffer + depth + viewport: where the 3D world is drawn. With readOnlyDepth the
+    // depth buffer can be depth-TESTED but not written, which lets shaders sample it at the same time.
+    void BindSceneTarget(bool readOnlyDepth);
 
     UINT m_width = 0;
     UINT m_height = 0;
@@ -39,8 +42,7 @@ private:
     ID3D11DeviceContext* m_context = nullptr;
     IDXGISwapChain* m_swapChain = nullptr;
     ID3D11RenderTargetView* m_renderTargetView = nullptr;
-    ID3D11Texture2D* m_depthBuffer = nullptr;
-    ID3D11DepthStencilView* m_depthView = nullptr;
+    DepthTarget m_sceneDepth;    // the camera's depth buffer - also readable by shaders (water)
     ID3D11DepthStencilState* m_depthState = nullptr;
     ID3D11SamplerState* m_linearSampler = nullptr;   // bound to PS slot s0 for every material
     RenderTarget m_hdrScene;     // the 3D world is drawn here (16-bit float), then resolved to the window

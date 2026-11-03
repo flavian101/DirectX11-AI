@@ -115,21 +115,9 @@ bool Direct3D11Renderer::CreateSizeDependentResources(UINT width, UINT height)
         return false;
     }
 
-    D3D11_TEXTURE2D_DESC depthDesc{};
-    depthDesc.Width = width;
-    depthDesc.Height = height;
-    depthDesc.MipLevels = 1;
-    depthDesc.ArraySize = 1;
-    depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    depthDesc.SampleDesc.Count = 1;
-    depthDesc.Usage = D3D11_USAGE_DEFAULT;
-    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-    hr = m_device->CreateTexture2D(&depthDesc, nullptr, &m_depthBuffer);
-    if (SUCCEEDED(hr)) hr = m_device->CreateDepthStencilView(m_depthBuffer, nullptr, &m_depthView);
-    if (FAILED(hr)) {
-        LOG_HR(hr, "Depth buffer creation failed");
-        return false;
-    }
+    // 32-bit float depth, readable from shaders. (The old D24S8 buffer could not be read, and
+    // nothing here uses stencil.)
+    if (!m_sceneDepth.Create(m_device, width, height)) return false;
 
     // 16 bits per channel, FLOAT: values above 1.0 survive (a bright sun, a sky glint) and
     // nothing is rounded to 256 levels until the very last pass.
@@ -143,8 +131,7 @@ bool Direct3D11Renderer::CreateSizeDependentResources(UINT width, UINT height)
 void Direct3D11Renderer::ReleaseSizeDependentResources()
 {
     m_hdrScene.Release();
-    if (m_depthView) { m_depthView->Release(); m_depthView = nullptr; }
-    if (m_depthBuffer) { m_depthBuffer->Release(); m_depthBuffer = nullptr; }
+    m_sceneDepth.Release();
     if (m_renderTargetView) { m_renderTargetView->Release(); m_renderTargetView = nullptr; }
 }
 
@@ -171,7 +158,7 @@ void Direct3D11Renderer::BindBackBuffer()
 {
     // Done every frame (not once in Init): the size can change, and later passes that
     // render into other textures (shadows, planar reflection) must restore this state.
-    m_context->OMSetRenderTargets(1, &m_renderTargetView, m_depthView);
+    m_context->OMSetRenderTargets(1, &m_renderTargetView, nullptr);
     D3D11_VIEWPORT viewport{};
     viewport.Width = static_cast<float>(m_width);
     viewport.Height = static_cast<float>(m_height);
@@ -180,15 +167,18 @@ void Direct3D11Renderer::BindBackBuffer()
     m_context->RSSetViewports(1, &viewport);
 }
 
-void Direct3D11Renderer::BindSceneTarget()
+void Direct3D11Renderer::BindSceneTarget(bool readOnlyDepth)
 {
     // The resolve pass reads the HDR texture as an input. Make sure it is not still bound as
     // one before binding it as an output (see lesson 1: never both at once).
     ID3D11ShaderResourceView* none = nullptr;
     m_context->PSSetShaderResources(0, 1, &none);
+    // Same rule for the depth buffer: if it is about to be WRITTEN, it must not be a shader input.
+    if (!readOnlyDepth) m_context->PSSetShaderResources(Slots::kSrvSceneDepth, 1, &none);
 
     ID3D11RenderTargetView* hdr = m_hdrScene.GetRenderView();
-    m_context->OMSetRenderTargets(1, &hdr, m_depthView);
+    m_context->OMSetRenderTargets(1, &hdr, readOnlyDepth ? m_sceneDepth.GetReadOnlyDepthView()
+                                                         : m_sceneDepth.GetDepthView());
     D3D11_VIEWPORT viewport{};
     viewport.Width = static_cast<float>(m_width);
     viewport.Height = static_cast<float>(m_height);
@@ -198,7 +188,7 @@ void Direct3D11Renderer::BindSceneTarget()
 
 void Direct3D11Renderer::Render(const Scene& scene)
 {
-    if (!m_context || !m_renderTargetView || !m_depthView || !m_swapChain || !m_hdrScene.IsValid()) return;
+    if (!m_context || !m_renderTargetView || !m_sceneDepth.IsValid() || !m_swapChain || !m_hdrScene.IsValid()) return;
     // Lights first: both passes below read them.
     scene.GetLightSystem().Apply(m_context, scene.GetCamera().GetPosition());
 
@@ -206,12 +196,25 @@ void Direct3D11Renderer::Render(const Scene& scene)
     scene.RenderShadows(m_context);
 
     // PASS 2 - the camera's view into the HDR scene buffer (NOT the window any more).
-    BindSceneTarget();
+    BindSceneTarget(false);
     // The background colour is picked as sRGB, but the HDR buffer holds LINEAR light.
     const float clearColor[] = { SrgbToLinear(0.1f), SrgbToLinear(0.1f), SrgbToLinear(0.2f), 1.0f };
     m_hdrScene.Clear(m_context, clearColor);
-    m_context->ClearDepthStencilView(m_depthView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
-    scene.Render(m_context);
+    m_sceneDepth.Clear(m_context);
+
+    // Per-frame bindings (camera matrices, shadow map, environment), then the OPAQUE phase:
+    // sky, terrain, cube - everything that writes depth.
+    scene.BeginFrame(m_context);
+    scene.RenderPhase(m_context, ScenePhase::Opaque);
+
+    // TRANSPARENT phase (the water). Depth is now complete, so make it read-only and hand it to
+    // the shaders as a texture: the water can ask "how far away is the ground behind me?".
+    BindSceneTarget(true);
+    ID3D11ShaderResourceView* sceneDepth = m_sceneDepth.GetShaderView();
+    m_context->PSSetShaderResources(Slots::kSrvSceneDepth, 1, &sceneDepth);
+    scene.RenderPhase(m_context, ScenePhase::Transparent);
+    ID3D11ShaderResourceView* none = nullptr;
+    m_context->PSSetShaderResources(Slots::kSrvSceneDepth, 1, &none);
 
     // PASS 3 - turn the HDR buffer into the window's image. The UI is drawn after this,
     // straight onto the back buffer, because it is already designed for display colours.

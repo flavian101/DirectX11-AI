@@ -23,6 +23,8 @@ struct InputState {
     bool middleMouseButtonDown = false;
 };
 
+enum class ScenePhase { Opaque, Transparent };
+
 class Scene {
 public:
     Scene();
@@ -61,7 +63,11 @@ public:
     // Pass 1: draw every shadow caster's depth from the sun into the shadow map.
     // Pass 2 (Render) is the normal camera view. The renderer calls them in that order.
     void RenderShadows(ID3D11DeviceContext* ctx) const;
-    void Render(ID3D11DeviceContext* ctx) const;
+    // Pass 2 is split in two so the renderer can do something between the halves:
+    //   BeginFrame      - bind everything that is the same for every draw this frame
+    //   RenderPhase     - Opaque (sky + solid objects, write depth), then Transparent (water)
+    void BeginFrame(ID3D11DeviceContext* ctx) const;
+    void RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase) const;
     ShadowMap& GetShadowMap() { return *shadow_; }
     PostSettings& GetPostSettings() { return post_; }
     const PostSettings& GetPostSettings() const { return post_; }

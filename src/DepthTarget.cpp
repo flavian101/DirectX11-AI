@@ -6,6 +6,7 @@ DepthTarget::~DepthTarget() { Release(); }
 void DepthTarget::Release()
 {
     if (shaderView_) { shaderView_->Release(); shaderView_ = nullptr; }
+    if (readOnlyDepthView_) { readOnlyDepthView_->Release(); readOnlyDepthView_ = nullptr; }
     if (depthView_) { depthView_->Release(); depthView_ = nullptr; }
     if (texture_) { texture_->Release(); texture_ = nullptr; }
     width_ = height_ = 0;
@@ -44,6 +45,14 @@ bool DepthTarget::Create(ID3D11Device* device, UINT width, UINT height)
     hr = device->CreateDepthStencilView(texture_, &dsvDesc, &depthView_);
     if (FAILED(hr)) {
         LOG_HR(hr, "DepthTarget depth view creation failed");
+        Release();
+        return false;
+    }
+
+    dsvDesc.Flags = D3D11_DSV_READ_ONLY_DEPTH;   // same memory, "look but do not touch"
+    hr = device->CreateDepthStencilView(texture_, &dsvDesc, &readOnlyDepthView_);
+    if (FAILED(hr)) {
+        LOG_HR(hr, "DepthTarget read-only depth view creation failed");
         Release();
         return false;
     }

@@ -8,6 +8,8 @@
 //   depth view  (DSV) - "draw INTO me" during a pass
 //   shader view (SRV) - "sample FROM me" during a later pass
 // A texture must never be bound as BOTH at the same moment; unbind one before using the other.
+// ONE exception: a READ-ONLY depth view may be bound while the shader view is bound too. The
+// pass can still depth-TEST against the buffer, but cannot write, so there is nothing to conflict.
 class DepthTarget {
 public:
     DepthTarget() = default;
@@ -19,15 +21,17 @@ public:
     void Release();
     void Clear(ID3D11DeviceContext* ctx, float depth = 1.0f) const;
 
-    bool IsValid() const { return texture_ && depthView_ && shaderView_; }
+    bool IsValid() const { return texture_ && depthView_ && readOnlyDepthView_ && shaderView_; }
     UINT GetWidth() const { return width_; }
     UINT GetHeight() const { return height_; }
     ID3D11DepthStencilView* GetDepthView() const { return depthView_; }
+    ID3D11DepthStencilView* GetReadOnlyDepthView() const { return readOnlyDepthView_; }
     ID3D11ShaderResourceView* GetShaderView() const { return shaderView_; }
 
 private:
     ID3D11Texture2D* texture_ = nullptr;
     ID3D11DepthStencilView* depthView_ = nullptr;
+    ID3D11DepthStencilView* readOnlyDepthView_ = nullptr;
     ID3D11ShaderResourceView* shaderView_ = nullptr;
     UINT width_ = 0;
     UINT height_ = 0;
