@@ -1,6 +1,7 @@
 ﻿#include "Shader.h"
 #include "Logger.h"
 #include <d3dcompiler.h>
+#include <d3d11shader.h>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -75,6 +76,24 @@ bool Shader::Load(const wchar_t* vsPath, const wchar_t* psPath, ID3D11Device* de
         return false;
     }
 
+    // A vertex shader that only reads system values (a full-screen triangle uses SV_VertexID)
+    // has no vertex data to describe, so it needs no input layout. Ask the compiled shader.
+    bool needsLayout = true;
+    ID3D11ShaderReflection* reflection = nullptr;
+    if (SUCCEEDED(D3DReflect(vsBlob_->GetBufferPointer(), vsBlob_->GetBufferSize(),
+                                IID_ID3D11ShaderReflection, reinterpret_cast<void**>(&reflection)))) {
+        D3D11_SHADER_DESC shaderDesc{};
+        reflection->GetDesc(&shaderDesc);
+        needsLayout = false;
+        for (UINT i = 0; i < shaderDesc.InputParameters; ++i) {
+            D3D11_SIGNATURE_PARAMETER_DESC parameter{};
+            reflection->GetInputParameterDesc(i, &parameter);
+            if (parameter.SystemValueType == D3D_NAME_UNDEFINED) needsLayout = true;   // a real vertex attribute
+        }
+        reflection->Release();
+    }
+    if (!needsLayout) return true;
+
     const D3D11_INPUT_ELEMENT_DESC layout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -92,8 +111,8 @@ bool Shader::Load(const wchar_t* vsPath, const wchar_t* psPath, ID3D11Device* de
 
 void Shader::Apply(ID3D11DeviceContext* ctx) const
 {
-    if (!ctx || !vs_ || !layout_) return;
-    ctx->IASetInputLayout(layout_);
+    if (!ctx || !vs_) return;
+    ctx->IASetInputLayout(layout_);   // nullptr for layout-free shaders: that is correct and intended
     ctx->VSSetShader(vs_, nullptr, 0);
     ctx->PSSetShader(ps_, nullptr, 0);   // ps_ is nullptr for depth-only programs: that UNBINDS the old one
 }

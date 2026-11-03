@@ -87,6 +87,11 @@ bool Direct3D11Renderer::Init()
     }
     m_context->PSSetSamplers(Slots::kSamplerLinear, 1, &m_linearSampler);
 
+    if (!m_post.Initialize(m_device)) {
+        Release();
+        return false;
+    }
+
     m_context->OMSetDepthStencilState(m_depthState, 0);
     BindBackBuffer();
 
@@ -124,6 +129,11 @@ bool Direct3D11Renderer::CreateSizeDependentResources(UINT width, UINT height)
         LOG_HR(hr, "Depth buffer creation failed");
         return false;
     }
+
+    // 16 bits per channel, FLOAT: values above 1.0 survive (a bright sun, a sky glint) and
+    // nothing is rounded to 256 levels until the very last pass.
+    if (!m_hdrScene.Create(m_device, width, height, DXGI_FORMAT_R16G16B16A16_FLOAT)) return false;
+
     m_width = width;
     m_height = height;
     return true;
@@ -131,6 +141,7 @@ bool Direct3D11Renderer::CreateSizeDependentResources(UINT width, UINT height)
 
 void Direct3D11Renderer::ReleaseSizeDependentResources()
 {
+    m_hdrScene.Release();
     if (m_depthView) { m_depthView->Release(); m_depthView = nullptr; }
     if (m_depthBuffer) { m_depthBuffer->Release(); m_depthBuffer = nullptr; }
     if (m_renderTargetView) { m_renderTargetView->Release(); m_renderTargetView = nullptr; }
@@ -168,22 +179,41 @@ void Direct3D11Renderer::BindBackBuffer()
     m_context->RSSetViewports(1, &viewport);
 }
 
+void Direct3D11Renderer::BindSceneTarget()
+{
+    // The resolve pass reads the HDR texture as an input. Make sure it is not still bound as
+    // one before binding it as an output (see lesson 1: never both at once).
+    ID3D11ShaderResourceView* none = nullptr;
+    m_context->PSSetShaderResources(0, 1, &none);
+
+    ID3D11RenderTargetView* hdr = m_hdrScene.GetRenderView();
+    m_context->OMSetRenderTargets(1, &hdr, m_depthView);
+    D3D11_VIEWPORT viewport{};
+    viewport.Width = static_cast<float>(m_width);
+    viewport.Height = static_cast<float>(m_height);
+    viewport.MaxDepth = 1.0f;
+    m_context->RSSetViewports(1, &viewport);
+}
+
 void Direct3D11Renderer::Render(const Scene& scene)
 {
-    if (!m_context || !m_renderTargetView || !m_depthView || !m_swapChain) return;
+    if (!m_context || !m_renderTargetView || !m_depthView || !m_swapChain || !m_hdrScene.IsValid()) return;
     // Lights first: both passes below read them.
     scene.GetLightSystem().Apply(m_context, scene.GetCamera().GetPosition());
 
     // PASS 1 - depth from the sun's point of view, into the shadow map.
     scene.RenderShadows(m_context);
 
-    // PASS 2 - the camera's view into the back buffer. BindBackBuffer() points the output
-    // back at the window (the shadow pass left it aimed at the shadow map) and resets the viewport.
-    BindBackBuffer();
+    // PASS 2 - the camera's view into the HDR scene buffer (NOT the window any more).
+    BindSceneTarget();
     const float clearColor[] = { 0.1f, 0.1f, 0.2f, 1.0f };
-    m_context->ClearRenderTargetView(m_renderTargetView, clearColor);
+    m_hdrScene.Clear(m_context, clearColor);
     m_context->ClearDepthStencilView(m_depthView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
     scene.Render(m_context);
+
+    // PASS 3 - turn the HDR buffer into the window's image. The UI is drawn after this,
+    // straight onto the back buffer, because it is already designed for display colours.
+    m_post.Resolve(m_context, m_hdrScene.GetShaderView(), m_renderTargetView, m_width, m_height);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     const HRESULT hr = m_swapChain->Present(0, 0);
     if (FAILED(hr)) LOG_HR(hr, "Swap chain Present failed");
@@ -191,6 +221,7 @@ void Direct3D11Renderer::Render(const Scene& scene)
 
 void Direct3D11Renderer::Release()
 {
+    m_post.Release();
     if (m_linearSampler) { m_linearSampler->Release(); m_linearSampler = nullptr; }
     if (m_depthState) { m_depthState->Release(); m_depthState = nullptr; }
     ReleaseSizeDependentResources();

@@ -3,6 +3,8 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include "Logger.h"
+#include "PostProcess.h"
+#include "RenderTarget.h"
 #include "Scene.h"
 
 class Direct3D11Renderer {
@@ -27,7 +29,8 @@ public:
 private:
     bool CreateSizeDependentResources(UINT width, UINT height);
     void ReleaseSizeDependentResources();
-    void BindBackBuffer();   // render target + depth + viewport for the current size
+    void BindBackBuffer();   // window's render target + depth + viewport for the current size
+    void BindSceneTarget();  // the HDR scene buffer + depth + viewport: where the 3D world is drawn
 
     UINT m_width = 0;
     UINT m_height = 0;
@@ -40,4 +43,6 @@ private:
     ID3D11DepthStencilView* m_depthView = nullptr;
     ID3D11DepthStencilState* m_depthState = nullptr;
     ID3D11SamplerState* m_linearSampler = nullptr;   // bound to PS slot s0 for every material
+    RenderTarget m_hdrScene;     // the 3D world is drawn here (16-bit float), then resolved to the window
+    PostProcess m_post;          // full-screen passes: HDR buffer -> back buffer
 };

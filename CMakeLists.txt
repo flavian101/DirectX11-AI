@@ -24,6 +24,8 @@ add_executable(D3D11Example
 	src/FrameConstants.cpp
 	src/DepthTarget.cpp
 	src/ShadowMap.cpp
+	src/RenderTarget.cpp
+	src/PostProcess.cpp
 	src/DemoScene.cpp
 	src/Terrain.cpp
 	src/Water.cpp
@@ -46,7 +48,8 @@ target_include_directories(D3D11Example PRIVATE
 
 # Link against the Windows SDK libraries for DirectX 11
 # The d3d11 and dxgi libraries are part of the SDK and are available on Windows
-target_link_libraries(D3D11Example PRIVATE d3d11 dxgi d3dcompiler imm32 dwmapi)
+# dxguid supplies the interface IDs (e.g. for D3DReflect in Shader.cpp); MSVC can hide the need, MinGW cannot.
+target_link_libraries(D3D11Example PRIVATE d3d11 dxgi d3dcompiler dxguid imm32 dwmapi)
 
 
 # Shaders are loaded from disk at runtime. A POST_BUILD step only runs when the exe
