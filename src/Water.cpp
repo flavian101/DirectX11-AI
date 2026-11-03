@@ -99,6 +99,8 @@ void WaterSettings::Clamp()
 	fadeDistance = std::clamp(fadeDistance, kFadeMin, kFadeMax);
 	foamDistance = std::clamp(foamDistance, 0.0f, kFoamDistanceMax);
 	foamStrength = std::clamp(foamStrength, 0.0f, 1.0f);
+	reflectionDistortion = std::clamp(reflectionDistortion, 0.0f, kDistortionMax);
+	reflectionMode = static_cast<ReflectionMode>(std::clamp(static_cast<int>(reflectionMode), 0, 2));
 	waveAmplitude = std::clamp(waveAmplitude, 0.0f, kAmplitudeMax);
 	waveSpeed = std::clamp(waveSpeed, 0.0f, kSpeedMax);
 	waveFrequency = std::clamp(waveFrequency, kFrequencyMin, kFrequencyMax);
@@ -128,7 +130,8 @@ void Water::SetSettings(const WaterSettings& settings)
 		renderable_->SetMaterialColor({ linearColor.x, linearColor.y, linearColor.z, settings_.alpha });
 		renderable_->SetMaterialParameters({ settings_.waveAmplitude, settings_.waveSpeed,
 											 settings_.waveFrequency, settings_.reflectivity });
-		renderable_->SetMaterialExtra({ settings_.glintStrength, settings_.glintSharpness, 0.0f, 0.0f });
+		renderable_->SetMaterialExtra({ settings_.glintStrength, settings_.glintSharpness,
+										 settings_.reflectionDistortion, 0.0f });
 		const DirectX::XMFLOAT3 shallow = SrgbToLinear(settings_.shallowColor);
 		renderable_->SetMaterialColor2({ shallow.x, shallow.y, shallow.z, 1.0f });
 		renderable_->SetMaterialExtra2({ settings_.fadeDistance, settings_.foamDistance,

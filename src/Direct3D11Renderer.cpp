@@ -88,6 +88,23 @@ bool Direct3D11Renderer::Init()
     }
     m_context->PSSetSamplers(Slots::kSamplerLinear, 1, &m_linearSampler);
 
+    // Screen-space lookups (the water reading the reflection image) must NOT wrap around at the
+    // edges, so they get their own sampler.
+    D3D11_SAMPLER_DESC clampDesc{};
+    clampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    clampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    clampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    clampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    clampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    clampDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    hr = m_device->CreateSamplerState(&clampDesc, &m_clampSampler);
+    if (FAILED(hr)) {
+        LOG_HR(hr, "Clamp sampler creation failed");
+        Release();
+        return false;
+    }
+    m_context->PSSetSamplers(Slots::kSamplerClamp, 1, &m_clampSampler);
+
     if (!m_post.Initialize(m_device)) {
         Release();
         return false;
@@ -132,6 +149,8 @@ void Direct3D11Renderer::ReleaseSizeDependentResources()
 {
     m_hdrScene.Release();
     m_sceneDepth.Release();
+    m_reflectionColor.Release();   // window-sized too; rebuilt on demand at the new size
+    m_reflectionDepth.Release();
     if (m_renderTargetView) { m_renderTargetView->Release(); m_renderTargetView = nullptr; }
 }
 
@@ -186,6 +205,40 @@ void Direct3D11Renderer::BindSceneTarget(bool readOnlyDepth)
     m_context->RSSetViewports(1, &viewport);
 }
 
+bool Direct3D11Renderer::RenderReflectionPass(const Scene& scene, float planeHeight, float resolutionScale,
+                                              const float clearColor[4])
+{
+    const UINT width = (std::max)(1u, static_cast<UINT>(static_cast<float>(m_width) * resolutionScale));
+    const UINT height = (std::max)(1u, static_cast<UINT>(static_cast<float>(m_height) * resolutionScale));
+
+    // Create (or re-create after a resize / quality change) the reflection image + its own depth.
+    if (!m_reflectionColor.IsValid() || m_reflectionColor.GetWidth() != width || m_reflectionColor.GetHeight() != height) {
+        if (!m_reflectionColor.Create(m_device, width, height, DXGI_FORMAT_R16G16B16A16_FLOAT) ||
+            !m_reflectionDepth.Create(m_device, width, height)) {
+            m_reflectionColor.Release();
+            m_reflectionDepth.Release();
+            return false;
+        }
+    }
+
+    // It was bound as a shader input for the water last frame: let go before using it as output.
+    ID3D11ShaderResourceView* none = nullptr;
+    m_context->PSSetShaderResources(Slots::kSrvReflection, 1, &none);
+
+    ID3D11RenderTargetView* target = m_reflectionColor.GetRenderView();
+    m_context->OMSetRenderTargets(1, &target, m_reflectionDepth.GetDepthView());
+    D3D11_VIEWPORT viewport{};
+    viewport.Width = static_cast<float>(width);
+    viewport.Height = static_cast<float>(height);
+    viewport.MaxDepth = 1.0f;
+    m_context->RSSetViewports(1, &viewport);
+    m_reflectionColor.Clear(m_context, clearColor);
+    m_reflectionDepth.Clear(m_context);
+
+    scene.RenderReflection(m_context, planeHeight, width, height);
+    return true;
+}
+
 void Direct3D11Renderer::Render(const Scene& scene)
 {
     if (!m_context || !m_renderTargetView || !m_sceneDepth.IsValid() || !m_swapChain || !m_hdrScene.IsValid()) return;
@@ -195,28 +248,43 @@ void Direct3D11Renderer::Render(const Scene& scene)
     // PASS 1 - depth from the sun's point of view, into the shadow map.
     scene.RenderShadows(m_context);
 
-    // PASS 2 - the camera's view into the HDR scene buffer (NOT the window any more).
-    BindSceneTarget(false);
-    // The background colour is picked as sRGB, but the HDR buffer holds LINEAR light.
+    // The background colour is picked as sRGB, but the HDR buffers hold LINEAR light.
     const float clearColor[] = { SrgbToLinear(0.1f), SrgbToLinear(0.1f), SrgbToLinear(0.2f), 1.0f };
+
+    // Resources shared by every view below (shadow map, environment map).
+    scene.BeginFrame(m_context);
+
+    // PASS 2 - the scene seen in the water: drawn from a camera mirrored below the surface.
+    float planeHeight = 0.0f, resolutionScale = 1.0f;
+    bool reflectionReady = false;
+    if (scene.GetPlanarReflection(planeHeight, resolutionScale)) {
+        reflectionReady = RenderReflectionPass(scene, planeHeight, resolutionScale, clearColor);
+    } else {
+        m_reflectionColor.Release();   // not needed: give the memory back
+        m_reflectionDepth.Release();
+    }
+
+    // PASS 3 - the camera's view into the HDR scene buffer (NOT the window any more).
+    // OPAQUE phase first: sky, terrain, cube - everything that writes depth.
+    BindSceneTarget(false);
     m_hdrScene.Clear(m_context, clearColor);
     m_sceneDepth.Clear(m_context);
-
-    // Per-frame bindings (camera matrices, shadow map, environment), then the OPAQUE phase:
-    // sky, terrain, cube - everything that writes depth.
-    scene.BeginFrame(m_context, m_width, m_height);
+    scene.SetMainView(m_context, m_width, m_height, reflectionReady);
     scene.RenderPhase(m_context, ScenePhase::Opaque);
 
     // TRANSPARENT phase (the water). Depth is now complete, so make it read-only and hand it to
-    // the shaders as a texture: the water can ask "how far away is the ground behind me?".
+    // the shaders as a texture, together with the reflection image.
     BindSceneTarget(true);
     ID3D11ShaderResourceView* sceneDepth = m_sceneDepth.GetShaderView();
+    ID3D11ShaderResourceView* reflection = reflectionReady ? m_reflectionColor.GetShaderView() : nullptr;
     m_context->PSSetShaderResources(Slots::kSrvSceneDepth, 1, &sceneDepth);
+    m_context->PSSetShaderResources(Slots::kSrvReflection, 1, &reflection);
     scene.RenderPhase(m_context, ScenePhase::Transparent);
     ID3D11ShaderResourceView* none = nullptr;
     m_context->PSSetShaderResources(Slots::kSrvSceneDepth, 1, &none);
+    m_context->PSSetShaderResources(Slots::kSrvReflection, 1, &none);
 
-    // PASS 3 - turn the HDR buffer into the window's image. The UI is drawn after this,
+    // PASS 4 - turn the HDR buffer into the window's image. The UI is drawn after this,
     // straight onto the back buffer, because it is already designed for display colours.
     m_post.Resolve(m_context, m_hdrScene.GetShaderView(), m_renderTargetView, m_width, m_height,
                    scene.GetPostSettings());
@@ -228,6 +296,7 @@ void Direct3D11Renderer::Render(const Scene& scene)
 void Direct3D11Renderer::Release()
 {
     m_post.Release();
+    if (m_clampSampler) { m_clampSampler->Release(); m_clampSampler = nullptr; }
     if (m_linearSampler) { m_linearSampler->Release(); m_linearSampler = nullptr; }
     if (m_depthState) { m_depthState->Release(); m_depthState = nullptr; }
     ReleaseSizeDependentResources();

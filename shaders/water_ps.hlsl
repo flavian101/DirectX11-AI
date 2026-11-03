@@ -1,8 +1,10 @@
 #include "waves.hlsli"
 
 TextureCube  environmentMap : register(t1);   // the skybox cubemap, bound once per frame by Scene
+Texture2D<float4> planarReflection : register(t3);   // the scene seen from below the water (when reflectionParams.x = 1)
 Texture2D<float> sceneDepth : register(t4);   // the camera's depth buffer, bound for the water pass only
 SamplerState linearSampler  : register(s0);
+SamplerState clampSampler   : register(s2);   // edges clamp: screen-space lookups must not wrap
 
 struct PS_IN { float4 position : SV_POSITION; float2 texCoord : TEXCOORD; float3 worldPos : TEXCOORD1; };
 
@@ -61,7 +63,16 @@ float4 main(PS_IN input) : SV_Target
     // down you mostly see the water body. F0 = 0.02 is water's reflectance head-on.
     const float F0 = 0.02f;
     float fresnel = (F0 + (1.0f - F0) * pow(1.0f - saturate(dot(N, V)), 5.0f)) * reflectivity;
-    float3 sky = environmentMap.Sample(linearSampler, reflect(-V, N)).rgb;
+    float3 reflected = environmentMap.Sample(linearSampler, reflect(-V, N)).rgb;   // cheap fallback: the sky only
+    if (reflectionParams.x > 0.5f) {
+        // Where on screen is this pixel? The reflection image was drawn with the same projection,
+        // so the same screen position shows the mirror image of what lies behind the surface.
+        float2 screenUV = input.position.xy * screenParams.xy;
+        screenUV += N.xz * materialExtra.z;                      // wave normals wobble the mirror
+        // The mirrored camera renders left-right flipped (a mirror reverses handedness), so flip u back.
+        const float2 reflectionUV = float2(1.0f - screenUV.x, screenUV.y);
+        reflected = planarReflection.SampleLevel(clampSampler, reflectionUV, 0).rgb;
+    }
 
     // Water body: tinted diffuse (same lighting floor as before).
     float lighting = 0.35f + saturate(dot(N, L)) * dirDirection.w * 0.65f;
@@ -72,7 +83,7 @@ float4 main(PS_IN input) : SV_Target
     float3 H = normalize(L + V);
     float3 glint = dirColor.rgb * dirDirection.w * materialExtra.x * pow(saturate(dot(N, H)), materialExtra.y);
 
-    float3 color = lerp(body, sky, fresnel) + glint;
+    float3 color = lerp(body, reflected, fresnel) + glint;
 
     // Shallow water is more see-through; right at the shoreline it fades to nothing so there is
     // no hard line where the plane cuts through the ground.

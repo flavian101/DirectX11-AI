@@ -6,6 +6,10 @@
 
 enum class WavePreset { Calm, Choppy, Stormy };
 
+// What the water mirrors. "Sky" is the cheap cubemap from before (reflects only the sky);
+// the planar modes draw the whole scene again from below the water (reflects terrain, cube, sky).
+enum class ReflectionMode : int { Sky = 0, PlanarHalf = 1, PlanarFull = 2 };
+
 struct WaterSettings {
 	// --- surface ---
 	float height = 4.0f;          // world Y of the water plane (kept in sync with the editor transform)
@@ -27,6 +31,8 @@ struct WaterSettings {
 
 	// --- lighting ---
 	float reflectivity = 1.0f;    // 0 = no sky reflection, 1 = full Fresnel reflection
+	ReflectionMode reflectionMode = ReflectionMode::PlanarHalf;
+	float reflectionDistortion = 0.04f;   // how far the waves wobble the mirror image (fraction of the screen)
 	float glintStrength = 1.0f;   // brightness of the sun highlight
 	float glintSharpness = 128.0f;// higher = smaller, tighter highlight
 
@@ -39,6 +45,7 @@ struct WaterSettings {
 	static constexpr float kAbsorptionMin = 0.02f, kAbsorptionMax = 2.0f;
 	static constexpr float kFadeMin = 0.1f, kFadeMax = 20.0f;
 	static constexpr float kFoamDistanceMax = 5.0f;
+	static constexpr float kDistortionMax = 0.2f;
 
 	void Clamp();
 	void ApplyWavePreset(WavePreset preset);   // only touches the three wave values

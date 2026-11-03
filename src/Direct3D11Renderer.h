@@ -30,6 +30,7 @@ public:
 private:
     bool CreateSizeDependentResources(UINT width, UINT height);
     void ReleaseSizeDependentResources();
+    bool RenderReflectionPass(const Scene& scene, float planeHeight, float resolutionScale, const float clearColor[4]);
     void BindBackBuffer();   // window's render target + depth + viewport for the current size
     // The HDR scene buffer + depth + viewport: where the 3D world is drawn. With readOnlyDepth the
     // depth buffer can be depth-TESTED but not written, which lets shaders sample it at the same time.
@@ -46,5 +47,8 @@ private:
     ID3D11DepthStencilState* m_depthState = nullptr;
     ID3D11SamplerState* m_linearSampler = nullptr;   // bound to PS slot s0 for every material
     RenderTarget m_hdrScene;     // the 3D world is drawn here (16-bit float), then resolved to the window
+    RenderTarget m_reflectionColor;   // the scene as seen in the water (created on demand)
+    DepthTarget m_reflectionDepth;
+    ID3D11SamplerState* m_clampSampler = nullptr;   // bound to s2: linear filtering, edges clamp
     PostProcess m_post;          // full-screen passes: HDR buffer -> back buffer
 };

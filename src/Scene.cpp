@@ -106,18 +106,69 @@ void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
     shadow_->End(ctx);
 }
 
-void Scene::BeginFrame(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewportHeight) const
+void Scene::BeginFrame(ID3D11DeviceContext* ctx) const
 {
-    // Per-frame state: bound once here, then every object just draws.
-    FrameData frame = FrameData::FromCamera(camera_, time_);
-    frame.viewportWidth = static_cast<float>(viewportWidth);
-    frame.viewportHeight = static_cast<float>(viewportHeight);
-    shadow_->FillFrameData(frame);       // the sun's matrix + shadow parameters
-    frame_.Apply(ctx, frame);
+    // Resources that stay the same for every pass this frame, however many views we draw.
     shadow_->Bind(ctx);                  // shadow map -> t2, comparison sampler -> s1
     ID3D11ShaderResourceView* environment =
         (skybox_ && skybox_->IsValid()) ? skybox_->GetCubemapView() : nullptr;
     ctx->PSSetShaderResources(Slots::kSrvEnvironment, 1, &environment);
+}
+
+void Scene::SetMainView(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewportHeight,
+                        bool reflectionAvailable) const
+{
+    FrameData frame = FrameData::FromCamera(camera_, time_);
+    frame.viewportWidth = static_cast<float>(viewportWidth);
+    frame.viewportHeight = static_cast<float>(viewportHeight);
+    frame.reflectionAvailable = reflectionAvailable;
+    shadow_->FillFrameData(frame);       // the sun's matrix + shadow parameters
+    frame_.Apply(ctx, frame);
+}
+
+bool Scene::GetPlanarReflection(float& planeHeight, float& resolutionScale) const
+{
+    if (!water_) return false;
+    const WaterSettings& settings = water_->GetSettings();
+    if (settings.reflectionMode == ReflectionMode::Sky) return false;
+    planeHeight = settings.height;
+    // Under the surface the water is culled and there is nothing to reflect.
+    if (camera_.GetPosition().y <= planeHeight + 0.01f) return false;
+    resolutionScale = settings.reflectionMode == ReflectionMode::PlanarHalf ? 0.5f : 1.0f;
+    return true;
+}
+
+void Scene::RenderReflection(ID3D11DeviceContext* ctx, float planeHeight,
+                             UINT targetWidth, UINT targetHeight) const
+{
+    using namespace DirectX;
+
+    // A MIRROR shows the world as seen from the camera's mirror image. So: move the camera to
+    // the other side of the water plane (y -> 2h - y) and flip its look direction and up vector.
+    // The scene is NOT mirrored, so triangle winding and culling keep working as normal.
+    const XMFLOAT3 position = camera_.GetPosition();
+    const XMFLOAT3 target = camera_.GetTarget();
+    const XMFLOAT3 up = camera_.GetUp();
+    const XMFLOAT3 mirroredPosition(position.x, 2.0f * planeHeight - position.y, position.z);
+    const XMFLOAT3 mirroredTarget(target.x, 2.0f * planeHeight - target.y, target.z);
+    const XMFLOAT3 mirroredUp(up.x, -up.y, up.z);
+
+    FrameData frame;
+    XMStoreFloat4x4(&frame.view, XMMatrixLookAtLH(XMLoadFloat3(&mirroredPosition),
+                                                  XMLoadFloat3(&mirroredTarget),
+                                                  XMLoadFloat3(&mirroredUp)));
+    frame.proj = camera_.GetProjectionMatrix();
+    frame.cameraPos = mirroredPosition;
+    frame.time = time_;
+    frame.viewportWidth = static_cast<float>(targetWidth);
+    frame.viewportHeight = static_cast<float>(targetHeight);
+    // Keep only what is ABOVE the water: dot((0,1,0), p) - h >= 0.
+    frame.clipPlane = XMFLOAT4(0.0f, 1.0f, 0.0f, -planeHeight);
+    shadow_->FillFrameData(frame);
+    frame_.Apply(ctx, frame);
+
+    // Sky + solid objects only. The water itself (transparent) must not appear in its own mirror.
+    RenderPhase(ctx, ScenePhase::Opaque);
 }
 
 void Scene::RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase) const

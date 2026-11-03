@@ -64,9 +64,17 @@ public:
     // Pass 2 (Render) is the normal camera view. The renderer calls them in that order.
     void RenderShadows(ID3D11DeviceContext* ctx) const;
     // Pass 2 is split in two so the renderer can do something between the halves:
-    //   BeginFrame      - bind everything that is the same for every draw this frame
-    //   RenderPhase     - Opaque (sky + solid objects, write depth), then Transparent (water)
-    void BeginFrame(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewportHeight) const;
+        //   RenderPhase     - Opaque (sky + solid objects, write depth), then Transparent (water)
+    //   BeginFrame      - bind the shared per-frame resources (shadow map, environment map)
+    //   SetMainView     - upload the camera's matrices for the pass that draws the final image
+    //   RenderReflection- the scene seen from a camera mirrored under the water (optional pass)
+    void BeginFrame(ID3D11DeviceContext* ctx) const;
+    void SetMainView(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewportHeight,
+                     bool reflectionAvailable) const;
+    // Does the water want a planar reflection this frame? (A water plane exists, the mode is
+    // not "Sky", and the camera is above it.) Gives the plane height and a resolution scale.
+    bool GetPlanarReflection(float& planeHeight, float& resolutionScale) const;
+    void RenderReflection(ID3D11DeviceContext* ctx, float planeHeight, UINT targetWidth, UINT targetHeight) const;
     void RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase) const;
     ShadowMap& GetShadowMap() { return *shadow_; }
     PostSettings& GetPostSettings() { return post_; }

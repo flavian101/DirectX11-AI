@@ -362,7 +362,17 @@ void ImGuiLayer::DrawWaterInspector(Water* water)
     ImGui::SetItemTooltip("Radians per world unit. Lower = longer, lazier waves.");
 
     ImGui::SeparatorText("Lighting");
-    changed |= ImGui::SliderFloat("Sky reflection", &s.reflectivity, 0.0f, 1.0f);
+    changed |= ImGui::SliderFloat("Reflection strength", &s.reflectivity, 0.0f, 1.0f);
+    static const char* const kReflectionNames[] = { "Sky only (cubemap)", "Planar (half resolution)", "Planar (full resolution)" };
+    int reflectionMode = static_cast<int>(s.reflectionMode);
+    if (ImGui::Combo("Reflection", &reflectionMode, kReflectionNames, IM_ARRAYSIZE(kReflectionNames))) {
+        s.reflectionMode = static_cast<ReflectionMode>(reflectionMode);
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Planar modes draw the scene a second time from below the water, so the water\nreflects the terrain and cube too. Costs roughly one extra scene draw.");
+    if (s.reflectionMode != ReflectionMode::Sky) {
+        changed |= ImGui::SliderFloat("Mirror distortion", &s.reflectionDistortion, 0.0f, WaterSettings::kDistortionMax, "%.3f");
+    }
     changed |= ImGui::SliderFloat("Sun glint", &s.glintStrength, 0.0f, WaterSettings::kGlintMax);
     changed |= ImGui::SliderFloat("Glint sharpness", &s.glintSharpness, WaterSettings::kSharpnessMin,
                                   WaterSettings::kSharpnessMax, "%.0f", ImGuiSliderFlags_Logarithmic);

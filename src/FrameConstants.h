@@ -14,6 +14,8 @@ struct CBPerFrame {
     DirectX::XMFLOAT4X4 lightViewProj;
     DirectX::XMFLOAT4   shadowParams; // x = 1/mapSize, y = world units per texel, z = strength, w = normal offset
     DirectX::XMFLOAT4   screenParams; // x = 1/width, y = 1/height (of the viewport being drawn), z = near, w = far
+    DirectX::XMFLOAT4   clipPlane;    // world-space plane; (0,0,0,1) = no clipping
+    DirectX::XMFLOAT4   reflectionParams; // x = planar reflection available this frame
 };
 static_assert(sizeof(CBPerFrame) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
@@ -29,6 +31,8 @@ struct FrameData {
     float viewportHeight = 1.0f;
     float nearPlane = Camera::kNearPlane;
     float farPlane = Camera::kFarPlane;
+    DirectX::XMFLOAT4 clipPlane{ 0.0f, 0.0f, 0.0f, 1.0f };   // always positive: nothing is clipped
+    bool reflectionAvailable = false;
     DirectX::XMFLOAT4X4 lightViewProj{};   // identity-free zero matrix is fine while strength is 0
     DirectX::XMFLOAT4 shadowParams{};      // z = 0 means "no shadows this frame"
 

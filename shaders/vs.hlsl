@@ -1,7 +1,7 @@
 #include "common.hlsli"
 
 struct VS_IN { float3 position : POSITION; float3 normal : NORMAL; float2 texCoord : TEXCOORD; };
-struct VS_OUT { float4 position : SV_POSITION; float3 normal : NORMAL; float2 texCoord : TEXCOORD; float3 worldPos : TEXCOORD1; };
+struct VS_OUT { float4 position : SV_POSITION; float3 normal : NORMAL; float2 texCoord : TEXCOORD; float3 worldPos : TEXCOORD1; float clip : SV_ClipDistance0; };
 VS_OUT main(VS_IN input) {
     VS_OUT output;
     float4 worldPos = mul(float4(input.position, 1.0f), world);
@@ -10,5 +10,8 @@ VS_OUT main(VS_IN input) {
     output.normal = mul(input.normal, (float3x3)world);
     output.texCoord = input.texCoord * materialParams.x;   // x = UV tiling (1 = texture covers the mesh once)
     output.worldPos = worldPos.xyz;
+    // A clip plane: the rasterizer throws away every pixel where this is negative. It is how the
+    // reflection pass hides everything below the water. With clipPlane = (0,0,0,1) this is always 1.
+    output.clip = dot(worldPos, clipPlane);
     return output;
 }
