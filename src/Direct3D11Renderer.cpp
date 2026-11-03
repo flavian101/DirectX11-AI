@@ -1,4 +1,5 @@
 ﻿#include "Direct3D11Renderer.h"
+#include "ShaderSlots.h"
 #include <algorithm>
 #include "imgui_impl_dx11.h"
 
@@ -84,7 +85,7 @@ bool Direct3D11Renderer::Init()
         Release();
         return false;
     }
-    m_context->PSSetSamplers(0, 1, &m_linearSampler);
+    m_context->PSSetSamplers(Slots::kSamplerLinear, 1, &m_linearSampler);
 
     m_context->OMSetDepthStencilState(m_depthState, 0);
     BindBackBuffer();

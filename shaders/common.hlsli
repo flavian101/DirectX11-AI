@@ -11,6 +11,8 @@ cbuffer PerFrame : register(b0) {
     float4x4 proj;
     float4   cameraPos;     // xyz = world-space camera position
     float4   frameParams;   // x = elapsed time in seconds
+    float4x4 lightViewProj; // world -> the sun's clip space (see shadow.hlsli)
+    float4   shadowParams;  // x = 1/mapSize, y = world units per texel, z = strength (0 = off), w = normal offset in texels
 };
 
 // b1 – lights, once per frame (CPU: LightSystem). Pixel shaders only.

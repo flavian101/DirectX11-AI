@@ -11,6 +11,8 @@ struct CBPerFrame {
     DirectX::XMFLOAT4X4 proj;
     DirectX::XMFLOAT4   cameraPos;    // xyz = world-space camera position
     DirectX::XMFLOAT4   frameParams;  // x = elapsed time in seconds
+    DirectX::XMFLOAT4X4 lightViewProj;
+    DirectX::XMFLOAT4   shadowParams; // x = 1/mapSize, y = world units per texel, z = strength, w = normal offset
 };
 static_assert(sizeof(CBPerFrame) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
@@ -22,6 +24,8 @@ struct FrameData {
     DirectX::XMFLOAT4X4 proj{};
     DirectX::XMFLOAT3 cameraPos{};
     float time = 0.0f;
+    DirectX::XMFLOAT4X4 lightViewProj{};   // identity-free zero matrix is fine while strength is 0
+    DirectX::XMFLOAT4 shadowParams{};      // z = 0 means "no shadows this frame"
 
     static FrameData FromCamera(const Camera& camera, float timeSeconds);
 };

@@ -11,12 +11,15 @@ void ShadowSettings::Clamp()
     resolution = std::clamp(resolution, kResolutionMin, kResolutionMax);
     depthBias = std::clamp(depthBias, 0, kDepthBiasMax);
     slopeBias = std::clamp(slopeBias, 0.0f, kSlopeBiasMax);
+    normalOffset = std::clamp(normalOffset, 0.0f, kNormalOffsetMax);
+    strength = std::clamp(strength, 0.0f, 1.0f);
 }
 
 ShadowMap::~ShadowMap() { Release(); }
 
 void ShadowMap::Release()
 {
+    if (sampler_) { sampler_->Release(); sampler_ = nullptr; }
     if (rasterState_) { rasterState_->Release(); rasterState_ = nullptr; }
     target_.Release();
     shader_.reset();
@@ -37,6 +40,20 @@ bool ShadowMap::Initialize(ID3D11Device* device, const ShadowSettings& settings)
 
     const UINT size = static_cast<UINT>(settings_.resolution);
     if (!target_.Create(device, size, size) || !CreateRasterizerState()) { Release(); return false; }
+
+    // A COMPARISON sampler: instead of returning the stored depth it compares it with a value
+    // we supply and returns 0 or 1 - and with a LINEAR filter it blends the results of the four
+    // nearest texels, giving free soft edges. Outside the map (border) we answer 1.0 = "lit".
+    D3D11_SAMPLER_DESC samplerDesc{};
+    samplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_BORDER;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_BORDER;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
+    samplerDesc.BorderColor[0] = samplerDesc.BorderColor[1] = samplerDesc.BorderColor[2] = samplerDesc.BorderColor[3] = 1.0f;
+    samplerDesc.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL;
+    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    const HRESULT hr = device->CreateSamplerState(&samplerDesc, &sampler_);
+    if (FAILED(hr)) { LOG_HR(hr, "Shadow sampler creation failed"); Release(); return false; }
     return true;
 }
 
@@ -93,6 +110,8 @@ void ShadowMap::Begin(ID3D11DeviceContext* ctx, const XMFLOAT3& lightDirection,
     XMStoreFloat4x4(&view_, XMMatrixLookAtLH(eye, target, up));
     XMStoreFloat4x4(&proj_, XMMatrixOrthographicLH(2.0f * radius, 2.0f * radius, 0.0f, 2.0f * radius));
     XMStoreFloat3(&lightPosition_, eye);
+    texelWorldSize_ = 2.0f * radius / static_cast<float>(target_.GetWidth());
+    hasShadows_ = true;
 
     // 3. Draw into depth only. No colour target at all.
     ctx->OMSetRenderTargets(0, nullptr, target_.GetDepthView());
@@ -113,4 +132,23 @@ void ShadowMap::End(ID3D11DeviceContext* ctx)
     if (!ctx) return;
     ctx->OMSetRenderTargets(0, nullptr, nullptr);   // un-bind the depth view so it can be read next
     ctx->RSSetState(nullptr);
+}
+
+void ShadowMap::FillFrameData(FrameData& frame) const
+{
+    if (!hasShadows_) {
+        frame.shadowParams = XMFLOAT4(0.0f, 0.0f, 0.0f, 0.0f);   // strength 0: shaders skip the lookup
+        return;
+    }
+    XMStoreFloat4x4(&frame.lightViewProj, XMLoadFloat4x4(&view_) * XMLoadFloat4x4(&proj_));
+    frame.shadowParams = XMFLOAT4(1.0f / static_cast<float>(target_.GetWidth()), texelWorldSize_,
+                                  settings_.strength, settings_.normalOffset);
+}
+
+void ShadowMap::Bind(ID3D11DeviceContext* ctx) const
+{
+    if (!ctx || !sampler_) return;
+    ID3D11ShaderResourceView* view = hasShadows_ ? target_.GetShaderView() : nullptr;
+    ctx->PSSetShaderResources(Slots::kSrvShadow, 1, &view);
+    ctx->PSSetSamplers(Slots::kSamplerShadow, 1, &sampler_);
 }

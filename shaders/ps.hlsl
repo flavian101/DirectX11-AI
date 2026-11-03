@@ -1,4 +1,5 @@
 #include "common.hlsli"
+#include "shadow.hlsli"
 
 Texture2D colorTexture : register(t0);
 SamplerState colorSampler : register(s0);
@@ -15,9 +16,11 @@ float4 main(PS_IN input) : SV_Target {
     // Directional light (Blinn-Phong)
     {
         float3 L = normalize(-dirDirection.xyz);
-        diffuse += dirColor.rgb * dirDirection.w * saturate(dot(normal, L));
+        // Only the SUN is shadowed (ambient and the point lights are not).
+        float shadow = ShadowFactor(input.worldPos, normal, L);
+        diffuse += dirColor.rgb * dirDirection.w * saturate(dot(normal, L)) * shadow;
         float3 h = normalize(L + viewDir);
-        specular += dirColor.rgb * dirDirection.w * pow(saturate(dot(normal, h)), 32.0f);
+        specular += dirColor.rgb * dirDirection.w * pow(saturate(dot(normal, h)), 32.0f) * shadow;
     }
 
     // Point lights with smooth quadratic range falloff

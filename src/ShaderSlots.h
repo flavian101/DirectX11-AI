@@ -12,4 +12,8 @@ namespace Slots {
     constexpr unsigned int kSrvAlbedo      = 0;  // Texture2D / skybox TextureCube, set per draw
     constexpr unsigned int kSrvEnvironment = 1;  // TextureCube bound once per frame by Scene
     constexpr unsigned int kSrvShadow      = 2;  // the sun's depth map (Texture2D<float>)
+
+    // Samplers (PS)
+    constexpr unsigned int kSamplerLinear  = 0;  // trilinear + anisotropic, bound once by the renderer
+    constexpr unsigned int kSamplerShadow  = 1;  // comparison sampler for the shadow map
 }

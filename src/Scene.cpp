@@ -84,6 +84,7 @@ bool Scene::ComputeShadowBounds(DirectX::XMFLOAT3& center, float& radius) const
 
 void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
 {
+    if (shadow_) shadow_->Invalidate();   // until Begin() runs, the main pass must not sample the map
     if (!ctx || !shadow_ || !shadow_->IsEnabled()) return;
     DirectX::XMFLOAT3 center;
     float radius = 0.0f;
@@ -108,7 +109,10 @@ void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
 void Scene::Render(ID3D11DeviceContext* ctx) const
 {
     // Per-frame state: bound once here, then every object just draws.
-    frame_.Apply(ctx, camera_, time_);
+    FrameData frame = FrameData::FromCamera(camera_, time_);
+    shadow_->FillFrameData(frame);       // the sun's matrix + shadow parameters
+    frame_.Apply(ctx, frame);
+    shadow_->Bind(ctx);                  // shadow map -> t2, comparison sampler -> s1
     ID3D11ShaderResourceView* environment =
         (skybox_ && skybox_->IsValid()) ? skybox_->GetCubemapView() : nullptr;
     ctx->PSSetShaderResources(Slots::kSrvEnvironment, 1, &environment);

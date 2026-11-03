@@ -1,5 +1,6 @@
 #pragma once
 #include "DepthTarget.h"
+#include "FrameConstants.h"
 #include "Shader.h"
 #include <DirectXMath.h>
 #include <d3d11.h>
@@ -10,10 +11,13 @@ struct ShadowSettings {
     int resolution = 2048;     // the map is resolution x resolution texels
     int depthBias = 1500;      // constant bias, in depth-buffer units (see lesson 2)
     float slopeBias = 2.0f;    // extra bias that grows with the surface's angle to the light
+    float normalOffset = 1.5f; // lookup offset along the normal, in texels (see lesson 3)
+    float strength = 0.75f;    // 0 = shadows invisible, 1 = shadowed areas get no sun at all
 
     static constexpr int kResolutionMin = 512, kResolutionMax = 4096;
     static constexpr int kDepthBiasMax = 20000;
     static constexpr float kSlopeBiasMax = 8.0f;
+    static constexpr float kNormalOffsetMax = 5.0f;
 
     void Clamp();
 };
@@ -41,6 +45,11 @@ public:
                const DirectX::XMFLOAT3& center, float radius);
     void End(ID3D11DeviceContext* ctx);
 
+    // Main-pass side: call once per frame before drawing the camera view.
+    void Invalidate() { hasShadows_ = false; }      // "no shadow pass happened this frame"
+    void FillFrameData(FrameData& frame) const;     // light matrix + parameters for the shaders
+    void Bind(ID3D11DeviceContext* ctx) const;      // shadow map -> t2, comparison sampler -> s1
+
     const Shader& GetShader() const { return *shader_; }
     const DirectX::XMFLOAT4X4& GetView() const { return view_; }
     const DirectX::XMFLOAT4X4& GetProj() const { return proj_; }
@@ -56,6 +65,9 @@ private:
     DepthTarget target_;
     std::shared_ptr<Shader> shader_;
     ID3D11RasterizerState* rasterState_ = nullptr;
+    ID3D11SamplerState* sampler_ = nullptr;   // comparison sampler
+    bool hasShadows_ = false;
+    float texelWorldSize_ = 0.0f;
     DirectX::XMFLOAT4X4 view_{};
     DirectX::XMFLOAT4X4 proj_{};
     DirectX::XMFLOAT3 lightPosition_{};

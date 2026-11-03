@@ -59,6 +59,8 @@ void FrameConstants::Apply(ID3D11DeviceContext* ctx, const FrameData& frame) con
     XMStoreFloat4x4(&data->proj, XMMatrixTranspose(XMLoadFloat4x4(&frame.proj)));
     data->cameraPos = XMFLOAT4(frame.cameraPos.x, frame.cameraPos.y, frame.cameraPos.z, 1.0f);
     data->frameParams = XMFLOAT4(frame.time, 0.0f, 0.0f, 0.0f);
+    XMStoreFloat4x4(&data->lightViewProj, XMMatrixTranspose(XMLoadFloat4x4(&frame.lightViewProj)));
+    data->shadowParams = frame.shadowParams;
 
     ctx->Unmap(cb_, 0);
     ctx->VSSetConstantBuffers(Slots::kCbPerFrame, 1, &cb_);
