@@ -24,11 +24,11 @@ public:
     ~Renderable();
 
     bool IsValid() const { return valid_; }
-    // `visible` (optional) is a per-mesh flag list: meshes flagged 0 are not drawn.
-    void Render(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* visible = nullptr) const;
+    // `drawList` (optional): per-mesh level of detail, or Model::kSkipMesh (see Model::Draw).
+    void Render(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* drawList = nullptr) const;
     // Same mesh and world matrix, but a different shader (used by the shadow pass).
     void RenderWith(ID3D11DeviceContext* ctx, const Shader& shader,
-                    const std::vector<unsigned char>* visible = nullptr) const;
+                    const std::vector<unsigned char>* drawList = nullptr) const;
     void SetWorld(const DirectX::XMFLOAT4X4& world) { if (model_) model_->SetWorld(world); }
     void SetMaterialColor(const DirectX::XMFLOAT4& color) { materialColor_ = color; }
     void SetMaterialParameters(const DirectX::XMFLOAT4& parameters) { materialParameters_ = parameters; }

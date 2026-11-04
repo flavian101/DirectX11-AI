@@ -12,8 +12,10 @@ public:
 
     void SetWorld(const DirectX::XMFLOAT4X4& world) { world_ = world; }
     const DirectX::XMFLOAT4X4& GetWorld() const { return world_; }
-    // `visible` (optional): one flag per mesh; a mesh whose flag is 0 is skipped (culling).
-    void Draw(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* visible = nullptr) const;
+    // `drawList` (optional): one byte per mesh = which level of detail to draw, or kSkipMesh to
+    // skip it (culling). Without a list every mesh is drawn at full detail.
+    static constexpr unsigned char kSkipMesh = 255;
+    void Draw(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* drawList = nullptr) const;
     size_t GetMeshCount() const { return meshes_.size(); }
 
 private:

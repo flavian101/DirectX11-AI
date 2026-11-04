@@ -49,13 +49,13 @@ void Renderable::SetMaterialBlock(const void* data, UINT byteSize)
     materialDirty_ = true;
 }
 
-void Renderable::Render(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* visible) const
+void Renderable::Render(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* drawList) const
 {
-    if (valid_ && shader_) RenderWith(ctx, *shader_, visible);
+    if (valid_ && shader_) RenderWith(ctx, *shader_, drawList);
 }
 
 void Renderable::RenderWith(ID3D11DeviceContext* ctx, const Shader& shader,
-                            const std::vector<unsigned char>* visible) const
+                            const std::vector<unsigned char>* drawList) const
 {
     if (!valid_ || !ctx) return;
     D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -106,5 +106,5 @@ void Renderable::RenderWith(ID3D11DeviceContext* ctx, const Shader& shader,
     // invisible-water bug.)
     ctx->VSSetConstantBuffers(Slots::kCbPerObject, 1, &cb_);
     ctx->PSSetConstantBuffers(Slots::kCbPerObject, 1, &cb_);
-    model_->Draw(ctx, visible);
+    model_->Draw(ctx, drawList);
 }

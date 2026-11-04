@@ -162,6 +162,8 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 	// right/bottom edge are smaller when the grid does not divide evenly.
 	const int chunksX = (cellsX + kChunkCells - 1) / kChunkCells;
 	const int chunksZ = (cellsZ + kChunkCells - 1) / kChunkCells;
+	// How far the skirts hang down: enough to cover the height gap a coarser neighbour can leave.
+	const float skirtDepth = (std::max)(1.5f, settings.heightScale * 0.06f);
 	std::vector<Mesh*> meshes;
 	meshes.reserve(static_cast<size_t>(chunksX) * chunksZ);
 	outChunks.clear();
@@ -185,24 +187,93 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 				}
 			}
 
-			std::vector<uint32_t> indices;
-			indices.reserve(static_cast<size_t>(x1 - x0) * (z1 - z0) * 6);
-			for (int z = 0; z < z1 - z0; ++z) {
-				for (int x = 0; x < x1 - x0; ++x) {
-					const uint32_t topLeft = static_cast<uint32_t>(z * vertsX + x);
-					const uint32_t topRight = topLeft + 1;
-					const uint32_t bottomLeft = static_cast<uint32_t>((z + 1) * vertsX + x);
-					const uint32_t bottomRight = bottomLeft + 1;
-					indices.insert(indices.end(), {topLeft, bottomLeft, topRight,
-												   topRight, bottomLeft, bottomRight});
+			const int cellsInX = x1 - x0;
+			const int cellsInZ = z1 - z0;
+
+			// SKIRTS. Two neighbouring tiles at different detail levels do not share edge vertices,
+			// which opens thin cracks between them. We hang a vertical strip of triangles below every
+			// tile edge so that whatever is behind a crack is the terrain, not the sky. These extra
+			// vertices are copies of the edge vertices, moved straight down.
+			const int gridVertexCount = static_cast<int>(vertices.size());
+			const int northBase = gridVertexCount;                       // z = 0 edge, one per x
+			const int southBase = northBase + (cellsInX + 1);             // z = cellsInZ edge
+			const int westBase = southBase + (cellsInX + 1);              // x = 0 edge, one per z
+			const int eastBase = westBase + (cellsInZ + 1);               // x = cellsInX edge
+			auto grid = [&](int x, int z) { return static_cast<uint32_t>(z * vertsX + x); };
+			auto addSkirtVertex = [&](int x, int z) {
+				Vertex v = vertices[grid(x, z)];
+				v.position.y -= skirtDepth;
+				boundsMin.y = (std::min)(boundsMin.y, v.position.y);
+				vertices.push_back(v);
+			};
+			for (int x = 0; x <= cellsInX; ++x) addSkirtVertex(x, 0);
+			for (int x = 0; x <= cellsInX; ++x) addSkirtVertex(x, cellsInZ);
+			for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(0, z);
+			for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(cellsInX, z);
+
+			// LEVELS OF DETAIL: the same vertices, connected more coarsely. Level L skips grid lines
+			// so that only every (2^L)-th vertex is used. The last line is always kept, so the tile's
+			// outline never changes.
+			std::vector<std::vector<uint32_t>> lodIndices;
+			for (int lod = 0; lod < kTerrainLodCount; ++lod) {
+				const int step = 1 << lod;
+				auto lines = [step](int cells) {
+					std::vector<int> positions;
+					for (int i = 0; i < cells; i += step) positions.push_back(i);
+					positions.push_back(cells);
+					return positions;
+				};
+				const std::vector<int> xs = lines(cellsInX);
+				const std::vector<int> zs = lines(cellsInZ);
+
+				std::vector<uint32_t> indices;
+				indices.reserve((xs.size() - 1) * (zs.size() - 1) * 6 + (xs.size() + zs.size()) * 12);
+
+				// The surface itself (clockwise seen from above = front face).
+				for (size_t zi = 0; zi + 1 < zs.size(); ++zi) {
+					for (size_t xi = 0; xi + 1 < xs.size(); ++xi) {
+						const uint32_t topLeft = grid(xs[xi], zs[zi]);
+						const uint32_t topRight = grid(xs[xi + 1], zs[zi]);
+						const uint32_t bottomLeft = grid(xs[xi], zs[zi + 1]);
+						const uint32_t bottomRight = grid(xs[xi + 1], zs[zi + 1]);
+						indices.insert(indices.end(), {topLeft, bottomLeft, topRight,
+													   topRight, bottomLeft, bottomRight});
+					}
 				}
+				// The skirts, wound so they face OUTWARD from the tile (the winding for each of the four
+				// edges differs because "clockwise as seen from outside" depends on which side you stand on).
+				for (size_t i = 0; i + 1 < xs.size(); ++i) {
+					const int a = xs[i], b = xs[i + 1];
+					{   // north edge (faces -z)
+						const uint32_t ea = grid(a, 0), eb = grid(b, 0), sa = northBase + a, sb = northBase + b;
+						indices.insert(indices.end(), {ea, eb, sa,  eb, sb, sa});
+					}
+					{   // south edge (faces +z)
+						const uint32_t ea = grid(a, cellsInZ), eb = grid(b, cellsInZ), sa = southBase + a, sb = southBase + b;
+						indices.insert(indices.end(), {eb, ea, sb,  ea, sa, sb});
+					}
+				}
+				for (size_t i = 0; i + 1 < zs.size(); ++i) {
+					const int a = zs[i], b = zs[i + 1];
+					{   // west edge (faces -x)
+						const uint32_t ea = grid(0, a), eb = grid(0, b), sa = westBase + a, sb = westBase + b;
+						indices.insert(indices.end(), {eb, ea, sb,  ea, sa, sb});
+					}
+					{   // east edge (faces +x)
+						const uint32_t ea = grid(cellsInX, a), eb = grid(cellsInX, b), sa = eastBase + a, sb = eastBase + b;
+						indices.insert(indices.end(), {ea, eb, sa,  eb, sb, sa});
+					}
+				}
+				lodIndices.push_back(std::move(indices));
 			}
 
-			meshes.push_back(new Mesh(device, vertices, indices));
+			meshes.push_back(new Mesh(device, vertices, lodIndices));
 			TerrainChunk chunk;
 			chunk.boundsMin = boundsMin;
 			chunk.boundsMax = boundsMax;
-			chunk.triangleCount = static_cast<int>(indices.size() / 3);
+			for (int lod = 0; lod < kTerrainLodCount; ++lod) {
+				chunk.triangleCount[lod] = static_cast<int>(lodIndices[lod].size() / 3);
+			}
 			outChunks.push_back(chunk);
 		}
 	}
@@ -230,6 +301,8 @@ void TerrainSettings::Clamp()
 	snowFade = std::clamp(snowFade, 0.1f, 50.0f);
 	breakupScale = std::clamp(breakupScale, kBreakupScaleMin, kBreakupScaleMax);
 	breakupAmount = std::clamp(breakupAmount, 0.0f, 1.0f);
+	lodDistance0 = std::clamp(lodDistance0, kLodDistanceMin, kLodDistanceMax);
+	lodDistance1 = std::clamp(lodDistance1, lodDistance0 * 1.2f, kLodDistanceMax * 2.0f);   // level 2 must start beyond level 1
 }
 
 void TerrainSettings::ResetLayers()
@@ -258,6 +331,11 @@ Terrain::Terrain(ID3D11Device* device) : device_(device)
 	if (!Rebuild(settings_)) LOG_ERROR("Terrain mesh initialization failed");
 	UpdateWorldTransform();
 	if (!IsValid()) LOG_ERROR("Terrain initialization failed");
+}
+
+Terrain::~Terrain()
+{
+	if (wireframeState_) wireframeState_->Release();
 }
 
 bool Terrain::IsValid() const
@@ -292,6 +370,7 @@ bool Terrain::Rebuild(const TerrainSettings& settings)
 	settings_ = settings;
 	depth_ = depth;
 	chunks_ = std::move(chunks);
+	chunkLod_.assign(chunks_.size(), Model::kSkipMesh);   // "no level chosen yet": the first frame picks without hysteresis
 	UpdateMaterial();
 	UpdateWorldTransform();
 	return true;
@@ -327,6 +406,15 @@ static void TransformBounds(const XMMATRIX& world, const XMFLOAT3& localMin, con
 	XMStoreFloat3(&worldMax, center + extent);
 }
 
+// Distance from a point to the nearest point of a box (0 if inside).
+static float DistanceToBox(const XMFLOAT3& p, const XMFLOAT3& boxMin, const XMFLOAT3& boxMax)
+{
+	const float dx = (std::max)((std::max)(boxMin.x - p.x, 0.0f), p.x - boxMax.x);
+	const float dy = (std::max)((std::max)(boxMin.y - p.y, 0.0f), p.y - boxMax.y);
+	const float dz = (std::max)((std::max)(boxMin.z - p.z, 0.0f), p.z - boxMax.z);
+	return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 void Terrain::DrawChunks(ID3D11DeviceContext* ctx, const Shader* shaderOverride, const RenderView& view) const
 {
 	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
@@ -334,21 +422,56 @@ void Terrain::DrawChunks(ID3D11DeviceContext* ctx, const Shader* shaderOverride,
 	stats = {};
 	stats.chunksTotal = static_cast<int>(chunks_.size());
 
-	// 1. Which tiles can this view see?
-	visible_.assign(chunks_.size(), 1);
+	// Hysteresis: a chunk that sits exactly on a LOD boundary would flip back and forth every time
+	// the camera jitters. So to CHANGE level it must pass the threshold by a margin (10%).
+	const float thresholds[kTerrainLodCount - 1] = { settings_.lodDistance0, settings_.lodDistance1 };
+	const float margin = 0.10f;
+
+	drawList_.assign(chunks_.size(), Model::kSkipMesh);
 	for (size_t i = 0; i < chunks_.size(); ++i) {
-		if (settings_.frustumCulling) {
-			XMFLOAT3 worldMin, worldMax;
-			TransformBounds(world, chunks_[i].boundsMin, chunks_[i].boundsMax, worldMin, worldMax);
-			if (!view.frustum.IntersectsAABB(worldMin, worldMax)) { visible_[i] = 0; continue; }
+		XMFLOAT3 worldMin, worldMax;
+		TransformBounds(world, chunks_[i].boundsMin, chunks_[i].boundsMax, worldMin, worldMax);
+
+		// 1. Can this view see the tile at all?
+		if (settings_.frustumCulling && !view.frustum.IntersectsAABB(worldMin, worldMax)) continue;
+
+		// 2. How much detail does it deserve? Distance is measured from the REAL camera even for the
+		//    mirror and sun views, so all three draw the same level and the shapes agree.
+		int lod = 0;
+		if (settings_.lodEnabled) {
+			const float distance = DistanceToBox(view.lodOrigin, worldMin, worldMax);
+			if (chunkLod_[i] == Model::kSkipMesh) {
+				while (lod < kTerrainLodCount - 1 && distance > thresholds[lod]) ++lod;           // first time: plain thresholds
+			} else {
+				lod = chunkLod_[i];
+				while (lod > 0 && distance < thresholds[lod - 1] * (1.0f - margin)) --lod;       // closer: finer, once clearly past
+				while (lod < kTerrainLodCount - 1 && distance > thresholds[lod] * (1.0f + margin)) ++lod;   // farther: coarser
+			}
+			chunkLod_[i] = static_cast<unsigned char>(lod);
 		}
+
+		drawList_[i] = static_cast<unsigned char>(lod);
 		++stats.chunksDrawn;
-		stats.trianglesDrawn += chunks_[i].triangleCount;
+		++stats.chunksPerLod[lod];
+		stats.trianglesDrawn += chunks_[i].triangleCount[lod];
 	}
 
-	// 2. Draw only those.
-	if (shaderOverride) renderable_->RenderWith(ctx, *shaderOverride, &visible_);
-	else renderable_->Render(ctx, &visible_);
+	// 3. Draw. In wireframe mode the main and mirror views show the mesh as wires; the sun view
+	//    keeps the shadow pass's own rasterizer state.
+	const bool wire = settings_.wireframe && view.kind != ViewKind::Shadow;
+	if (wire) {
+		if (!wireframeState_) {
+			D3D11_RASTERIZER_DESC desc{};
+			desc.FillMode = D3D11_FILL_WIREFRAME;
+			desc.CullMode = D3D11_CULL_NONE;
+			desc.DepthClipEnable = TRUE;
+			device_->CreateRasterizerState(&desc, &wireframeState_);
+		}
+		ctx->RSSetState(wireframeState_);
+	}
+	if (shaderOverride) renderable_->RenderWith(ctx, *shaderOverride, &drawList_);
+	else renderable_->Render(ctx, &drawList_);
+	if (wire) ctx->RSSetState(nullptr);
 }
 
 void Terrain::UpdateMaterial()

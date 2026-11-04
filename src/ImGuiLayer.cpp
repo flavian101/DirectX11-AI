@@ -323,14 +323,26 @@ void ImGuiLayer::DrawTerrainInspector(Terrain* terrain)
     if (ImGui::Button("Reset layers")) { s.ResetLayers(); layersChanged = true; }
     if (layersChanged) terrain->ApplySettings(s);
 
-    ImGui::SeparatorText("Chunks and culling");
-    if (ImGui::Checkbox("Frustum culling", &s.frustumCulling)) terrain->ApplySettings(s);
+    ImGui::SeparatorText("Chunks, culling and detail");
+    // These are all cheap switches, so they apply live.
+    bool detailChanged = false;
+    detailChanged |= ImGui::Checkbox("Frustum culling", &s.frustumCulling);
     ImGui::SetItemTooltip("Skip terrain tiles that cannot be seen. Turn it off to compare the triangle counts.");
+    detailChanged |= ImGui::Checkbox("Level of detail", &s.lodEnabled);
+    ImGui::SetItemTooltip("Distant tiles use fewer triangles.");
+    detailChanged |= ImGui::SliderFloat("Full detail until", &s.lodDistance0, TerrainSettings::kLodDistanceMin,
+                                        TerrainSettings::kLodDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
+    detailChanged |= ImGui::SliderFloat("Half detail until", &s.lodDistance1, TerrainSettings::kLodDistanceMin,
+                                        TerrainSettings::kLodDistanceMax * 2.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+    detailChanged |= ImGui::Checkbox("Wireframe", &s.wireframe);
+    ImGui::SetItemTooltip("Draws the terrain as wires so you can SEE the detail levels (and the skirts at tile edges).");
+    if (detailChanged) terrain->ApplySettings(s);
     static const char* const kViewNames[] = { "Camera", "Mirror", "Sun" };
     for (int i = 0; i < kViewKindCount; ++i) {
         const TerrainViewStats& stats = terrain->GetStats(static_cast<ViewKind>(i));
-        ImGui::TextDisabled("%-6s %3d / %3d chunks, %d triangles", kViewNames[i],
-                            stats.chunksDrawn, stats.chunksTotal, stats.trianglesDrawn);
+        ImGui::TextDisabled("%-6s %3d/%3d chunks  LOD %d/%d/%d  %d tris", kViewNames[i],
+                            stats.chunksDrawn, stats.chunksTotal, stats.chunksPerLod[0], stats.chunksPerLod[1],
+                            stats.chunksPerLod[2], stats.trianglesDrawn);
     }
 
     ImGui::Separator();
