@@ -3,15 +3,8 @@
 #include <chrono>
 #include <windowsx.h>
 #include "Logger.h"
-#include "ImGuiLayer.h"
-#include "imgui.h"
-#include "imgui_impl_dx11.h"
-#include "imgui_impl_win32.h"
 
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
-    HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
+Window::Window(int width, int height, const wchar_t* title) : m_Hinstance(GetModuleHandle(nullptr))
 {
     WNDCLASSW wc{};
     wc.lpfnWndProc = WndProc;
@@ -20,9 +13,9 @@ Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
     RegisterClassW(&wc);
     windowHandle = this;
 
-    _hwnd = CreateWindowExW(0, wc.lpszClassName, L"DirectX 11 Demo",
+    _hwnd = CreateWindowExW(0, wc.lpszClassName, title,
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-        800, 600, nullptr, nullptr, m_Hinstance, nullptr);
+        width, height, nullptr, nullptr, m_Hinstance, nullptr);
     if (!_hwnd) {
         LOG_ERROR("Failed to create window");
         return;
@@ -44,41 +37,32 @@ Window::Window() : m_Hinstance(GetModuleHandle(nullptr))
         LOG_ERROR("Failed to initialize Direct3D 11");
         return;
     }
+}
 
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGui::StyleColorsDark();
-    if (!ImGui_ImplWin32_Init(_hwnd) ||
-        !ImGui_ImplDX11_Init(m_renderer->GetDevice(), m_renderer->GetContext())) {
-        LOG_ERROR("Failed to initialize Dear ImGui");
-        ImGui_ImplDX11_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-        return;
+void Window::SetLayer(std::unique_ptr<Layer> layer)
+{
+    if (layer_) layer_->OnDetach();
+    layer_ = std::move(layer);
+    if (layer_ && (!m_renderer || !layer_->OnAttach(_hwnd, *m_renderer))) {
+        LOG_ERROR("The window layer failed to attach; running without it");
+        layer_.reset();
     }
-    imguiInitialized_ = true;
 }
 
 void Window::SetScene(std::unique_ptr<Scene> scene)
 {
-    imguiLayer_.reset();   // it points into the old scene
     m_scene = std::move(scene);
     if (!m_scene) return;
-    // The camera defaults to 800x600 but the real client area is smaller (title bar, borders).
-    if (m_renderer) m_scene->GetCamera().SetWindowSize(static_cast<int>(m_renderer->GetWidth()),
-                                                       static_cast<int>(m_renderer->GetHeight()));
-    imguiLayer_ = std::make_unique<ImGuiLayer>(m_scene.get());
+    // The camera defaults to 800x600 but the real view is a different size (title bar, borders, panels).
+    if (m_renderer) m_scene->GetCamera().SetWindowSize(static_cast<int>(m_renderer->GetViewWidth()),
+                                                       static_cast<int>(m_renderer->GetViewHeight()));
 }
 
 Window::~Window()
 {
-    imguiLayer_.reset();
-    if (imguiInitialized_) {
-        ImGui_ImplDX11_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-        imguiInitialized_ = false;
-    }
+    // The layer owns GPU objects of its own (the editor UI): it must go before the device does.
+    if (layer_) layer_->OnDetach();
+    layer_.reset();
     // Destroy scene GPU resources while the D3D device is still alive.
     m_scene.reset();
     delete m_renderer;
@@ -89,13 +73,15 @@ void Window::OnResize(UINT width, UINT height)
 {
     if (!m_renderer || width == 0 || height == 0) return;
     if (!m_renderer->Resize(width, height)) return;
-    // Same field of view, new aspect ratio - otherwise the image is stretched.
-    if (m_scene) m_scene->GetCamera().SetWindowSize(static_cast<int>(width), static_cast<int>(height));
+    // Same field of view, new aspect ratio - otherwise the image is stretched. The aspect is the
+    // VIEW's: the window in a game, the Viewport panel in the editor (which sets it itself).
+    if (m_scene) m_scene->GetCamera().SetWindowSize(static_cast<int>(m_renderer->GetViewWidth()),
+                                                    static_cast<int>(m_renderer->GetViewHeight()));
 }
 
 LRESULT Window::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    if (imguiInitialized_ && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam)) {
+    if (layer_ && layer_->OnWindowMessage(hwnd, msg, wParam, lParam)) {
         return 0;
     }
 
@@ -170,6 +156,8 @@ LRESULT Window::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
     }
     case WM_MBUTTONDOWN:
     {
+        // Only start looking around when the click landed on the 3D view, not on a panel.
+        if (layer_ && layer_->BlocksSceneMouse()) break;
         SetCapture(hwnd);
 
         if (!cursorHidden_)
@@ -233,24 +221,21 @@ void Window::Run()
         lastTime = now;
 
         // 1. input -> camera, 2. advance the simulation, 3. build UI, 4. draw.
-        m_scene->ProcessInput(inputState_, dt);
+        InputState input = inputState_;
+        if (layer_ && layer_->BlocksSceneKeyboard()) input.keys.fill(false);   // typing in a text box
+        m_scene->ProcessInput(input, dt);
         m_scene->Update(dt);
 
         // Reset mouse delta after processing
         inputState_.mouseDeltaX = 0;
         inputState_.mouseDeltaY = 0;
 
-        if (imguiInitialized_) {
-            ImGui_ImplDX11_NewFrame();
-            ImGui_ImplWin32_NewFrame();
-            ImGui::NewFrame();
-
-            if (imguiLayer_) imguiLayer_->Draw();
-
-            ImGui::Render();
+        if (layer_) {
+            LayerContext context{ *m_scene, *m_renderer };
+            layer_->OnFrame(context);
         }
 
-        m_renderer->Render(*m_scene);
+        m_renderer->Render(*m_scene, layer_.get());
     }
 }
 

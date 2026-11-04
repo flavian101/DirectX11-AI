@@ -7,7 +7,7 @@
 
 int main()
 {
-    Window window;                       // OS window + Direct3D 11 + ImGui
+    Window window;                       // OS window + Direct3D 11 (no editor: see editor/main_editor.cpp)
     if (!window.IsInitialized()) return 1;
 
     auto scene = std::make_unique<Scene>();

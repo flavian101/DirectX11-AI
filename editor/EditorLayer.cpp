@@ -1,9 +1,20 @@
-#include "ImGuiLayer.h"
+#include "EditorLayer.h"
 #include <algorithm>
 #include <cstdio>
+#include "Direct3D11Renderer.h"
+#include "Logger.h"
 #include "Skybox.h"
 #include "imgui.h"
+#include "imgui_impl_dx11.h"
+#include "imgui_impl_win32.h"
+#include "imgui_internal.h"   // DockBuilder*: building the default panel layout from code
 #include <DirectXMath.h>
+
+#ifndef IMGUI_HAS_DOCK
+#error "The editor needs Dear ImGui's DOCKING branch: cd extern/imgui && git checkout docking"
+#endif
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 using namespace DirectX;
 
@@ -17,38 +28,179 @@ void DrawFloat3(const char* label, XMFLOAT3& value, float speed, float minValue,
 }
 }
 
-ImGuiLayer::ImGuiLayer(Scene* scene) : scene_(scene) {}
+EditorLayer::EditorLayer() = default;
 
-void ImGuiLayer::Draw()
+EditorLayer::~EditorLayer() { OnDetach(); }
+
+bool EditorLayer::OnAttach(HWND hwnd, Direct3D11Renderer& renderer)
 {
-    if (scene_) DrawCollectionWindow();
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;       // the whole point of the docking branch
+    // Without this, pressing the left button on the Viewport image would DRAG THE WINDOW out of its dock.
+    io.ConfigWindowsMoveFromTitleBarOnly = true;
+    ImGui::StyleColorsDark();
+
+    if (!ImGui_ImplWin32_Init(hwnd) || !ImGui_ImplDX11_Init(renderer.GetDevice(), renderer.GetContext())) {
+        LOG_ERROR("Failed to initialize Dear ImGui");
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        return false;
+    }
+    attached_ = true;
+    return true;
 }
 
-void ImGuiLayer::DrawCollectionWindow()
+void EditorLayer::OnDetach()
 {
-    if (!ImGui::Begin("Scene Collection", nullptr, ImGuiWindowFlags_MenuBar)) {
-        ImGui::End();
-        return;
+    if (!attached_) return;   // safe to call twice (SetLayer, then the destructor)
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+    attached_ = false;
+}
+
+bool EditorLayer::OnWindowMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    return attached_ && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
+}
+
+bool EditorLayer::BlocksSceneKeyboard() const
+{
+    return attached_ && ImGui::GetIO().WantTextInput;   // typing into a text field: WASD must not fly the camera
+}
+
+void EditorLayer::OnFrame(LayerContext& ctx)
+{
+    if (!attached_) return;
+    scene_ = &ctx.scene;
+
+    // Apply the size the Viewport panel measured LAST frame. The panel only knows its size while
+    // it is being laid out (below), which is too late to resize the textures for this frame.
+    if (ctx.renderer.SetViewTargetSize(viewportWidth_, viewportHeight_) &&
+        (appliedWidth_ != viewportWidth_ || appliedHeight_ != viewportHeight_)) {
+        appliedWidth_ = viewportWidth_;
+        appliedHeight_ = viewportHeight_;
+        ctx.scene.GetCamera().SetWindowSize(static_cast<int>(appliedWidth_), static_cast<int>(appliedHeight_));
     }
 
-    if (ImGui::BeginMenuBar()) {
-        if (ImGui::BeginMenu("View")) {
-            if (ImGui::MenuItem("Select Camera")) selectionKind_ = SelectionKind::Camera;
-            if (ImGui::MenuItem("Select Lights")) selectionKind_ = SelectionKind::Lights;
-            ImGui::EndMenu();
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    DrawDockSpace();
+    DrawViewportPanel(ctx);
+    DrawHierarchyPanel();
+    DrawInspectorPanel();
+
+    ImGui::Render();
+}
+
+void EditorLayer::OnRenderOverlay(ID3D11DeviceContext*)
+{
+    if (attached_) ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+}
+
+void EditorLayer::DrawDockSpace()
+{
+    // A borderless host window that covers the whole client area. It owns the menu bar and the
+    // dock space; every panel docks INTO this space.
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking |
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
+        ImGuiWindowFlags_NoBackground;
+    ImGui::Begin("##EditorHost", nullptr, flags);
+    ImGui::PopStyleVar(3);
+
+    DrawMenuBar();
+
+    const ImGuiID dockSpaceId = ImGui::GetID("EditorDockSpace");
+    // No node yet = first run (imgui.ini would have restored one) or the user asked for a reset.
+    if (resetLayout_ || ImGui::DockBuilderGetNode(dockSpaceId) == nullptr) {
+        BuildDefaultLayout(dockSpaceId, viewport->WorkSize.x, viewport->WorkSize.y);
+        resetLayout_ = false;
+    }
+    ImGui::DockSpace(dockSpaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+    ImGui::End();
+}
+
+void EditorLayer::BuildDefaultLayout(unsigned int dockSpaceId, float width, float height)
+{
+    ImGui::DockBuilderRemoveNode(dockSpaceId);
+    ImGui::DockBuilderAddNode(dockSpaceId, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockSpaceId, ImVec2(width, height));
+
+    // Carve the space: a slice off the left, a slice off the right, the rest is the middle.
+    ImGuiID middle = dockSpaceId;
+    const ImGuiID left = ImGui::DockBuilderSplitNode(middle, ImGuiDir_Left, 0.20f, nullptr, &middle);
+    const ImGuiID right = ImGui::DockBuilderSplitNode(middle, ImGuiDir_Right, 0.28f, nullptr, &middle);
+    ImGui::DockBuilderDockWindow("Hierarchy", left);
+    ImGui::DockBuilderDockWindow("Viewport", middle);
+    ImGui::DockBuilderDockWindow("Inspector", right);
+    ImGui::DockBuilderFinish(dockSpaceId);
+}
+
+void EditorLayer::DrawMenuBar()
+{
+    if (!ImGui::BeginMenuBar()) return;
+    if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("Exit")) PostQuitMessage(0);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("View")) {
+        ImGui::MenuItem("Hierarchy", nullptr, &showHierarchy_);
+        ImGui::MenuItem("Viewport", nullptr, &showViewport_);
+        ImGui::MenuItem("Inspector", nullptr, &showInspector_);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Reset layout")) resetLayout_ = true;
+        ImGui::EndMenu();
+    }
+    ImGui::EndMenuBar();
+}
+
+void EditorLayer::DrawViewportPanel(LayerContext& ctx)
+{
+    viewportHovered_ = false;
+    if (!showViewport_) return;
+
+    // The image should touch the panel's edges, so no padding inside this one window.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    const bool open = ImGui::Begin("Viewport", &showViewport_,
+                                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    if (open) {
+        const ImVec2 available = ImGui::GetContentRegionAvail();
+        viewportWidth_ = static_cast<unsigned int>((std::max)(1.0f, available.x));
+        viewportHeight_ = static_cast<unsigned int>((std::max)(1.0f, available.y));
+
+        if (ID3D11ShaderResourceView* image = ctx.renderer.GetViewTexture()) {
+            ImGui::Image(static_cast<ImTextureID>(reinterpret_cast<intptr_t>(image)), available);
+            viewportHovered_ = ImGui::IsItemHovered();
+            char fps[32];
+            std::snprintf(fps, sizeof(fps), "FPS: %.1f", ImGui::GetIO().Framerate);
+            ImGui::GetWindowDrawList()->AddText(ImVec2(ImGui::GetItemRectMin().x + 8.0f, ImGui::GetItemRectMax().y - 22.0f),
+                                                IM_COL32(255, 255, 255, 200), fps);
         }
-        ImGui::EndMenuBar();
     }
+    ImGui::End();
+}
 
-    ImGui::BeginChild("Hierarchy", ImVec2(230.0f, 0.0f), true);
-    ImGui::Text("Collection");
-    ImGui::Separator();
-    if (ImGui::Selectable("Camera", selectionKind_ == SelectionKind::Camera)) {
-        selectionKind_ = SelectionKind::Camera;
-    }
-    if (ImGui::Selectable("Lights", selectionKind_ == SelectionKind::Lights)) {
-        selectionKind_ = SelectionKind::Lights;
-    }
+void EditorLayer::DrawHierarchyPanel()
+{
+    if (!showHierarchy_) return;
+    if (!ImGui::Begin("Hierarchy", &showHierarchy_)) { ImGui::End(); return; }
+
+    if (ImGui::Selectable("Camera", selectionKind_ == SelectionKind::Camera)) selectionKind_ = SelectionKind::Camera;
+    if (ImGui::Selectable("Lights", selectionKind_ == SelectionKind::Lights)) selectionKind_ = SelectionKind::Lights;
     ImGui::Separator();
 
     const auto& objects = scene_->GetObjects();
@@ -56,16 +208,23 @@ void ImGuiLayer::DrawCollectionWindow()
     for (int index = 0; index < static_cast<int>(objects.size()); ++index) {
         SceneObject* object = objects[index].get();
         if (!object) continue;
+        ImGui::PushID(index);   // two objects can share a name; the id keeps their rows distinct
         if (ImGui::Selectable(object->GetEditorName(),
                               selectionKind_ == SelectionKind::Object && selectedObject_ == index)) {
             selectionKind_ = SelectionKind::Object;
             selectedObject_ = index;
         }
+        ImGui::PopID();
     }
-    ImGui::EndChild();
+    ImGui::End();
+}
 
-    ImGui::SameLine();
-    ImGui::BeginChild("Inspector", ImVec2(0.0f, 0.0f), true);
+void EditorLayer::DrawInspectorPanel()
+{
+    if (!showInspector_) return;
+    if (!ImGui::Begin("Inspector", &showInspector_)) { ImGui::End(); return; }
+
+    const auto& objects = scene_->GetObjects();
     if (selectionKind_ == SelectionKind::Camera) {
         DrawCameraInspector();
     } else if (selectionKind_ == SelectionKind::Lights) {
@@ -73,13 +232,12 @@ void ImGuiLayer::DrawCollectionWindow()
     } else if (selectedObject_ >= 0 && selectedObject_ < static_cast<int>(objects.size())) {
         DrawObjectInspector(objects[selectedObject_].get());
     } else {
-        ImGui::Text("Select an item from the collection.");
+        ImGui::TextDisabled("Select an item in the Hierarchy.");
     }
-    ImGui::EndChild();
     ImGui::End();
 }
 
-void ImGuiLayer::DrawObjectInspector(SceneObject* object)
+void EditorLayer::DrawObjectInspector(SceneObject* object)
 {
     if (!object) return;
     ImGui::Text("Object: %s", object->GetEditorName());
@@ -91,7 +249,7 @@ void ImGuiLayer::DrawObjectInspector(SceneObject* object)
     if (auto* skybox = dynamic_cast<Skybox*>(object)) DrawSkyboxInspector(skybox);
 }
 
-void ImGuiLayer::DrawTransformEditor(SceneObject* object)
+void EditorLayer::DrawTransformEditor(SceneObject* object)
 {
     XMFLOAT3 position;
     XMFLOAT3 rotation;
@@ -126,7 +284,7 @@ void ImGuiLayer::DrawTransformEditor(SceneObject* object)
     if (changed) object->SetEditorTransform(position, rotation, scale);
 }
 
-void ImGuiLayer::DrawCameraInspector()
+void EditorLayer::DrawCameraInspector()
 {
     Camera& camera = scene_->GetCamera();
     ImGui::Text("Camera");
@@ -165,7 +323,7 @@ void ImGuiLayer::DrawCameraInspector()
     if (ImGui::Button("Reset display")) post = PostSettings{};
 }
 
-void ImGuiLayer::DrawLightsInspector()
+void EditorLayer::DrawLightsInspector()
 {
     LightSystem& lights = scene_->GetLightSystem();
     XMFLOAT3& ambient = lights.Ambient();
@@ -204,7 +362,7 @@ void ImGuiLayer::DrawLightsInspector()
     }
 }
 
-void ImGuiLayer::DrawShadowInspector()
+void EditorLayer::DrawShadowInspector()
 {
     ImGui::SeparatorText("Shadows");
     ShadowMap& shadow = scene_->GetShadowMap();
@@ -251,7 +409,7 @@ void ImGuiLayer::DrawShadowInspector()
     }
 }
 
-void ImGuiLayer::DrawTerrainInspector(Terrain* terrain)
+void EditorLayer::DrawTerrainInspector(Terrain* terrain)
 {
     // Mesh-shaping values rebuild ~half a million vertices, so they are applied when you
     // RELEASE the control, not on every frame of a drag. While a control is being edited we keep
@@ -358,7 +516,7 @@ void ImGuiLayer::DrawTerrainInspector(Terrain* terrain)
     ImGui::TextDisabled("Surface spans Y %.1f to %.1f", minY, maxY);
 }
 
-void ImGuiLayer::DrawWaterInspector(Water* water)
+void EditorLayer::DrawWaterInspector(Water* water)
 {
     // Every water value is just a shader constant, so changes apply live - no pending copy,
     // no Apply button. We read the current settings, edit them, and write back if anything moved.
@@ -439,7 +597,7 @@ void ImGuiLayer::DrawWaterInspector(Water* water)
     if (changed) water->SetSettings(s);
 }
 
-void ImGuiLayer::DrawSkyboxInspector(Skybox* skybox)
+void EditorLayer::DrawSkyboxInspector(Skybox* skybox)
 {
     ImGui::SeparatorText("Skybox material");
     float intensity = skybox->GetIntensity();
