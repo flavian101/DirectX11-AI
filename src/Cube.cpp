@@ -130,12 +130,12 @@ bool Cube::GetBoundingSphere(XMFLOAT3& center, float& radius) const
     return true;
 }
 
-void Cube::RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader) const
+void Cube::RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader, const RenderView& /*view*/) const
 {
     if (renderable_ && renderable_->IsValid()) renderable_->RenderWith(ctx, shader);
 }
 
-void Cube::Render(ID3D11DeviceContext* ctx, const Camera& camera) const
+void Cube::Render(ID3D11DeviceContext* ctx, const RenderView& /*view*/) const
 {
     if (renderable_ && texture_ && texture_->IsValid()) {
         renderable_->SetTexture(ctx, texture_->GetShaderResourceView());

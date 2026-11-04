@@ -8,6 +8,7 @@
 #include "libs/stb_image.h"
 #include <DirectXMath.h>
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -104,8 +105,10 @@ float SampleHeightmap(const std::vector<float>& values, int width, int height, f
 	return top + (bottom - top) * tz;
 }
 
+constexpr int kChunkCells = 32;   // grid cells per tile side: 32x32 quads = 2048 triangles per tile
+
 Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, int mapWidth, int mapHeight,
-						 const TerrainSettings& settings, float& outDepth)
+						 const TerrainSettings& settings, float& outDepth, std::vector<TerrainChunk>& outChunks)
 {
 	if (!device || map.empty()) return nullptr;
 
@@ -139,42 +142,72 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 		}
 	}
 
-	std::vector<Vertex> vertices;
-	vertices.reserve(static_cast<size_t>(gridWidth) * gridHeight);
-	for (int z = 0; z < gridHeight; ++z) {
+	// A vertex at grid position (x, z). Normals come from the WHOLE height grid, so lighting is
+	// seamless even across chunk borders.
+	auto makeVertex = [&](int x, int z) {
 		const float v = static_cast<float>(z) / static_cast<float>(gridHeight - 1);
-		for (int x = 0; x < gridWidth; ++x) {
-			const float u = static_cast<float>(x) / static_cast<float>(gridWidth - 1);
-			const float y = heightAt(x, z) * settings.heightScale;
-			const float slopeX = (heightAt(x + 1, z) - heightAt(x - 1, z)) * settings.heightScale /
-								 (2.0f * cellWidth);
-			const float slopeZ = (heightAt(x, z + 1) - heightAt(x, z - 1)) * settings.heightScale /
-								 (2.0f * cellDepth);
-			XMVECTOR normal = XMVector3Normalize(XMVectorSet(-slopeX, 1.0f, -slopeZ, 0.0f));
-			XMFLOAT3 normalFloat;
-			XMStoreFloat3(&normalFloat, normal);
+		const float u = static_cast<float>(x) / static_cast<float>(gridWidth - 1);
+		const float y = heightAt(x, z) * settings.heightScale;
+		const float slopeX = (heightAt(x + 1, z) - heightAt(x - 1, z)) * settings.heightScale /
+							 (2.0f * cellWidth);
+		const float slopeZ = (heightAt(x, z + 1) - heightAt(x, z - 1)) * settings.heightScale /
+							 (2.0f * cellDepth);
+		XMFLOAT3 normal;
+		XMStoreFloat3(&normal, XMVector3Normalize(XMVectorSet(-slopeX, 1.0f, -slopeZ, 0.0f)));
+		return Vertex(XMFLOAT3((u - 0.5f) * terrainWidth, y, (v - 0.5f) * depth), normal, XMFLOAT2(u, v));
+	};
 
-			vertices.emplace_back(
-				XMFLOAT3((u - 0.5f) * terrainWidth, y, (v - 0.5f) * depth),
-				normalFloat,
-				XMFLOAT2(u, v));
+	// Cut the grid into tiles of kChunkCells x kChunkCells quads. Each tile becomes its own mesh
+	// (with its own bounding box), so a view can draw only the tiles it can see. Tiles on the
+	// right/bottom edge are smaller when the grid does not divide evenly.
+	const int chunksX = (cellsX + kChunkCells - 1) / kChunkCells;
+	const int chunksZ = (cellsZ + kChunkCells - 1) / kChunkCells;
+	std::vector<Mesh*> meshes;
+	meshes.reserve(static_cast<size_t>(chunksX) * chunksZ);
+	outChunks.clear();
+	outChunks.reserve(meshes.capacity());
+
+	for (int chunkZ = 0; chunkZ < chunksZ; ++chunkZ) {
+		for (int chunkX = 0; chunkX < chunksX; ++chunkX) {
+			const int x0 = chunkX * kChunkCells, x1 = (std::min)(x0 + kChunkCells, cellsX);
+			const int z0 = chunkZ * kChunkCells, z1 = (std::min)(z0 + kChunkCells, cellsZ);
+			const int vertsX = x1 - x0 + 1;
+
+			std::vector<Vertex> vertices;
+			vertices.reserve(static_cast<size_t>(vertsX) * (z1 - z0 + 1));
+			XMFLOAT3 boundsMin(FLT_MAX, FLT_MAX, FLT_MAX), boundsMax(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+			for (int z = z0; z <= z1; ++z) {
+				for (int x = x0; x <= x1; ++x) {
+					vertices.push_back(makeVertex(x, z));
+					const XMFLOAT3& p = vertices.back().position;
+					boundsMin = { (std::min)(boundsMin.x, p.x), (std::min)(boundsMin.y, p.y), (std::min)(boundsMin.z, p.z) };
+					boundsMax = { (std::max)(boundsMax.x, p.x), (std::max)(boundsMax.y, p.y), (std::max)(boundsMax.z, p.z) };
+				}
+			}
+
+			std::vector<uint32_t> indices;
+			indices.reserve(static_cast<size_t>(x1 - x0) * (z1 - z0) * 6);
+			for (int z = 0; z < z1 - z0; ++z) {
+				for (int x = 0; x < x1 - x0; ++x) {
+					const uint32_t topLeft = static_cast<uint32_t>(z * vertsX + x);
+					const uint32_t topRight = topLeft + 1;
+					const uint32_t bottomLeft = static_cast<uint32_t>((z + 1) * vertsX + x);
+					const uint32_t bottomRight = bottomLeft + 1;
+					indices.insert(indices.end(), {topLeft, bottomLeft, topRight,
+												   topRight, bottomLeft, bottomRight});
+				}
+			}
+
+			meshes.push_back(new Mesh(device, vertices, indices));
+			TerrainChunk chunk;
+			chunk.boundsMin = boundsMin;
+			chunk.boundsMax = boundsMax;
+			chunk.triangleCount = static_cast<int>(indices.size() / 3);
+			outChunks.push_back(chunk);
 		}
 	}
 
-	std::vector<uint32_t> indices;
-	indices.reserve(static_cast<size_t>(gridWidth - 1) * (gridHeight - 1) * 6);
-	for (int z = 0; z < gridHeight - 1; ++z) {
-		for (int x = 0; x < gridWidth - 1; ++x) {
-			const uint32_t topLeft = static_cast<uint32_t>(z * gridWidth + x);
-			const uint32_t topRight = topLeft + 1;
-			const uint32_t bottomLeft = static_cast<uint32_t>((z + 1) * gridWidth + x);
-			const uint32_t bottomRight = bottomLeft + 1;
-			indices.insert(indices.end(), {topLeft, bottomLeft, topRight,
-										   topRight, bottomLeft, bottomRight});
-		}
-	}
-
-	return new Model({new Mesh(device, vertices, indices)});
+	return new Model(meshes);
 }
 }
 
@@ -248,8 +281,9 @@ bool Terrain::Rebuild(const TerrainSettings& settings)
 	if (!device_ || !texture_ || !texture_->IsValid() || heightmap_.values.empty()) return false;
 
 	float depth = 0.0f;
+	std::vector<TerrainChunk> chunks;
 	Model* model = BuildTerrainModel(device_, heightmap_.values, heightmap_.width, heightmap_.height,
-									 settings, depth);
+									 settings, depth, chunks);
 	if (!model) return false;
 	auto replacement = std::make_unique<Renderable>(device_, model, L"shaders/vs.hlsl", L"shaders/terrain_ps.hlsl");
 	if (!replacement->IsValid()) return false;
@@ -257,6 +291,7 @@ bool Terrain::Rebuild(const TerrainSettings& settings)
 	renderable_ = std::move(replacement);
 	settings_ = settings;
 	depth_ = depth;
+	chunks_ = std::move(chunks);
 	UpdateMaterial();
 	UpdateWorldTransform();
 	return true;
@@ -271,9 +306,49 @@ bool Terrain::GetBoundingSphere(XMFLOAT3& center, float& radius) const
 	return true;
 }
 
-void Terrain::RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader) const
+void Terrain::RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader, const RenderView& view) const
 {
-	if (renderable_ && renderable_->IsValid()) renderable_->RenderWith(ctx, shader);
+	if (renderable_ && renderable_->IsValid()) DrawChunks(ctx, &shader, view);
+}
+
+// World-space box that contains a local-space box after the terrain's transform (which may
+// scale, rotate and move it). Transforms the centre, and spreads the half-size through |matrix|.
+static void TransformBounds(const XMMATRIX& world, const XMFLOAT3& localMin, const XMFLOAT3& localMax,
+							 XMFLOAT3& worldMin, XMFLOAT3& worldMax)
+{
+	const XMVECTOR lo = XMLoadFloat3(&localMin);
+	const XMVECTOR hi = XMLoadFloat3(&localMax);
+	const XMVECTOR center = XMVector3Transform((lo + hi) * 0.5f, world);
+	const XMVECTOR half = (hi - lo) * 0.5f;
+	const XMVECTOR extent = XMVectorScale(XMVectorAbs(world.r[0]), XMVectorGetX(half)) +
+							XMVectorScale(XMVectorAbs(world.r[1]), XMVectorGetY(half)) +
+							XMVectorScale(XMVectorAbs(world.r[2]), XMVectorGetZ(half));
+	XMStoreFloat3(&worldMin, center - extent);
+	XMStoreFloat3(&worldMax, center + extent);
+}
+
+void Terrain::DrawChunks(ID3D11DeviceContext* ctx, const Shader* shaderOverride, const RenderView& view) const
+{
+	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
+	TerrainViewStats& stats = stats_[static_cast<int>(view.kind)];
+	stats = {};
+	stats.chunksTotal = static_cast<int>(chunks_.size());
+
+	// 1. Which tiles can this view see?
+	visible_.assign(chunks_.size(), 1);
+	for (size_t i = 0; i < chunks_.size(); ++i) {
+		if (settings_.frustumCulling) {
+			XMFLOAT3 worldMin, worldMax;
+			TransformBounds(world, chunks_[i].boundsMin, chunks_[i].boundsMax, worldMin, worldMax);
+			if (!view.frustum.IntersectsAABB(worldMin, worldMax)) { visible_[i] = 0; continue; }
+		}
+		++stats.chunksDrawn;
+		stats.trianglesDrawn += chunks_[i].triangleCount;
+	}
+
+	// 2. Draw only those.
+	if (shaderOverride) renderable_->RenderWith(ctx, *shaderOverride, &visible_);
+	else renderable_->Render(ctx, &visible_);
 }
 
 void Terrain::UpdateMaterial()
@@ -336,9 +411,9 @@ void Terrain::Update(float /*dt*/)
 {
 }
 
-void Terrain::Render(ID3D11DeviceContext* ctx, const Camera& camera) const
+void Terrain::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 {
 	if (!IsValid()) return;
 	renderable_->SetTexture(ctx, texture_->GetShaderResourceView());
-	renderable_->Render(ctx);
+	DrawChunks(ctx, nullptr, view);
 }

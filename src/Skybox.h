@@ -18,7 +18,7 @@ public:
 	ID3D11ShaderResourceView* GetCubemapView() const { return cubemap_ ? cubemap_->GetShaderResourceView() : nullptr; }
 	void SetIntensity(float intensity);
 	void Update(float dt) override;
-	void Render(ID3D11DeviceContext* ctx, const Camera& camera) const override;
+	void Render(ID3D11DeviceContext* ctx, const RenderView& view) const override;
 
 private:
 	std::unique_ptr<Renderable> renderable_;

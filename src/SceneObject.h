@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include "Camera.h"
+#include "RenderView.h"
 #include <d3d11.h>
 #include <DirectXMath.h>
 
@@ -41,12 +42,14 @@ public:
         return false;
     }
     // Draw geometry only, with the depth-only shader the shadow pass supplies.
-    virtual void RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader) const
+    virtual void RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader, const RenderView& view) const
     {
         (void)ctx;
         (void)shader;
+        (void)view;
     }
 
     virtual void Update(float dt) = 0;
-    virtual void Render(ID3D11DeviceContext* ctx, const Camera& camera) const = 0;
+    // `view` says what this draw can see (frustum) and where LOD distances start.
+    virtual void Render(ID3D11DeviceContext* ctx, const RenderView& view) const = 0;
 };

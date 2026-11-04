@@ -323,6 +323,16 @@ void ImGuiLayer::DrawTerrainInspector(Terrain* terrain)
     if (ImGui::Button("Reset layers")) { s.ResetLayers(); layersChanged = true; }
     if (layersChanged) terrain->ApplySettings(s);
 
+    ImGui::SeparatorText("Chunks and culling");
+    if (ImGui::Checkbox("Frustum culling", &s.frustumCulling)) terrain->ApplySettings(s);
+    ImGui::SetItemTooltip("Skip terrain tiles that cannot be seen. Turn it off to compare the triangle counts.");
+    static const char* const kViewNames[] = { "Camera", "Mirror", "Sun" };
+    for (int i = 0; i < kViewKindCount; ++i) {
+        const TerrainViewStats& stats = terrain->GetStats(static_cast<ViewKind>(i));
+        ImGui::TextDisabled("%-6s %3d / %3d chunks, %d triangles", kViewNames[i],
+                            stats.chunksDrawn, stats.chunksTotal, stats.trianglesDrawn);
+    }
+
     ImGui::Separator();
     if (ImGui::Button("Reset terrain")) {
         s = TerrainSettings{};

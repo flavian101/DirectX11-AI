@@ -25,6 +25,7 @@ add_executable(D3D11Example
 	src/DepthTarget.cpp
 	src/ShadowMap.cpp
 	src/RenderTarget.cpp
+	src/Frustum.cpp
 	src/PostProcess.cpp
 	src/DemoScene.cpp
 	src/Terrain.cpp

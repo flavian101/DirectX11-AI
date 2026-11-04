@@ -69,7 +69,7 @@ public:
 	const WaterSettings& GetSettings() const { return settings_; }
 	void SetSettings(const WaterSettings& settings);
 	void Update(float dt) override;
-	void Render(ID3D11DeviceContext* ctx, const Camera& camera) const override;
+	void Render(ID3D11DeviceContext* ctx, const RenderView& view) const override;
 
 private:
 	void UpdateWorldTransform();

@@ -12,7 +12,9 @@ public:
 
     void SetWorld(const DirectX::XMFLOAT4X4& world) { world_ = world; }
     const DirectX::XMFLOAT4X4& GetWorld() const { return world_; }
-    void Draw(ID3D11DeviceContext* ctx) const;
+    // `visible` (optional): one flag per mesh; a mesh whose flag is 0 is skipped (culling).
+    void Draw(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* visible = nullptr) const;
+    size_t GetMeshCount() const { return meshes_.size(); }
 
 private:
     std::vector<Mesh*> meshes_; // Model takes ownership of each mesh.

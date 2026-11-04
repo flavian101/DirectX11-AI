@@ -75,7 +75,7 @@ void Skybox::Update(float /*dt*/)
 {
 }
 
-void Skybox::Render(ID3D11DeviceContext* ctx, const Camera& camera) const
+void Skybox::Render(ID3D11DeviceContext* ctx, const RenderView& /*view*/) const
 {
 	if (!IsValid() || !ctx) return;
 	material_.Apply(ctx);

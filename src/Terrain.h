@@ -5,6 +5,21 @@
 #include <memory>
 #include <vector>
 
+// One tile of the terrain: its own small mesh plus a box that bounds it. The box is what lets us
+// ask "can the camera possibly see this tile?" without looking at a single triangle.
+struct TerrainChunk {
+	DirectX::XMFLOAT3 boundsMin;   // in the terrain's local space
+	DirectX::XMFLOAT3 boundsMax;
+	int triangleCount = 0;
+};
+
+// What one view (camera / mirror / sun) drew last frame - shown in the editor.
+struct TerrainViewStats {
+	int chunksTotal = 0;
+	int chunksDrawn = 0;
+	int trianglesDrawn = 0;
+};
+
 struct TerrainSettings {
 	// --- shape: changing any of these rebuilds the mesh ---
 	float width = 240.0f;       // world units along X; depth follows the heightmap's aspect ratio
@@ -32,6 +47,7 @@ struct TerrainSettings {
 	DirectX::XMFLOAT3 shoreColor = { 0.76f, 0.70f, 0.50f };   // sRGB, like every colour you pick
 	DirectX::XMFLOAT3 snowColor = { 0.92f, 0.95f, 1.00f };
 	bool showLayers = false;    // debug: paint rock/snow/sand weights as red/green/blue
+	bool frustumCulling = true; // skip chunks outside the view (turn off to compare)
 
 	// One source of truth for the valid ranges: Clamp() enforces them, the editor sliders use them.
 	static constexpr float kWidthMin = 40.0f, kWidthMax = 1000.0f;
@@ -68,6 +84,7 @@ public:
 	// the previous terrain stays on screen in that case.
 	bool ApplySettings(TerrainSettings settings);
 	const TerrainSettings& GetSettings() const { return settings_; }
+	const TerrainViewStats& GetStats(ViewKind kind) const { return stats_[static_cast<int>(kind)]; }
 
 	// For tools that need to fit things to the terrain (e.g. the water plane).
 	DirectX::XMFLOAT2 GetWorldExtent() const;               // x/z size in world units
@@ -75,10 +92,10 @@ public:
 
 	bool CastsShadow() const override { return true; }
 	bool GetBoundingSphere(DirectX::XMFLOAT3& center, float& radius) const override;
-	void RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader) const override;
+	void RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader, const RenderView& view) const override;
 
 	void Update(float dt) override;
-	void Render(ID3D11DeviceContext* ctx, const Camera& camera) const override;
+	void Render(ID3D11DeviceContext* ctx, const RenderView& view) const override;
 
 private:
 	struct Heightmap {
@@ -88,6 +105,8 @@ private:
 	};
 
 	bool Rebuild(const TerrainSettings& settings);
+	// Draws the chunks that are inside `view`. shaderOverride == nullptr -> the terrain's own shader.
+	void DrawChunks(ID3D11DeviceContext* ctx, const Shader* shaderOverride, const RenderView& view) const;
 	void UpdateMaterial();
 	void UpdateWorldTransform();
 
@@ -96,6 +115,9 @@ private:
 	std::unique_ptr<Texture> texture_;
 	Heightmap heightmap_;      // decoded ONCE; every rebuild reuses it instead of re-reading the PNG
 	float depth_ = 0.0f;       // world-space size along Z of the current mesh
+	std::vector<TerrainChunk> chunks_;                    // one per mesh in the model, same order
+	mutable std::vector<unsigned char> visible_;          // scratch: per-chunk "draw it?" flags for one pass
+	mutable TerrainViewStats stats_[kViewKindCount];
 	TerrainSettings settings_;
 	DirectX::XMFLOAT3 position_ = { 0.0f, -2.0f, 0.0f };
 	DirectX::XMFLOAT3 rotation_ = { 0.0f, 0.0f, 0.0f };

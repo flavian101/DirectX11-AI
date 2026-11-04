@@ -84,6 +84,7 @@ bool Scene::ComputeShadowBounds(DirectX::XMFLOAT3& center, float& radius) const
 
 void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
 {
+    using namespace DirectX;
     if (shadow_) shadow_->Invalidate();   // until Begin() runs, the main pass must not sample the map
     if (!ctx || !shadow_ || !shadow_->IsEnabled()) return;
     DirectX::XMFLOAT3 center;
@@ -93,15 +94,25 @@ void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
     shadow_->Begin(ctx, lights_->Directional().direction, center, radius);
 
     // Reuse the per-frame buffer, but the "camera" is the sun.
-    FrameData sunView;
-    sunView.view = shadow_->GetView();
-    sunView.proj = shadow_->GetProj();
-    sunView.cameraPos = shadow_->GetLightPosition();
-    sunView.time = time_;
-    frame_.Apply(ctx, sunView);
+    FrameData sunFrame;
+    sunFrame.view = shadow_->GetView();
+    sunFrame.proj = shadow_->GetProj();
+    sunFrame.cameraPos = shadow_->GetLightPosition();
+    sunFrame.time = time_;
+    frame_.Apply(ctx, sunFrame);
+
+    // The sun's view volume is the orthographic box fitted around everything (lesson 2), so
+    // culling against it rarely removes anything - but it is correct, and it would start to matter
+    // the moment the box is fitted more tightly (cascades).
+    RenderView sunView;
+    sunView.kind = ViewKind::Shadow;
+    XMFLOAT4X4 sunViewProj;
+    XMStoreFloat4x4(&sunViewProj, XMLoadFloat4x4(&sunFrame.view) * XMLoadFloat4x4(&sunFrame.proj));
+    sunView.frustum = Frustum::FromViewProj(sunViewProj);
+    sunView.lodOrigin = camera_.GetPosition();
 
     for (const auto& object : objects_) {
-        if (object && object->CastsShadow()) object->RenderShadow(ctx, shadow_->GetShader());
+        if (object && object->CastsShadow()) object->RenderShadow(ctx, shadow_->GetShader(), sunView);
     }
     shadow_->End(ctx);
 }
@@ -124,6 +135,20 @@ void Scene::SetMainView(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewp
     frame.reflectionAvailable = reflectionAvailable;
     shadow_->FillFrameData(frame);       // the sun's matrix + shadow parameters
     frame_.Apply(ctx, frame);
+}
+
+RenderView Scene::GetMainView() const
+{
+    using namespace DirectX;
+    RenderView view;
+    view.kind = ViewKind::Main;
+    const XMFLOAT4X4 cameraView = camera_.GetViewMatrix();
+    const XMFLOAT4X4 cameraProj = camera_.GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4(&viewProj, XMLoadFloat4x4(&cameraView) * XMLoadFloat4x4(&cameraProj));
+    view.frustum = Frustum::FromViewProj(viewProj);
+    view.lodOrigin = camera_.GetPosition();
+    return view;
 }
 
 bool Scene::GetPlanarReflection(float& planeHeight, float& resolutionScale) const
@@ -167,11 +192,18 @@ void Scene::RenderReflection(ID3D11DeviceContext* ctx, float planeHeight,
     shadow_->FillFrameData(frame);
     frame_.Apply(ctx, frame);
 
+    RenderView reflectionView;
+    reflectionView.kind = ViewKind::Reflection;
+    XMFLOAT4X4 mirroredViewProj;
+    XMStoreFloat4x4(&mirroredViewProj, XMLoadFloat4x4(&frame.view) * XMLoadFloat4x4(&frame.proj));
+    reflectionView.frustum = Frustum::FromViewProj(mirroredViewProj);
+    reflectionView.lodOrigin = camera_.GetPosition();   // detail follows the REAL camera, not the mirror
+
     // Sky + solid objects only. The water itself (transparent) must not appear in its own mirror.
-    RenderPhase(ctx, ScenePhase::Opaque);
+    RenderPhase(ctx, ScenePhase::Opaque, reflectionView);
 }
 
-void Scene::RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase) const
+void Scene::RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase, const RenderView& view) const
 {
     std::vector<const SceneObject*> sorted;
     sorted.reserve(objects_.size());
@@ -223,7 +255,7 @@ void Scene::RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase) const
             previousCategory = category;
             first = false;
         }
-        object->Render(ctx, camera_);
+        object->Render(ctx, view);
     }
 }
 

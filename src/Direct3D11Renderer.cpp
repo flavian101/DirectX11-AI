@@ -270,7 +270,8 @@ void Direct3D11Renderer::Render(const Scene& scene)
     m_hdrScene.Clear(m_context, clearColor);
     m_sceneDepth.Clear(m_context);
     scene.SetMainView(m_context, m_width, m_height, reflectionReady);
-    scene.RenderPhase(m_context, ScenePhase::Opaque);
+    const RenderView mainView = scene.GetMainView();   // the camera's frustum, for culling
+    scene.RenderPhase(m_context, ScenePhase::Opaque, mainView);
 
     // TRANSPARENT phase (the water). Depth is now complete, so make it read-only and hand it to
     // the shaders as a texture, together with the reflection image.
@@ -279,7 +280,7 @@ void Direct3D11Renderer::Render(const Scene& scene)
     ID3D11ShaderResourceView* reflection = reflectionReady ? m_reflectionColor.GetShaderView() : nullptr;
     m_context->PSSetShaderResources(Slots::kSrvSceneDepth, 1, &sceneDepth);
     m_context->PSSetShaderResources(Slots::kSrvReflection, 1, &reflection);
-    scene.RenderPhase(m_context, ScenePhase::Transparent);
+    scene.RenderPhase(m_context, ScenePhase::Transparent, mainView);
     ID3D11ShaderResourceView* none = nullptr;
     m_context->PSSetShaderResources(Slots::kSrvSceneDepth, 1, &none);
     m_context->PSSetShaderResources(Slots::kSrvReflection, 1, &none);

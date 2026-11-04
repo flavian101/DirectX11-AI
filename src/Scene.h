@@ -75,7 +75,8 @@ public:
     // not "Sky", and the camera is above it.) Gives the plane height and a resolution scale.
     bool GetPlanarReflection(float& planeHeight, float& resolutionScale) const;
     void RenderReflection(ID3D11DeviceContext* ctx, float planeHeight, UINT targetWidth, UINT targetHeight) const;
-    void RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase) const;
+    void RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase, const RenderView& view) const;
+    RenderView GetMainView() const;   // the camera's view: its frustum and position
     ShadowMap& GetShadowMap() { return *shadow_; }
     PostSettings& GetPostSettings() { return post_; }
     const PostSettings& GetPostSettings() const { return post_; }

@@ -18,9 +18,9 @@ public:
                             const DirectX::XMFLOAT3& scale) override;
     bool CastsShadow() const override { return true; }
     bool GetBoundingSphere(DirectX::XMFLOAT3& center, float& radius) const override;
-    void RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader) const override;
+    void RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader, const RenderView& view) const override;
     void Update(float dt) override;
-    void Render(ID3D11DeviceContext* ctx, const Camera& camera) const override;
+    void Render(ID3D11DeviceContext* ctx, const RenderView& view) const override;
 
 private:
     void UpdateWorldTransform();
