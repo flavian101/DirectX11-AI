@@ -3,16 +3,36 @@
 #include "RenderView.h"
 #include <d3d11.h>
 #include <DirectXMath.h>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
 
 class Shader;
+
+using SceneObjectId = std::uint64_t;
 
 class SceneObject {
 public:
     enum class RenderCategory { Opaque, Transparent, Background };
     virtual ~SceneObject() = default;
+
+    SceneObjectId GetId() const noexcept { return id_; }
+    const std::string& GetName() const noexcept { return name_; }
+    void SetName(std::string name) { name_ = std::move(name); }
+
     virtual RenderCategory GetRenderCategory() const { return RenderCategory::Opaque; }
     virtual DirectX::XMFLOAT3 GetSortPosition() const { return {}; }
     virtual const char* GetEditorName() const { return "Scene Object"; }
+    // Type identity is separate from the user-editable instance name.
+    virtual const char* GetTypeName() const { return GetEditorName(); }
+    virtual bool CanClone() const noexcept { return false; }
+    virtual std::unique_ptr<SceneObject> Clone(ID3D11Device* device) const
+    {
+        (void)device;
+        return nullptr;
+    }
+
     virtual bool GetEditorTransform(DirectX::XMFLOAT3& position,
                                     DirectX::XMFLOAT3& rotation,
                                     DirectX::XMFLOAT3& scale) const
@@ -52,4 +72,10 @@ public:
     virtual void Update(float dt) = 0;
     // `view` says what this draw can see (frustum) and where LOD distances start.
     virtual void Render(ID3D11DeviceContext* ctx, const RenderView& view) const = 0;
+
+private:
+    friend class Scene;
+
+    SceneObjectId id_ = 0;
+    std::string name_;
 };
