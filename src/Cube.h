@@ -1,7 +1,7 @@
 ﻿#pragma once
 #include "Renderable.h"
 #include "SceneObject.h"
-#include "Texture.h"
+#include "SurfaceMaterial.h"
 #include <DirectXMath.h>
 #include <memory>
 
@@ -22,11 +22,14 @@ public:
     void Update(float dt) override;
     void Render(ID3D11DeviceContext* ctx, const RenderView& view) const override;
 
+    // The cube's maps and settings (the editor's Inspector edits these).
+    SurfaceMaterial& GetSurface() { return *surface_; }
+
 private:
     void UpdateWorldTransform();
 
     std::unique_ptr<Renderable> renderable_;
-    std::unique_ptr<Texture> texture_;
+    std::unique_ptr<SurfaceMaterial> surface_;
     DirectX::XMFLOAT3 position_ = { 0.0f, 4.0f, 0.0f };
     DirectX::XMFLOAT3 rotation_ = { 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 scale_ = { 1.0f, 1.0f, 1.0f };

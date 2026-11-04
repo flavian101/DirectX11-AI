@@ -6,13 +6,16 @@
 #include "common.hlsli"
 #include "shadow.hlsli"
 
-// diffuse  : the total light arriving (multiply by the surface colour)
-// specular : the highlight to ADD on top
-void ComputeLighting(float3 worldPos, float3 normal, out float3 diffuse, out float3 specular)
+// ambient   : the light that comes from "everywhere" (a material's occlusion map dims this part only)
+// diffuse   : the DIRECT light arriving from the sun and the point lights (multiply by the surface colour)
+// specular  : the highlight to ADD on top. `shininess` is the Blinn-Phong exponent: higher = tighter, glossier.
+void ComputeLightingEx(float3 worldPos, float3 normal, float shininess,
+                       out float3 ambient, out float3 diffuse, out float3 specular)
 {
     const float3 viewDir = normalize(cameraPosNumLights.xyz - worldPos);
 
-    diffuse = ambientColor.rgb;
+    ambient = ambientColor.rgb;
+    diffuse = float3(0.0f, 0.0f, 0.0f);
     specular = float3(0.0f, 0.0f, 0.0f);
 
     // Directional light (Blinn-Phong)
@@ -22,7 +25,7 @@ void ComputeLighting(float3 worldPos, float3 normal, out float3 diffuse, out flo
         float shadow = ShadowFactor(worldPos, normal, L);
         diffuse += dirColor.rgb * dirDirection.w * saturate(dot(normal, L)) * shadow;
         float3 h = normalize(L + viewDir);
-        specular += dirColor.rgb * dirDirection.w * pow(saturate(dot(normal, h)), 32.0f) * shadow;
+        specular += dirColor.rgb * dirDirection.w * pow(saturate(dot(normal, h)), shininess) * shadow;
     }
 
     // Point lights with smooth quadratic range falloff
@@ -37,7 +40,16 @@ void ComputeLighting(float3 worldPos, float3 normal, out float3 diffuse, out flo
         float3 radiance = pointColorIntensity[i].rgb * pointColorIntensity[i].w * falloff;
         diffuse += radiance * saturate(dot(normal, L));
         float3 h = normalize(L + viewDir);
-        specular += radiance * pow(saturate(dot(normal, h)), 32.0f);
+        specular += radiance * pow(saturate(dot(normal, h)), shininess);
     }
+}
+
+// The original entry point, unchanged for every shader that already calls it (terrain, ...):
+// "diffuse" is ambient + direct, and the highlight is the classic fixed 32.
+void ComputeLighting(float3 worldPos, float3 normal, out float3 diffuse, out float3 specular)
+{
+    float3 ambient, direct;
+    ComputeLightingEx(worldPos, normal, 32.0f, ambient, direct, specular);
+    diffuse = ambient + direct;
 }
 #endif

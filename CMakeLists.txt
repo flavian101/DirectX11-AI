@@ -27,6 +27,7 @@ add_library(Engine STATIC
 	src/Mesh.cpp
 	src/Renderable.cpp
 	src/Material.cpp
+	src/SurfaceMaterial.cpp
 	src/Texture.cpp
 	src/Light.cpp
 	src/FrameConstants.cpp

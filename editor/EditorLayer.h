@@ -1,6 +1,7 @@
 #pragma once
 #include "Layer.h"
 #include "Scene.h"
+#include "SurfaceMaterial.h"
 #include "Water.h"
 
 // The editor: a Layer that hosts Dear ImGui (docking branch) around the engine. Nothing in the
@@ -39,6 +40,7 @@ private:
     void DrawTerrainInspector(Terrain* terrain);
     void DrawWaterInspector(Water* water);
     void DrawSkyboxInspector(Skybox* skybox);
+    void DrawSurfaceInspector(SurfaceMaterial& surface);
     void DrawTransformEditor(SceneObject* object);
 
     bool attached_ = false;

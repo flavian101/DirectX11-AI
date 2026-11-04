@@ -74,6 +74,7 @@ static Model* CreateCubeModel(ID3D11Device* device)
         20,21,22,
         20,22,23
     };
+    ComputeTangents(vertices, indices);   // normal mapping needs a tangent per vertex (lesson 16)
     Mesh* mesh = new Mesh(device, vertices, indices);
     return new Model({mesh});
 }
@@ -82,7 +83,13 @@ Cube::Cube(ID3D11Device* device)
 {
     renderable_ = std::make_unique<Renderable>(device, CreateCubeModel(device),
                                                 L"shaders/vs.hlsl", L"shaders/ps.hlsl");
-    texture_ = std::make_unique<Texture>(device, "assets/broken_brick_wall_diff_1k.png");
+    surface_ = std::make_unique<SurfaceMaterial>(device);
+    surface_->LoadAlbedo("assets/broken_brick_wall_diff_1k.png");
+    // Optional maps (Poly Haven names). Missing files fall back to neutral defaults, so the cube still renders.
+    if (surface_->LoadNormal("assets/broken_brick_wall_nor_gl_1k.png")) {
+        surface_->Settings().flipGreen = true;   // "_nor_gl_" = OpenGL convention. A "_nor_dx_" map would leave this false.
+    }
+    surface_->LoadOrm("assets/broken_brick_wall_arm_1k.png");   // "arm" = AO / roughness / metallic packed in R / G / B
     if (!renderable_->IsValid()) LOG_ERROR("Cube renderable initialization failed");
 }
 
@@ -137,8 +144,9 @@ void Cube::RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader, const Re
 
 void Cube::Render(ID3D11DeviceContext* ctx, const RenderView& /*view*/) const
 {
-    if (renderable_ && texture_ && texture_->IsValid()) {
-        renderable_->SetTexture(ctx, texture_->GetShaderResourceView());
+    if (renderable_ && surface_ && surface_->IsReady() && surface_->HasAlbedo()) {
+        surface_->Bind(ctx);                  // albedo, normal, ORM and emissive maps
+        surface_->Upload(*renderable_);       // strength, flip, roughness scale... into the material block (b4)
         renderable_->Render(ctx);
     }
 }

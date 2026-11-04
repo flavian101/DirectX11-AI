@@ -97,8 +97,11 @@ bool Shader::Load(const wchar_t* vsPath, const wchar_t* psPath, ID3D11Device* de
     const D3D11_INPUT_ELEMENT_DESC layout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
-        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0}
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TANGENT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0}
     };
+    // The layout may offer MORE than a vertex shader reads: vs.hlsl uses the tangent, the shadow and
+    // water shaders simply ignore it. Offering less than a shader reads would fail right here.
     hr = device->CreateInputLayout(layout, static_cast<UINT>(std::size(layout)),
                                    vsBlob_->GetBufferPointer(), vsBlob_->GetBufferSize(), &layout_);
     if (FAILED(hr)) {

@@ -16,6 +16,11 @@ namespace Slots {
     constexpr unsigned int kSrvShadow      = 2;  // the sun's depth map (Texture2D<float>)
     constexpr unsigned int kSrvReflection  = 3;  // the scene seen from below the water (planar reflection)
     constexpr unsigned int kSrvSceneDepth  = 4;  // the camera's own depth buffer, bound only for the water pass
+    // Surface material maps (SurfaceMaterial::Bind). Every one always has a texture bound: a neutral
+    // default when the artist supplied none, so the shader never needs an "is there a map?" branch.
+    constexpr unsigned int kSrvNormal      = 5;  // tangent-space normal map (linear data, NOT sRGB)
+    constexpr unsigned int kSrvOrm         = 6;  // R = ambient occlusion, G = roughness, B = metallic (linear)
+    constexpr unsigned int kSrvEmissive    = 7;  // light the surface gives off by itself (sRGB colour)
 
     // Samplers (PS)
     constexpr unsigned int kSamplerLinear  = 0;  // trilinear + anisotropic, bound once by the renderer

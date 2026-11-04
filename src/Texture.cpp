@@ -154,6 +154,35 @@ Texture::Texture(ID3D11Device* device, const std::array<std::string, 6>& facePat
     valid_ = true;
 }
 
+std::unique_ptr<Texture> Texture::Solid(ID3D11Device* device, std::uint8_t r, std::uint8_t g,
+                                        std::uint8_t b, std::uint8_t a, ColorSpace colorSpace)
+{
+    if (!device) return nullptr;
+    const DXGI_FORMAT format = (colorSpace == ColorSpace::SRGB) ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                                                                 : DXGI_FORMAT_R8G8B8A8_UNORM;
+    const std::uint8_t pixel[4] = { r, g, b, a };
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = 1;
+    desc.Height = 1;
+    desc.MipLevels = 1;   // one pixel has nothing to shrink to
+    desc.ArraySize = 1;
+    desc.Format = format;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA data{};
+    data.pSysMem = pixel;
+    data.SysMemPitch = 4;
+
+    std::unique_ptr<Texture> texture(new Texture());
+    HRESULT hr = device->CreateTexture2D(&desc, &data, &texture->texture_);
+    if (FAILED(hr)) { LOG_HR(hr, "Failed to create solid-colour texture"); return nullptr; }
+    hr = device->CreateShaderResourceView(texture->texture_, nullptr, &texture->shaderResourceView_);
+    if (FAILED(hr)) { LOG_HR(hr, "Failed to create solid-colour texture view"); return nullptr; }
+    texture->valid_ = true;
+    return texture;
+}
+
 Texture::~Texture()
 {
     if (shaderResourceView_) {

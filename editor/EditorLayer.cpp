@@ -1,6 +1,7 @@
 #include "EditorLayer.h"
 #include <algorithm>
 #include <cstdio>
+#include "Cube.h"
 #include "Direct3D11Renderer.h"
 #include "Logger.h"
 #include "Skybox.h"
@@ -247,6 +248,36 @@ void EditorLayer::DrawObjectInspector(SceneObject* object)
     if (auto* terrain = dynamic_cast<Terrain*>(object)) DrawTerrainInspector(terrain);
     if (auto* water = dynamic_cast<Water*>(object)) DrawWaterInspector(water);
     if (auto* skybox = dynamic_cast<Skybox*>(object)) DrawSkyboxInspector(skybox);
+    if (auto* cube = dynamic_cast<Cube*>(object)) DrawSurfaceInspector(cube->GetSurface());
+}
+
+void EditorLayer::DrawSurfaceInspector(SurfaceMaterial& surface)
+{
+    SurfaceSettings& s = surface.Settings();
+    ImGui::SeparatorText("Surface maps");
+    ImGui::TextDisabled("normal: %s   ORM: %s   emissive: %s",
+                        surface.HasNormalMap() ? "yes" : "default", surface.HasOrmMap() ? "yes" : "default",
+                        surface.HasEmissiveMap() ? "yes" : "default");
+
+    ImGui::Checkbox("Use normal map", &s.useNormalMap);
+    ImGui::SliderFloat("Normal strength", &s.normalStrength, 0.0f, 3.0f);
+    ImGui::Checkbox("Flip green (OpenGL maps)", &s.flipGreen);
+    ImGui::SetItemTooltip("If the bricks look like they stick OUT where they should be sunken (or the lighting\nseems to come from the wrong side), toggle this.");
+    ImGui::SliderFloat("Roughness scale", &s.roughnessScale, 0.0f, 2.0f);
+    ImGui::SliderFloat("AO strength", &s.aoStrength, 0.0f, 1.0f);
+    ImGui::SliderFloat("Emissive intensity", &s.emissiveIntensity, 0.0f, 10.0f);
+
+    static const char* const kDebugViews[] = { "Lit", "Vertex normal", "Mapped normal", "Tangent" };
+    int debugView = static_cast<int>(s.debugView);
+    if (ImGui::Combo("Debug view", &debugView, kDebugViews, IM_ARRAYSIZE(kDebugViews))) {
+        s.debugView = static_cast<SurfaceDebugView>(debugView);
+    }
+    ImGui::SetItemTooltip("Shows a direction as a colour (x = red, y = green, z = blue).\nCompare 'Vertex normal' with 'Mapped normal': the bumps should appear only in the second.");
+    if (ImGui::Button("Reset surface")) {
+        const bool flip = s.flipGreen;   // the flip belongs to the FILE, not to the look: keep it
+        s = SurfaceSettings{};
+        s.flipGreen = flip;
+    }
 }
 
 void EditorLayer::DrawTransformEditor(SceneObject* object)
