@@ -9,6 +9,16 @@
 using namespace DirectX;
 
 namespace {
+// Must match `cbuffer WaterMaterial : register(b4)` in shaders/water_material.hlsli, field for field.
+struct WaterMaterialCB {
+	DirectX::XMFLOAT4 deepColor;      // rgb = deep colour (linear), a = opacity of deep water
+	DirectX::XMFLOAT4 shallowColor;   // rgb = shallow colour (linear)
+	DirectX::XMFLOAT4 waves;          // amplitude, speed, frequency, reflectivity
+	DirectX::XMFLOAT4 lighting;       // glint strength, glint sharpness, mirror distortion, unused
+	DirectX::XMFLOAT4 depth;          // fade distance, foam distance, foam strength, absorption
+};
+static_assert(sizeof(WaterMaterialCB) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
+
 // The vertex shader displaces vertices, so it can only make waves where vertices exist.
 // The old mesh was ONE quad (4 vertices): the "waves" just wobbled its corners.
 // A 128x128 grid gives ~16k vertices over the plane, plenty for the wave sizes we use.
@@ -126,16 +136,16 @@ void Water::SetSettings(const WaterSettings& settings)
 	position_.y = settings_.height;
 	UpdateWorldTransform();
 	if (renderable_) {
-		const DirectX::XMFLOAT3 linearColor = SrgbToLinear(settings_.color);   // picker = sRGB, shader = linear
-		renderable_->SetMaterialColor({ linearColor.x, linearColor.y, linearColor.z, settings_.alpha });
-		renderable_->SetMaterialParameters({ settings_.waveAmplitude, settings_.waveSpeed,
-											 settings_.waveFrequency, settings_.reflectivity });
-		renderable_->SetMaterialExtra({ settings_.glintStrength, settings_.glintSharpness,
-										 settings_.reflectionDistortion, 0.0f });
+		// Colours are picked as sRGB, the shader wants linear.
+		const DirectX::XMFLOAT3 deep = SrgbToLinear(settings_.color);
 		const DirectX::XMFLOAT3 shallow = SrgbToLinear(settings_.shallowColor);
-		renderable_->SetMaterialColor2({ shallow.x, shallow.y, shallow.z, 1.0f });
-		renderable_->SetMaterialExtra2({ settings_.fadeDistance, settings_.foamDistance,
-										 settings_.foamStrength, settings_.absorption });
+		WaterMaterialCB block;
+		block.deepColor = { deep.x, deep.y, deep.z, settings_.alpha };
+		block.shallowColor = { shallow.x, shallow.y, shallow.z, 1.0f };
+		block.waves = { settings_.waveAmplitude, settings_.waveSpeed, settings_.waveFrequency, settings_.reflectivity };
+		block.lighting = { settings_.glintStrength, settings_.glintSharpness, settings_.reflectionDistortion, 0.0f };
+		block.depth = { settings_.fadeDistance, settings_.foamDistance, settings_.foamStrength, settings_.absorption };
+		renderable_->SetMaterialBlock(&block, sizeof(block));
 	}
 }
 

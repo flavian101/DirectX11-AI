@@ -3,10 +3,11 @@
 // light every pixel). Evaluating the slope per pixel keeps lighting sharp even when the
 // mesh is too coarse to represent the small waves as geometry.
 //
-// materialParams = (amplitude, speed, frequency, reflectivity); frameParams.x = time.
+// Wave settings come from the water's material block (waveParams); frameParams.x = time.
 #ifndef WAVES_HLSLI
 #define WAVES_HLSLI
 #include "common.hlsli"
+#include "water_material.hlsli"
 
 #define WAVE_COUNT 4
 static const float2 kWaveDir[WAVE_COUNT]   = { float2(1.0f, 0.0f), float2(0.7f, 0.7f), float2(-0.3f, 0.95f), float2(0.5f, -0.85f) };
@@ -17,9 +18,9 @@ static const float  kWaveSpeed[WAVE_COUNT] = { 1.0f, 1.3f, 1.8f, 2.4f };
 // xz = WORLD-space position. slope = (d height/dx, d height/dz) - the analytic derivative.
 void EvaluateWaves(float2 xz, out float height, out float2 slope)
 {
-    const float amplitude = materialParams.x;
-    const float speed     = materialParams.y;
-    const float frequency = materialParams.z;
+    const float amplitude = waveParams.x;
+    const float speed     = waveParams.y;
+    const float frequency = waveParams.z;
     const float time      = frameParams.x;
 
     height = 0.0f;

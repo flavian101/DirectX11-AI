@@ -33,10 +33,10 @@ cbuffer Lights : register(b1) {
 cbuffer PerObject : register(b2) {
     float4x4 world;
     float4   materialColor;
-    float4   materialParams;  // meaning is defined by each shader (vs.hlsl: x = UV tiling; water: amp, speed, freq, reflectivity)
-    float4   materialExtra;   // a second set for shaders that need more (water: glint strength, glint sharpness)
-    float4   materialColor2;  // a second colour (water: shallow-water colour)
-    float4   materialExtra2;  // a third set of numbers (water: fade distance, foam distance, foam strength, absorption)
+    float4   materialParams;  // vs.hlsl reads x = UV tiling. Anything bigger belongs in the material's OWN block (b4).
 };
+
+// b4 - the material's own block. NOT declared here: each shader that has one declares it
+// (see water_material.hlsli), because its layout belongs to that material.
 
 #endif

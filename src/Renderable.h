@@ -4,6 +4,7 @@
 #include <DirectXMath.h>
 #include <d3d11.h>
 #include <memory>
+#include <vector>
 
 // Data that changes per draw call. Must match `cbuffer PerObject : register(b2)` in
 // shaders/common.hlsli. View/projection/time are NOT here any more: they are the same
@@ -11,10 +12,7 @@
 struct CBPerObject {
     DirectX::XMFLOAT4X4 world;
     DirectX::XMFLOAT4 materialColor = { 1.0f, 1.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 materialParams = {};  // meaning is defined by each shader
-    DirectX::XMFLOAT4 materialExtra = {};   // a second set of 4 floats
-    DirectX::XMFLOAT4 materialColor2 = {};  // a second colour
-    DirectX::XMFLOAT4 materialExtra2 = {};  // a third set of 4 floats
+    DirectX::XMFLOAT4 materialParams = {};  // vs.hlsl: x = UV tiling
 };
 static_assert(sizeof(CBPerObject) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
@@ -32,9 +30,10 @@ public:
     void SetWorld(const DirectX::XMFLOAT4X4& world) { if (model_) model_->SetWorld(world); }
     void SetMaterialColor(const DirectX::XMFLOAT4& color) { materialColor_ = color; }
     void SetMaterialParameters(const DirectX::XMFLOAT4& parameters) { materialParameters_ = parameters; }
-    void SetMaterialExtra(const DirectX::XMFLOAT4& extra) { materialExtra_ = extra; }
-    void SetMaterialColor2(const DirectX::XMFLOAT4& color) { materialColor2_ = color; }
-    void SetMaterialExtra2(const DirectX::XMFLOAT4& extra) { materialExtra2_ = extra; }
+    // A material-specific constant block (register b4). The caller defines the struct, the
+    // shader declares the matching cbuffer; Renderable just stores the bytes and uploads them
+    // when they change. Size is padded up to a multiple of 16 bytes.
+    void SetMaterialBlock(const void* data, UINT byteSize);
     Model* GetModel() const { return model_.get(); }
     void SetTexture(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* texture)
     {
@@ -48,9 +47,10 @@ private:
     bool valid_ = false;
     DirectX::XMFLOAT4 materialColor_ = { 1.0f, 1.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT4 materialParameters_ = { 1.0f, 1.0f, 1.0f, 1.0f };   // x = UV tiling for vs.hlsl
-    DirectX::XMFLOAT4 materialExtra_ = {};
-    DirectX::XMFLOAT4 materialColor2_ = {};
-    DirectX::XMFLOAT4 materialExtra2_ = {};
+    ID3D11Device* device_ = nullptr;
+    std::vector<unsigned char> materialData_;          // CPU copy of the material block
+    mutable ID3D11Buffer* materialCb_ = nullptr;       // created lazily at first draw
+    mutable bool materialDirty_ = false;
 };
 
 

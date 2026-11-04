@@ -30,15 +30,14 @@ float ValueNoise(float2 p)
 
 float4 main(PS_IN input) : SV_Target
 {
-    const float reflectivity = materialParams.w;
-    const float3 deepColor = materialColor.rgb;
-    const float3 shallowColor = materialColor2.rgb;
-    const float baseAlpha = materialColor.a;
-    // materialExtra2 = (fade distance, foam distance, foam strength, absorption)
-    const float fadeDistance = materialExtra2.x;
-    const float foamDistance = materialExtra2.y;
-    const float foamStrength = materialExtra2.z;
-    const float absorption   = materialExtra2.w;
+    const float reflectivity = waveParams.w;
+    const float3 deepColor = waterDeepColor.rgb;
+    const float3 shallowColor = waterShallowColor.rgb;
+    const float baseAlpha = waterDeepColor.a;
+    const float fadeDistance = waterDepthParams.x;
+    const float foamDistance = waterDepthParams.y;
+    const float foamStrength = waterDepthParams.z;
+    const float absorption   = waterDepthParams.w;
 
     // Per-pixel normal from the analytic wave slope: a hill rising toward +x tilts the normal toward -x.
     float height;
@@ -68,7 +67,7 @@ float4 main(PS_IN input) : SV_Target
         // Where on screen is this pixel? The reflection image was drawn with the same projection,
         // so the same screen position shows the mirror image of what lies behind the surface.
         float2 screenUV = input.position.xy * screenParams.xy;
-        screenUV += N.xz * materialExtra.z;                      // wave normals wobble the mirror
+        screenUV += N.xz * waterLighting.z;                      // wave normals wobble the mirror
         // The mirrored camera renders left-right flipped (a mirror reverses handedness), so flip u back.
         const float2 reflectionUV = float2(1.0f - screenUV.x, screenUV.y);
         reflected = planarReflection.SampleLevel(clampSampler, reflectionUV, 0).rgb;
@@ -79,9 +78,8 @@ float4 main(PS_IN input) : SV_Target
     float3 body = baseColor * (ambientColor.rgb + lighting * dirColor.rgb);
 
     // Sun glint: a tight Blinn-Phong highlight on the wave normals.
-    // materialExtra = (glint strength, glint sharpness)
     float3 H = normalize(L + V);
-    float3 glint = dirColor.rgb * dirDirection.w * materialExtra.x * pow(saturate(dot(N, H)), materialExtra.y);
+    float3 glint = dirColor.rgb * dirDirection.w * waterLighting.x * pow(saturate(dot(N, H)), waterLighting.y);
 
     float3 color = lerp(body, reflected, fresnel) + glint;
 
