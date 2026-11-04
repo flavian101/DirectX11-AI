@@ -1,4 +1,5 @@
 #include "waves.hlsli"
+#include "noise.hlsli"
 
 TextureCube  environmentMap : register(t1);   // the skybox cubemap, bound once per frame by Scene
 Texture2D<float4> planarReflection : register(t3);   // the scene seen from below the water (when reflectionParams.x = 1)
@@ -15,17 +16,6 @@ float LinearizeDepth(float d)
     const float n = screenParams.z;   // near plane
     const float f = screenParams.w;   // far plane
     return n * f / (f - d * (f - n));
-}
-
-// Cheap procedural noise (no texture needed): a hashed grid, smoothly interpolated.
-float Hash(float2 p) { return frac(sin(dot(p, float2(127.1f, 311.7f))) * 43758.5453f); }
-float ValueNoise(float2 p)
-{
-    const float2 i = floor(p);
-    float2 f = frac(p);
-    f = f * f * (3.0f - 2.0f * f);
-    return lerp(lerp(Hash(i), Hash(i + float2(1, 0)), f.x),
-                lerp(Hash(i + float2(0, 1)), Hash(i + float2(1, 1)), f.x), f.y);
 }
 
 float4 main(PS_IN input) : SV_Target

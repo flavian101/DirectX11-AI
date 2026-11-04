@@ -2,6 +2,7 @@
 #define NOMINMAX
 #endif
 #include "Terrain.h"
+#include "Color.h"
 #include "Logger.h"
 #include "Mesh.h"
 #include "libs/stb_image.h"
@@ -15,6 +16,16 @@
 using namespace DirectX;
 
 namespace {
+// Must match `cbuffer TerrainMaterial : register(b4)` in shaders/terrain_ps.hlsl, field for field.
+struct TerrainMaterialCB {
+	XMFLOAT4 layers;       // rock tiling, breakup scale, breakup amount, rock darkness
+	XMFLOAT4 heightBands;  // shore height, shore width, snow height, snow fade
+	XMFLOAT4 slope;        // slope start, slope fade, debug flag, unused
+	XMFLOAT4 shoreTint;    // linear rgb
+	XMFLOAT4 snowTint;     // linear rgb
+};
+static_assert(sizeof(TerrainMaterialCB) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
+
 float SmoothStep(float value)
 {
 	return value * value * (3.0f - 2.0f * value);
@@ -176,6 +187,27 @@ void TerrainSettings::Clamp()
 	noiseScale = std::clamp(noiseScale, kNoiseScaleMin, kNoiseScaleMax);
 	noiseOctaves = std::clamp(noiseOctaves, kOctavesMin, kOctavesMax);
 	uvTiling = std::clamp(uvTiling, kTilingMin, kTilingMax);
+	rockTiling = std::clamp(rockTiling, kRockTilingMin, kRockTilingMax);
+	rockDarkness = std::clamp(rockDarkness, 0.1f, 1.5f);
+	slopeStart = std::clamp(slopeStart, 0.0f, 1.0f);
+	slopeFade = std::clamp(slopeFade, 0.01f, 1.0f);
+	shoreHeight = std::clamp(shoreHeight, kBandMin, kBandMax);
+	shoreWidth = std::clamp(shoreWidth, 0.1f, 30.0f);
+	snowHeight = std::clamp(snowHeight, kBandMin, kBandMax);
+	snowFade = std::clamp(snowFade, 0.1f, 50.0f);
+	breakupScale = std::clamp(breakupScale, kBreakupScaleMin, kBreakupScaleMax);
+	breakupAmount = std::clamp(breakupAmount, 0.0f, 1.0f);
+}
+
+void TerrainSettings::ResetLayers()
+{
+	const TerrainSettings defaults;
+	rockTiling = defaults.rockTiling;     rockDarkness = defaults.rockDarkness;
+	slopeStart = defaults.slopeStart;     slopeFade = defaults.slopeFade;
+	shoreHeight = defaults.shoreHeight;   shoreWidth = defaults.shoreWidth;
+	snowHeight = defaults.snowHeight;     snowFade = defaults.snowFade;
+	breakupScale = defaults.breakupScale; breakupAmount = defaults.breakupAmount;
+	shoreColor = defaults.shoreColor;     snowColor = defaults.snowColor;
 }
 
 bool TerrainSettings::SameShape(const TerrainSettings& o) const
@@ -219,7 +251,7 @@ bool Terrain::Rebuild(const TerrainSettings& settings)
 	Model* model = BuildTerrainModel(device_, heightmap_.values, heightmap_.width, heightmap_.height,
 									 settings, depth);
 	if (!model) return false;
-	auto replacement = std::make_unique<Renderable>(device_, model, L"shaders/vs.hlsl", L"shaders/ps.hlsl");
+	auto replacement = std::make_unique<Renderable>(device_, model, L"shaders/vs.hlsl", L"shaders/terrain_ps.hlsl");
 	if (!replacement->IsValid()) return false;
 
 	renderable_ = std::move(replacement);
@@ -246,7 +278,18 @@ void Terrain::RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader) const
 
 void Terrain::UpdateMaterial()
 {
-	if (renderable_) renderable_->SetMaterialParameters({ settings_.uvTiling, 1.0f, 1.0f, 1.0f });
+	if (!renderable_) return;
+	renderable_->SetMaterialParameters({ settings_.uvTiling, 1.0f, 1.0f, 1.0f });   // vs.hlsl: UV tiling
+
+	const XMFLOAT3 sand = SrgbToLinear(settings_.shoreColor);   // picked as sRGB, shader wants linear
+	const XMFLOAT3 snow = SrgbToLinear(settings_.snowColor);
+	TerrainMaterialCB block;
+	block.layers = { settings_.rockTiling, settings_.breakupScale, settings_.breakupAmount, settings_.rockDarkness };
+	block.heightBands = { settings_.shoreHeight, settings_.shoreWidth, settings_.snowHeight, settings_.snowFade };
+	block.slope = { settings_.slopeStart, settings_.slopeFade, settings_.showLayers ? 1.0f : 0.0f, 0.0f };
+	block.shoreTint = { sand.x, sand.y, sand.z, 1.0f };
+	block.snowTint = { snow.x, snow.y, snow.z, 1.0f };
+	renderable_->SetMaterialBlock(&block, sizeof(block));
 }
 
 XMFLOAT2 Terrain::GetWorldExtent() const

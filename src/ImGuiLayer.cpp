@@ -294,6 +294,35 @@ void ImGuiLayer::DrawTerrainInspector(Terrain* terrain)
         terrain->ApplySettings(s);
     }
 
+    ImGui::SeparatorText("Layers");
+    // Layer settings are only shader constants, so they apply live while you drag.
+    bool layersChanged = false;
+    layersChanged |= ImGui::Checkbox("Show layer weights", &s.showLayers);
+    ImGui::SetItemTooltip("Paints rock as red, snow as green and shore sand as blue - use it to tune the thresholds.");
+    layersChanged |= ImGui::SliderFloat("Rock starts at slope", &s.slopeStart, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("0 = flat, 1 = vertical. About 0.3 is a 45 degree slope.");
+    layersChanged |= ImGui::SliderFloat("Rock blend", &s.slopeFade, 0.01f, 1.0f, "%.2f");
+    layersChanged |= ImGui::SliderFloat("Rock tiling", &s.rockTiling, TerrainSettings::kRockTilingMin,
+                                        TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
+    layersChanged |= ImGui::SliderFloat("Rock brightness", &s.rockDarkness, 0.1f, 1.5f, "%.2f");
+    layersChanged |= ImGui::SliderFloat("Shore height", &s.shoreHeight, TerrainSettings::kBandMin, TerrainSettings::kBandMax, "%.1f");
+    if (Water* water = scene_->GetWater()) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Match water")) { s.shoreHeight = water->GetSettings().height + 1.0f; layersChanged = true; }
+    }
+    layersChanged |= ImGui::SliderFloat("Shore blend", &s.shoreWidth, 0.1f, 30.0f, "%.1f");
+    layersChanged |= ImGui::SliderFloat("Snow height", &s.snowHeight, TerrainSettings::kBandMin, TerrainSettings::kBandMax, "%.1f");
+    layersChanged |= ImGui::SliderFloat("Snow blend", &s.snowFade, 0.1f, 50.0f, "%.1f");
+    layersChanged |= ImGui::SliderFloat("Edge breakup", &s.breakupAmount, 0.0f, 1.0f, "%.2f");
+    layersChanged |= ImGui::SliderFloat("Breakup scale", &s.breakupScale, TerrainSettings::kBreakupScaleMin,
+                                        TerrainSettings::kBreakupScaleMax, "%.3f", ImGuiSliderFlags_Logarithmic);
+    float sand[3] = { s.shoreColor.x, s.shoreColor.y, s.shoreColor.z };
+    if (ImGui::ColorEdit3("Sand color", sand)) { s.shoreColor = { sand[0], sand[1], sand[2] }; layersChanged = true; }
+    float snowRgb[3] = { s.snowColor.x, s.snowColor.y, s.snowColor.z };
+    if (ImGui::ColorEdit3("Snow color", snowRgb)) { s.snowColor = { snowRgb[0], snowRgb[1], snowRgb[2] }; layersChanged = true; }
+    if (ImGui::Button("Reset layers")) { s.ResetLayers(); layersChanged = true; }
+    if (layersChanged) terrain->ApplySettings(s);
+
     ImGui::Separator();
     if (ImGui::Button("Reset terrain")) {
         s = TerrainSettings{};

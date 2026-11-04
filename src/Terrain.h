@@ -18,6 +18,21 @@ struct TerrainSettings {
 	// --- material: cheap, applied without rebuilding ---
 	float uvTiling = 1.0f;      // how many times the texture repeats across the terrain
 
+	// Layers: ground (the texture), rock on steep slopes, sand near the water, snow up high.
+	float rockTiling = 0.05f;   // rock texture repeats per world unit (triplanar)
+	float rockDarkness = 0.6f;  // 1 = same brightness as the ground texture
+	float slopeStart = 0.25f;   // slope (0 flat .. 1 vertical) where rock starts to appear
+	float slopeFade = 0.25f;    // how quickly it takes over
+	float shoreHeight = 5.0f;   // world Y below which the ground turns to sand
+	float shoreWidth = 2.5f;    // height over which sand fades into ground
+	float snowHeight = 28.0f;   // world Y above which snow appears
+	float snowFade = 6.0f;
+	float breakupScale = 0.06f; // size of the noise that roughens layer edges (per world unit)
+	float breakupAmount = 0.5f; // 0 = clean contour lines, 1 = very ragged
+	DirectX::XMFLOAT3 shoreColor = { 0.76f, 0.70f, 0.50f };   // sRGB, like every colour you pick
+	DirectX::XMFLOAT3 snowColor = { 0.92f, 0.95f, 1.00f };
+	bool showLayers = false;    // debug: paint rock/snow/sand weights as red/green/blue
+
 	// One source of truth for the valid ranges: Clamp() enforces them, the editor sliders use them.
 	static constexpr float kWidthMin = 40.0f, kWidthMax = 1000.0f;
 	static constexpr float kHeightMin = 1.0f, kHeightMax = 150.0f;
@@ -25,8 +40,12 @@ struct TerrainSettings {
 	static constexpr float kNoiseScaleMin = 0.5f, kNoiseScaleMax = 32.0f;
 	static constexpr int kOctavesMin = 1, kOctavesMax = 8;
 	static constexpr float kTilingMin = 0.25f, kTilingMax = 64.0f;
+	static constexpr float kRockTilingMin = 0.005f, kRockTilingMax = 0.5f;
+	static constexpr float kBandMin = -50.0f, kBandMax = 200.0f;     // world-Y limits for shore/snow heights
+	static constexpr float kBreakupScaleMin = 0.005f, kBreakupScaleMax = 0.5f;
 
 	void Clamp();
+	void ResetLayers();   // puts only the layer/material fields back to defaults
 	bool SameShape(const TerrainSettings& other) const;  // true if only material fields differ
 };
 
