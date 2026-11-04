@@ -1,4 +1,5 @@
 ﻿#include "Scene.h"
+#include "Cube.h"
 #include "Logger.h"
 #include "ShaderSlots.h"
 #include "Skybox.h"
@@ -15,11 +16,81 @@ Scene::~Scene() = default;
 bool Scene::Initialize(ID3D11Device* device)
 {
     if (!device || !lights_) return false;
+    device_ = device;
     if (!lights_->Initialize(device)) return false;
     if (!frame_.Initialize(device)) return false;
     // Shadows are a bonus, not a requirement: if the map or its shader fails, keep rendering.
     if (!shadow_->Initialize(device, ShadowSettings{})) LOG_WARNING("Shadow map unavailable; shadows are disabled");
     return true;
+}
+
+SceneObject* Scene::Adopt(std::unique_ptr<SceneObject> object)
+{
+    if (!object) return nullptr;
+
+    object->id_ = nextObjectId_++;
+    object->name_ = std::string(object->GetTypeName()) + " " + std::to_string(object->id_);
+
+    SceneObject* result = object.get();
+    objects_.push_back(std::move(object));
+    return result;
+}
+
+SceneObject* Scene::Find(SceneObjectId id)
+{
+    if (id == 0) return nullptr;
+    for (auto& object : objects_) {
+        if (object && object->GetId() == id) return object.get();
+    }
+    return nullptr;
+}
+
+const SceneObject* Scene::Find(SceneObjectId id) const
+{
+    if (id == 0) return nullptr;
+    for (const auto& object : objects_) {
+        if (object && object->GetId() == id) return object.get();
+    }
+    return nullptr;
+}
+
+bool Scene::Remove(SceneObjectId id)
+{
+    const auto it = std::find_if(objects_.begin(), objects_.end(),
+        [id](const std::unique_ptr<SceneObject>& object) {
+            return object && object->GetId() == id;
+        });
+    if (it == objects_.end()) return false;
+    objects_.erase(it);
+    return true;
+}
+
+SceneObject* Scene::Duplicate(SceneObjectId id)
+{
+    SceneObject* original = Find(id);
+    if (!original || !original->CanClone() || !device_) return nullptr;
+
+    const std::string duplicateName = original->GetName() + " Copy";
+    std::unique_ptr<SceneObject> copy = original->Clone(device_);
+    if (!copy) return nullptr;
+
+    // Give spatial objects a small offset so the duplicate is immediately visible.
+    DirectX::XMFLOAT3 position;
+    DirectX::XMFLOAT3 rotation;
+    DirectX::XMFLOAT3 scale;
+    if (original->GetEditorTransform(position, rotation, scale)) {
+        position.x += 2.0f;
+        copy->SetEditorTransform(position, rotation, scale);
+    }
+
+    SceneObject* result = Adopt(std::move(copy));
+    if (result) result->SetName(duplicateName);
+    return result;
+}
+
+SceneObject* Scene::CreateCube()
+{
+    return device_ ? Add<Cube>(device_) : nullptr;
 }
 
 void Scene::UpdateCamera(const InputState& input, float dt)
@@ -121,8 +192,9 @@ void Scene::BeginFrame(ID3D11DeviceContext* ctx) const
 {
     // Resources that stay the same for every pass this frame, however many views we draw.
     shadow_->Bind(ctx);                  // shadow map -> t2, comparison sampler -> s1
+    const Skybox* skybox = GetSkybox();
     ID3D11ShaderResourceView* environment =
-        (skybox_ && skybox_->IsValid()) ? skybox_->GetCubemapView() : nullptr;
+        (skybox && skybox->IsValid()) ? skybox->GetCubemapView() : nullptr;
     ctx->PSSetShaderResources(Slots::kSrvEnvironment, 1, &environment);
 }
 
@@ -153,8 +225,9 @@ RenderView Scene::GetMainView() const
 
 bool Scene::GetPlanarReflection(float& planeHeight, float& resolutionScale) const
 {
-    if (!water_) return false;
-    const WaterSettings& settings = water_->GetSettings();
+    const Water* water = GetWater();
+    if (!water) return false;
+    const WaterSettings& settings = water->GetSettings();
     if (settings.reflectionMode == ReflectionMode::Sky) return false;
     planeHeight = settings.height;
     // Under the surface the water is culled and there is nothing to reflect.
