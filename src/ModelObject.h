@@ -22,6 +22,11 @@ public:
     bool SetEditorTransform(const DirectX::XMFLOAT3& position, const DirectX::XMFLOAT3& rotation,
                             const DirectX::XMFLOAT3& scale) override;
     bool CastsShadow() const override { return true; }
+    bool GetOrientedBounds(DirectX::XMFLOAT4X4& world, DirectX::XMFLOAT3& boundsMin, DirectX::XMFLOAT3& boundsMax) const override;
+    bool IsUserContent() const override { return true; }
+    bool CanClone() const noexcept override { return !sourcePath_.empty(); }
+    // Reads the file again (the CPU data was not kept) and copies this object's transform and material settings.
+    std::unique_ptr<SceneObject> Clone(ID3D11Device* device) const override;
     bool GetBoundingSphere(DirectX::XMFLOAT3& center, float& radius) const override;
     void RenderShadow(ID3D11DeviceContext* ctx, const Shader& shader, const RenderView& view) const override;
     void Update(float) override {}

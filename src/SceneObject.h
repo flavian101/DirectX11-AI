@@ -52,6 +52,21 @@ public:
         return false;
     }
 
+    // --- editor interaction ---
+    // The object's box in its OWN space, plus the matrix that places it in the world. The editor uses it to pick
+    // the object by clicking and to outline it when selected. False = cannot be picked by clicking.
+    virtual bool GetOrientedBounds(DirectX::XMFLOAT4X4& world, DirectX::XMFLOAT3& boundsMin,
+                                   DirectX::XMFLOAT3& boundsMax) const
+    {
+        (void)world;
+        (void)boundsMin;
+        (void)boundsMax;
+        return false;
+    }
+    // Content a user creates and manages (cubes, imported models), as opposed to the scene's fixtures (terrain,
+    // water, sky), which the editor will not delete or duplicate.
+    virtual bool IsUserContent() const { return false; }
+
     // --- shadow casting (opt-in: most objects, like water and the sky, cast none) ---
     virtual bool CastsShadow() const { return false; }
     // A sphere that fully contains the object; the scene merges these to size the sun's view.

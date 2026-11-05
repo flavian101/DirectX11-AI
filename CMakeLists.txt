@@ -59,6 +59,7 @@ add_library(Engine STATIC
 	src/Vertex.cpp
 	src/ModelImporter.cpp
 	src/ModelObject.cpp
+	src/RayPicking.cpp
 	src/Renderable.cpp
 	src/Material.cpp
 	src/SurfaceMaterial.cpp
@@ -112,6 +113,16 @@ sync_runtime_files(D3D11Example)
 
 if(BUILD_EDITOR)
     if(EXISTS ${CMAKE_SOURCE_DIR}/extern/imgui/imgui.cpp)
+        # ImGuizmo draws the move / rotate / scale handles. Only the editor uses it. SOURCE_SUBDIR names a folder
+        # that does not exist, so FetchContent downloads the files but does not try to build ImGuizmo's own
+        # project (we compile the one file we need below). Offline? -DFETCHCONTENT_SOURCE_DIR_IMGUIZMO=<path>
+        FetchContent_Declare(imguizmo
+            GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+            GIT_TAG 105e4fde45e4e74aae8973d98750820ef7aca7e2
+            SOURCE_SUBDIR does-not-exist
+        )
+        FetchContent_MakeAvailable(imguizmo)
+
         add_executable(D3D11Editor
             editor/main_editor.cpp
             editor/EditorLayer.cpp
@@ -122,11 +133,13 @@ if(BUILD_EDITOR)
             extern/imgui/imgui_widgets.cpp
             extern/imgui/backends/imgui_impl_win32.cpp
             extern/imgui/backends/imgui_impl_dx11.cpp
+            ${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp
         )
         target_include_directories(D3D11Editor PRIVATE
             ${CMAKE_SOURCE_DIR}/editor
             ${CMAKE_SOURCE_DIR}/extern/imgui
             ${CMAKE_SOURCE_DIR}/extern/imgui/backends
+            ${imguizmo_SOURCE_DIR}/src
         )
         target_link_libraries(D3D11Editor PRIVATE Engine comdlg32)   # comdlg32: the Open File dialog
         sync_runtime_files(D3D11Editor)

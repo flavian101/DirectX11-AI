@@ -1,6 +1,8 @@
 #pragma once
 #include "Layer.h"
 #include "ModelObject.h"
+#include "RayPicking.h"
+#include "SceneObject.h"
 #include <string>
 #include "Scene.h"
 #include "SurfaceMaterial.h"
@@ -25,12 +27,22 @@ public:
 
 private:
     enum class SelectionKind { Object, Camera, Lights };
+    enum class GizmoTool { Translate, Rotate, Scale };
 
     // --- the shell: dock space, menu, panels ---
     void DrawDockSpace();
     void BuildDefaultLayout(unsigned int dockSpaceId, float width, float height);
     void DrawMenuBar();
     void DrawViewportPanel(LayerContext& ctx);
+    void DrawViewportToolbar();
+    void DrawSelectionAndGizmo(LayerContext& ctx, float imageX, float imageY, float imageWidth, float imageHeight);
+    void HandleShortcuts();
+    void ProcessPendingActions(LayerContext& ctx);
+    SceneObjectId PickObject(const Ray& ray) const;
+    SceneObject* SelectedObject() const;
+    void FrameSelected();
+    void PlaceInFrontOfCamera(SceneObject* object, float distance);
+    void Select(SceneObject* object);
     void DrawHierarchyPanel();
     void DrawInspectorPanel();
 
@@ -52,7 +64,7 @@ private:
     HWND hwnd_ = nullptr;
     Scene* scene_ = nullptr;   // non-owning; refreshed from the LayerContext every frame
     SelectionKind selectionKind_ = SelectionKind::Object;
-    int selectedObject_ = -1;
+    SceneObjectId selectedId_ = 0;   // 0 = nothing; an id (not an index) survives adds and deletes
     TerrainSettings pendingTerrainSettings_;
     bool lastTerrainGenerationSucceeded_ = true;
     bool showShadowMap_ = false;
@@ -62,6 +74,16 @@ private:
     bool showInspector_ = true;
     bool showViewport_ = true;
     bool resetLayout_ = false;
+
+    // Viewport tools and what the panels asked for this frame (carried out at the start of the NEXT frame,
+    // so nothing is added or removed while a list is being drawn).
+    GizmoTool gizmoTool_ = GizmoTool::Translate;
+    bool gizmoLocal_ = false;
+    bool viewportFocused_ = false;
+    bool hierarchyFocused_ = false;
+    bool addCubeRequested_ = false;
+    bool duplicateRequested_ = false;
+    bool deleteRequested_ = false;
 
     // File > Import Model: the request is noted by the menu and carried out at the start of the next frame.
     bool importRequested_ = false;

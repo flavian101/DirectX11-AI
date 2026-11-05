@@ -95,6 +95,7 @@ Cube::Cube(ID3D11Device* device)
 
 void Cube::Update(float dt)
 {
+    if (!spinning_) return;
     rotation_.y += XMConvertToRadians(45.0f) * dt;
     rotation_.x += XMConvertToRadians(22.5f) * dt;
     UpdateWorldTransform();
@@ -114,8 +115,29 @@ bool Cube::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotation
     position_ = position;
     rotation_ = rotation;
     scale_ = scale;
+    spinning_ = false;   // whoever sets the transform by hand wants the cube to stay where they put it
     UpdateWorldTransform();
     return true;
+}
+
+bool Cube::GetOrientedBounds(XMFLOAT4X4& world, XMFLOAT3& boundsMin, XMFLOAT3& boundsMax) const
+{
+    world = world_;
+    boundsMin = XMFLOAT3(-1.0f, -1.0f, -1.0f);   // the cube's own vertices span [-1, 1] on each axis
+    boundsMax = XMFLOAT3(1.0f, 1.0f, 1.0f);
+    return true;
+}
+
+std::unique_ptr<SceneObject> Cube::Clone(ID3D11Device* device) const
+{
+    auto copy = std::make_unique<Cube>(device);
+    copy->position_ = position_;
+    copy->rotation_ = rotation_;
+    copy->scale_ = scale_;
+    copy->spinning_ = spinning_;
+    copy->surface_->Settings() = surface_->Settings();
+    copy->UpdateWorldTransform();
+    return copy;
 }
 
 void Cube::UpdateWorldTransform()
@@ -124,9 +146,8 @@ void Cube::UpdateWorldTransform()
         XMMatrixRotationX(rotation_.x) * XMMatrixRotationY(rotation_.y) *
         XMMatrixRotationZ(rotation_.z) *
         XMMatrixTranslation(position_.x, position_.y, position_.z);
-    XMFLOAT4X4 world;
-    XMStoreFloat4x4(&world, transform);
-    if (renderable_) renderable_->SetWorld(world);
+    XMStoreFloat4x4(&world_, transform);
+    if (renderable_) renderable_->SetWorld(world_);
 }
 
 bool Cube::GetBoundingSphere(XMFLOAT3& center, float& radius) const

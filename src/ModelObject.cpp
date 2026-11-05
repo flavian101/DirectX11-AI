@@ -138,6 +138,33 @@ void ModelObject::UpdateWorldTransform()
     for (Part& part : parts_) part.renderable->SetWorld(world_);
 }
 
+bool ModelObject::GetOrientedBounds(XMFLOAT4X4& world, XMFLOAT3& boundsMin, XMFLOAT3& boundsMax) const
+{
+    world = world_;
+    boundsMin = boundsMin_;
+    boundsMax = boundsMax_;
+    return true;
+}
+
+std::unique_ptr<SceneObject> ModelObject::Clone(ID3D11Device* device) const
+{
+    ImportedModel imported;
+    std::string error;
+    if (!ImportModel(sourcePath_, imported, error)) {
+        LOG_ERROR("Duplicate failed, could not read the model again: " + error);
+        return nullptr;
+    }
+    auto copy = std::make_unique<ModelObject>(device, std::move(imported));
+    if (!copy->IsValid()) return nullptr;
+    copy->position_ = position_;
+    copy->rotation_ = rotation_;
+    copy->scale_ = scale_;
+    const size_t shared = (std::min)(materials_.size(), copy->materials_.size());
+    for (size_t i = 0; i < shared; ++i) copy->materials_[i]->Settings() = materials_[i]->Settings();
+    copy->UpdateWorldTransform();
+    return copy;
+}
+
 bool ModelObject::GetBoundingSphere(XMFLOAT3& center, float& radius) const
 {
     const XMFLOAT3 centre((boundsMin_.x + boundsMax_.x) * 0.5f, (boundsMin_.y + boundsMax_.y) * 0.5f, (boundsMin_.z + boundsMax_.z) * 0.5f);

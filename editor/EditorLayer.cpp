@@ -1,5 +1,6 @@
 #include "EditorLayer.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include "Cube.h"
 #include "ModelImporter.h"
@@ -7,6 +8,7 @@
 #include "Logger.h"
 #include "Skybox.h"
 #include "imgui.h"
+#include "ImGuizmo.h"   // after imgui.h: ImGuizmo's header uses ImGui types but does not include them
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 #include "imgui_internal.h"   // DockBuilder*: building the default panel layout from code
@@ -18,6 +20,78 @@
 #endif
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+using namespace DirectX;
+
+namespace {
+// The gizmo edits ONE 4x4 matrix; the objects store position, rotation and scale. These two functions convert
+// between them using the SAME order every SceneObject uses to build its world matrix:
+// scale, then rotate about X, then Y, then Z, then move.
+XMFLOAT4X4 ComposeTransform(const XMFLOAT3& position, const XMFLOAT3& rotation, const XMFLOAT3& scale)
+{
+    XMFLOAT4X4 result;
+    XMStoreFloat4x4(&result, XMMatrixScaling(scale.x, scale.y, scale.z) * XMMatrixRotationX(rotation.x) *
+                             XMMatrixRotationY(rotation.y) * XMMatrixRotationZ(rotation.z) *
+                             XMMatrixTranslation(position.x, position.y, position.z));
+    return result;
+}
+
+void DecomposeTransform(const XMFLOAT4X4& m, XMFLOAT3& position, XMFLOAT3& rotation, XMFLOAT3& scale)
+{
+    position = XMFLOAT3(m._41, m._42, m._43);   // the last row holds the translation
+
+    // Each of the first three rows is one axis of the object, stretched by the scale: its length IS the scale.
+    const float rows[3][3] = { { m._11, m._12, m._13 }, { m._21, m._22, m._23 }, { m._31, m._32, m._33 } };
+    float lengths[3];
+    float r[3][3];
+    for (int i = 0; i < 3; ++i) {
+        lengths[i] = std::sqrt(rows[i][0] * rows[i][0] + rows[i][1] * rows[i][1] + rows[i][2] * rows[i][2]);
+        const float inverse = lengths[i] > 1e-8f ? 1.0f / lengths[i] : 0.0f;
+        for (int j = 0; j < 3; ++j) r[i][j] = rows[i][j] * inverse;   // divide the scale out: a pure rotation remains
+    }
+    scale = XMFLOAT3((std::max)(lengths[0], 0.01f), (std::max)(lengths[1], 0.01f), (std::max)(lengths[2], 0.01f));
+
+    // For R = Rx(a) * Ry(b) * Rz(g), multiplying it out gives  r[0][2] = -sin(b),  r[1][2] = sin(a)cos(b),
+    // r[2][2] = cos(a)cos(b),  r[0][0] = cos(b)cos(g),  r[0][1] = cos(b)sin(g). So the angles can be read back:
+    const float sinB = -r[0][2];
+    const float b = std::asin((std::max)(-1.0f, (std::min)(1.0f, sinB)));
+    float a, g;
+    if (std::fabs(std::cos(b)) > 1e-4f) {
+        a = std::atan2(r[1][2], r[2][2]);
+        g = std::atan2(r[0][1], r[0][0]);
+    } else {
+        // Gimbal lock: looking straight along the Y axis, X and Z rotations turn the same way, so only their
+        // sum is defined. Put it all in X.
+        g = 0.0f;
+        a = std::atan2(r[1][0] * sinB, r[1][1]);
+    }
+    rotation = XMFLOAT3(a, b, g);
+}
+
+// Draws the 12 edges of a box (in an object's local space, placed by `world`) as lines over the Viewport image.
+void DrawBoxOutline(ImDrawList* list, const XMFLOAT4X4& world, const XMFLOAT3& boxMin, const XMFLOAT3& boxMax,
+                    const XMFLOAT4X4& view, const XMFLOAT4X4& projection, float x, float y, float width, float height, ImU32 color)
+{
+    const XMMATRIX transform = XMLoadFloat4x4(&world) * XMLoadFloat4x4(&view) * XMLoadFloat4x4(&projection);
+    ImVec2 screen[8];
+    bool visible[8];
+    for (int i = 0; i < 8; ++i) {
+        const XMVECTOR corner = XMVectorSet((i & 1) ? boxMax.x : boxMin.x, (i & 2) ? boxMax.y : boxMin.y,
+                                            (i & 4) ? boxMax.z : boxMin.z, 1.0f);
+        const XMVECTOR clip = XMVector4Transform(corner, transform);
+        const float w = XMVectorGetW(clip);
+        visible[i] = w > 0.01f;   // behind the camera: the divide below would flip it to the wrong side
+        if (!visible[i]) continue;
+        screen[i] = ImVec2(x + (XMVectorGetX(clip) / w * 0.5f + 0.5f) * width, y + (0.5f - XMVectorGetY(clip) / w * 0.5f) * height);
+    }
+    for (int i = 0; i < 8; ++i) {
+        for (int bit = 1; bit <= 4; bit <<= 1) {
+            if (i & bit) continue;   // each edge once: from the corner whose bit is 0 to its neighbour with the bit set
+            if (visible[i] && visible[i | bit]) list->AddLine(screen[i], screen[i | bit], color, 1.5f);
+        }
+    }
+}
+}
 
 using namespace DirectX;
 
@@ -73,7 +147,8 @@ bool EditorLayer::OnWindowMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
 
 bool EditorLayer::BlocksSceneKeyboard() const
 {
-    return attached_ && ImGui::GetIO().WantTextInput;   // typing into a text field: WASD must not fly the camera
+    return attached_ && (ImGui::GetIO().WantTextInput ||   // typing into a text field: WASD must not fly the camera
+                          ImGui::GetIO().KeyCtrl);       // Ctrl+D (duplicate) contains a D
 }
 
 void EditorLayer::OnFrame(LayerContext& ctx)
@@ -87,6 +162,7 @@ void EditorLayer::OnFrame(LayerContext& ctx)
         importRequested_ = false;
         ImportModelWithDialog(ctx);
     }
+    ProcessPendingActions(ctx);   // add / duplicate / delete asked for by the previous frame's UI
 
     // Apply the size the Viewport panel measured LAST frame. The panel only knows its size while
     // it is being laid out (below), which is too late to resize the textures for this frame.
@@ -100,11 +176,13 @@ void EditorLayer::OnFrame(LayerContext& ctx)
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+    ImGuizmo::BeginFrame();   // must follow NewFrame: the gizmo library resets its per-frame state here
 
     DrawDockSpace();
     DrawViewportPanel(ctx);
     DrawHierarchyPanel();
     DrawInspectorPanel();
+    HandleShortcuts();
 
     if (showImportError_) {
         ImGui::OpenPopup("Import failed");
@@ -181,6 +259,18 @@ void EditorLayer::DrawMenuBar()
         if (ImGui::MenuItem("Exit")) PostQuitMessage(0);
         ImGui::EndMenu();
     }
+    if (ImGui::BeginMenu("Edit")) {
+        const SceneObject* selected = SelectedObject();
+        if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, selected && selected->CanClone())) duplicateRequested_ = true;
+        if (ImGui::MenuItem("Delete", "Del", false, selected && selected->IsUserContent())) deleteRequested_ = true;
+        if (ImGui::MenuItem("Frame selected", "F", false, selected != nullptr)) FrameSelected();
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Add")) {
+        if (ImGui::MenuItem("Cube")) addCubeRequested_ = true;
+        if (ImGui::MenuItem("Model from file...")) importRequested_ = true;
+        ImGui::EndMenu();
+    }
     if (ImGui::BeginMenu("View")) {
         ImGui::MenuItem("Hierarchy", nullptr, &showHierarchy_);
         ImGui::MenuItem("Viewport", nullptr, &showViewport_);
@@ -192,9 +282,28 @@ void EditorLayer::DrawMenuBar()
     ImGui::EndMenuBar();
 }
 
+void EditorLayer::DrawViewportToolbar()
+{
+    ImGui::SetCursorPos(ImVec2(6.0f, 4.0f));
+    auto toolButton = [&](const char* label, GizmoTool tool) {
+        const bool active = gizmoTool_ == tool;
+        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button(label)) gizmoTool_ = tool;
+        if (active) ImGui::PopStyleColor();
+        ImGui::SameLine();
+    };
+    toolButton("Move [1]", GizmoTool::Translate);
+    toolButton("Rotate [2]", GizmoTool::Rotate);
+    toolButton("Scale [3]", GizmoTool::Scale);
+    if (ImGui::Button(gizmoLocal_ ? "Local [G]" : "World [G]")) gizmoLocal_ = !gizmoLocal_;
+    ImGui::SameLine();
+    ImGui::TextDisabled("Hold Ctrl to snap  |  F frame  |  Del delete  |  Ctrl+D duplicate");
+}
+
 void EditorLayer::DrawViewportPanel(LayerContext& ctx)
 {
     viewportHovered_ = false;
+    viewportFocused_ = false;
     if (!showViewport_) return;
 
     // The image should touch the panel's edges, so no padding inside this one window.
@@ -203,43 +312,212 @@ void EditorLayer::DrawViewportPanel(LayerContext& ctx)
                                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();
     if (open) {
+        viewportFocused_ = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        DrawViewportToolbar();   // a strip ABOVE the image, so nothing overlaps the picture and the hover test stays clean
+
         const ImVec2 available = ImGui::GetContentRegionAvail();
         viewportWidth_ = static_cast<unsigned int>((std::max)(1.0f, available.x));
         viewportHeight_ = static_cast<unsigned int>((std::max)(1.0f, available.y));
 
         if (ID3D11ShaderResourceView* image = ctx.renderer.GetViewTexture()) {
+            const ImVec2 imageMin = ImGui::GetCursorScreenPos();
             ImGui::Image(static_cast<ImTextureID>(reinterpret_cast<intptr_t>(image)), available);
             viewportHovered_ = ImGui::IsItemHovered();
+            DrawSelectionAndGizmo(ctx, imageMin.x, imageMin.y, available.x, available.y);
+
             char fps[32];
             std::snprintf(fps, sizeof(fps), "FPS: %.1f", ImGui::GetIO().Framerate);
-            ImGui::GetWindowDrawList()->AddText(ImVec2(ImGui::GetItemRectMin().x + 8.0f, ImGui::GetItemRectMax().y - 22.0f),
+            ImGui::GetWindowDrawList()->AddText(ImVec2(imageMin.x + 8.0f, imageMin.y + available.y - 22.0f),
                                                 IM_COL32(255, 255, 255, 200), fps);
         }
     }
     ImGui::End();
 }
 
+void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, float width, float height)
+{
+    const Camera& camera = ctx.scene.GetCamera();
+    const XMFLOAT4X4 view = camera.GetViewMatrix();
+    const XMFLOAT4X4 projection = camera.GetProjectionMatrix();
+
+    ImGuizmo::SetOrthographic(false);
+    ImGuizmo::SetDrawlist();                       // draw into the Viewport window, on top of the image
+    ImGuizmo::SetRect(x, y, width, height);        // the gizmo must know which part of the screen is the 3D view
+
+    SceneObject* selected = (selectionKind_ == SelectionKind::Object) ? SelectedObject() : nullptr;
+    if (selected) {
+        XMFLOAT4X4 boundsWorld;
+        XMFLOAT3 boundsMin, boundsMax;
+        if (selected->GetOrientedBounds(boundsWorld, boundsMin, boundsMax)) {
+            ImGui::GetWindowDrawList()->PushClipRect(ImVec2(x, y), ImVec2(x + width, y + height), true);
+            DrawBoxOutline(ImGui::GetWindowDrawList(), boundsWorld, boundsMin, boundsMax, view, projection, x, y, width, height,
+                           IM_COL32(255, 170, 40, 255));
+            ImGui::GetWindowDrawList()->PopClipRect();
+        }
+
+        XMFLOAT3 position, rotation, scale;
+        if (selected->GetEditorTransform(position, rotation, scale)) {
+            XMFLOAT4X4 matrix = ComposeTransform(position, rotation, scale);
+            const ImGuizmo::OPERATION operation = gizmoTool_ == GizmoTool::Translate ? ImGuizmo::TRANSLATE
+                                                : gizmoTool_ == GizmoTool::Rotate    ? ImGuizmo::ROTATE
+                                                                                     : ImGuizmo::SCALE;
+            const ImGuizmo::MODE mode = (gizmoLocal_ || gizmoTool_ == GizmoTool::Scale) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
+            // Holding Ctrl snaps: half a unit, 15 degrees, or a tenth of the scale.
+            const float step = gizmoTool_ == GizmoTool::Translate ? 0.5f : gizmoTool_ == GizmoTool::Rotate ? 15.0f : 0.1f;
+            const float snap[3] = { step, step, step };
+            ImGuizmo::Manipulate(&view._11, &projection._11, operation, mode, &matrix._11, nullptr,
+                                 ImGui::GetIO().KeyCtrl ? snap : nullptr);
+            if (ImGuizmo::IsUsing()) {
+                DecomposeTransform(matrix, position, rotation, scale);
+                selected->SetEditorTransform(position, rotation, scale);
+            }
+        }
+    }
+
+    // Click = pick. Only when the click is not on the gizmo's handles, or grabbing an arrow would also select
+    // whatever object is behind it.
+    if (viewportHovered_ && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
+        const ImVec2 mouse = ImGui::GetMousePos();
+        const float ndcX = ((mouse.x - x) / width) * 2.0f - 1.0f;
+        const float ndcY = 1.0f - ((mouse.y - y) / height) * 2.0f;   // screen y grows downward, ndc y grows upward
+        const SceneObjectId hit = PickObject(MakePickRay(view, projection, ndcX, ndcY));
+        if (hit != 0) { selectionKind_ = SelectionKind::Object; selectedId_ = hit; }
+        else selectedId_ = 0;
+    }
+}
+
+SceneObjectId EditorLayer::PickObject(const Ray& ray) const
+{
+    SceneObjectId best = 0;
+    float bestDistance = 3.402823466e+38f;
+    for (const auto& object : scene_->GetObjects()) {
+        XMFLOAT4X4 world;
+        XMFLOAT3 boundsMin, boundsMax;
+        if (!object || !object->GetOrientedBounds(world, boundsMin, boundsMax)) continue;   // terrain, water and sky cannot be clicked
+        float distance = 0.0f;
+        if (RayIntersectsBox(ray, world, boundsMin, boundsMax, distance) && distance < bestDistance) {
+            bestDistance = distance;   // the NEAREST object under the cursor wins
+            best = object->GetId();
+        }
+    }
+    return best;
+}
+
+SceneObject* EditorLayer::SelectedObject() const
+{
+    return (scene_ && selectedId_ != 0) ? scene_->Find(selectedId_) : nullptr;
+}
+
+void EditorLayer::Select(SceneObject* object)
+{
+    selectionKind_ = SelectionKind::Object;
+    selectedId_ = object ? object->GetId() : 0;
+}
+
+void EditorLayer::FrameSelected()
+{
+    SceneObject* object = SelectedObject();
+    XMFLOAT3 center;
+    float radius = 0.0f;
+    if (!object || !object->GetBoundingSphere(center, radius)) return;
+    Camera& camera = scene_->GetCamera();
+    const XMFLOAT3 eye = camera.GetPosition(), target = camera.GetTarget();
+    const XMVECTOR forward = XMVector3Normalize(XMVectorSubtract(XMLoadFloat3(&target), XMLoadFloat3(&eye)));
+    // Back off far enough that the object's bounding sphere fits comfortably, looking the same way as before.
+    const float distance = (std::max)(radius, 0.5f) * 2.5f;
+    XMFLOAT3 newEye;
+    XMStoreFloat3(&newEye, XMVectorSubtract(XMLoadFloat3(&center), XMVectorScale(forward, distance)));
+    camera.SetPosition(newEye);
+    camera.SetTarget(center);
+}
+
+void EditorLayer::PlaceInFrontOfCamera(SceneObject* object, float distance)
+{
+    XMFLOAT3 position, rotation, scale;
+    if (!object || !object->GetEditorTransform(position, rotation, scale)) return;
+    const Camera& camera = scene_->GetCamera();
+    const XMFLOAT3 eye = camera.GetPosition(), target = camera.GetTarget();
+    const XMVECTOR forward = XMVector3Normalize(XMVectorSubtract(XMLoadFloat3(&target), XMLoadFloat3(&eye)));
+    XMStoreFloat3(&position, XMVectorAdd(XMLoadFloat3(&eye), XMVectorScale(forward, distance)));
+    object->SetEditorTransform(position, rotation, scale);
+}
+
+void EditorLayer::ProcessPendingActions(LayerContext& ctx)
+{
+    if (addCubeRequested_) {
+        addCubeRequested_ = false;
+        if (SceneObject* cube = ctx.scene.CreateCube()) {
+            PlaceInFrontOfCamera(cube, 12.0f);
+            Select(cube);
+        }
+    }
+    if (duplicateRequested_) {
+        duplicateRequested_ = false;
+        if (SceneObject* copy = ctx.scene.Duplicate(selectedId_)) Select(copy);
+    }
+    if (deleteRequested_) {
+        deleteRequested_ = false;
+        const SceneObject* selected = SelectedObject();
+        if (selected && selected->IsUserContent()) {
+            ctx.scene.Remove(selectedId_);
+            selectedId_ = 0;
+        }
+    }
+}
+
+void EditorLayer::HandleShortcuts()
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.WantTextInput) return;   // typing a number into a slider: "1" must not switch tools
+
+    const bool inViewport = viewportHovered_ || viewportFocused_;
+    if (inViewport) {
+        if (ImGui::IsKeyPressed(ImGuiKey_1, false)) gizmoTool_ = GizmoTool::Translate;
+        if (ImGui::IsKeyPressed(ImGuiKey_2, false)) gizmoTool_ = GizmoTool::Rotate;
+        if (ImGui::IsKeyPressed(ImGuiKey_3, false)) gizmoTool_ = GizmoTool::Scale;
+        if (ImGui::IsKeyPressed(ImGuiKey_G, false)) gizmoLocal_ = !gizmoLocal_;
+    }
+    if (inViewport || hierarchyFocused_) {
+        if (ImGui::IsKeyPressed(ImGuiKey_F, false)) FrameSelected();
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) selectedId_ = 0;
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) deleteRequested_ = true;
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicateRequested_ = true;
+    }
+}
+
 void EditorLayer::DrawHierarchyPanel()
 {
+    hierarchyFocused_ = false;
     if (!showHierarchy_) return;
     if (!ImGui::Begin("Hierarchy", &showHierarchy_)) { ImGui::End(); return; }
+    hierarchyFocused_ = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
     if (ImGui::Selectable("Camera", selectionKind_ == SelectionKind::Camera)) selectionKind_ = SelectionKind::Camera;
     if (ImGui::Selectable("Lights", selectionKind_ == SelectionKind::Lights)) selectionKind_ = SelectionKind::Lights;
     ImGui::Separator();
 
-    const auto& objects = scene_->GetObjects();
-    if (selectedObject_ >= static_cast<int>(objects.size())) selectedObject_ = -1;
-    for (int index = 0; index < static_cast<int>(objects.size()); ++index) {
-        SceneObject* object = objects[index].get();
+    for (const auto& owned : scene_->GetObjects()) {
+        SceneObject* object = owned.get();
         if (!object) continue;
-        ImGui::PushID(index);   // two objects can share a name; the id keeps their rows distinct
-        if (ImGui::Selectable(object->GetEditorName(),
-                              selectionKind_ == SelectionKind::Object && selectedObject_ == index)) {
-            selectionKind_ = SelectionKind::Object;
-            selectedObject_ = index;
+        ImGui::PushID(static_cast<int>(object->GetId()));   // two objects can share a name; the id keeps their rows distinct
+        if (ImGui::Selectable(object->GetEditorName(), selectionKind_ == SelectionKind::Object && selectedId_ == object->GetId())) {
+            Select(object);
+        }
+        if (ImGui::BeginPopupContextItem()) {   // right-click on a row
+            Select(object);
+            if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, object->CanClone())) duplicateRequested_ = true;
+            if (ImGui::MenuItem("Delete", "Del", false, object->IsUserContent())) deleteRequested_ = true;
+            if (ImGui::MenuItem("Frame", "F")) FrameSelected();
+            ImGui::EndPopup();
         }
         ImGui::PopID();
+    }
+
+    // Right-click on the empty part of the panel.
+    if (ImGui::BeginPopupContextWindow("HierarchyContext", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
+        if (ImGui::MenuItem("Add cube")) addCubeRequested_ = true;
+        if (ImGui::MenuItem("Add model from file...")) importRequested_ = true;
+        ImGui::EndPopup();
     }
     ImGui::End();
 }
@@ -249,15 +527,14 @@ void EditorLayer::DrawInspectorPanel()
     if (!showInspector_) return;
     if (!ImGui::Begin("Inspector", &showInspector_)) { ImGui::End(); return; }
 
-    const auto& objects = scene_->GetObjects();
     if (selectionKind_ == SelectionKind::Camera) {
         DrawCameraInspector();
     } else if (selectionKind_ == SelectionKind::Lights) {
         DrawLightsInspector();
-    } else if (selectedObject_ >= 0 && selectedObject_ < static_cast<int>(objects.size())) {
-        DrawObjectInspector(objects[selectedObject_].get());
+    } else if (SceneObject* selected = SelectedObject()) {
+        DrawObjectInspector(selected);
     } else {
-        ImGui::TextDisabled("Select an item in the Hierarchy.");
+        ImGui::TextDisabled("Click an object in the Viewport or the Hierarchy.");
     }
     ImGui::End();
 }
@@ -272,7 +549,11 @@ void EditorLayer::DrawObjectInspector(SceneObject* object)
     if (auto* terrain = dynamic_cast<Terrain*>(object)) DrawTerrainInspector(terrain);
     if (auto* water = dynamic_cast<Water*>(object)) DrawWaterInspector(water);
     if (auto* skybox = dynamic_cast<Skybox*>(object)) DrawSkyboxInspector(skybox);
-    if (auto* cube = dynamic_cast<Cube*>(object)) DrawSurfaceInspector(cube->GetSurface());
+    if (auto* cube = dynamic_cast<Cube*>(object)) {
+        bool spinning = cube->IsSpinning();
+        if (ImGui::Checkbox("Spin", &spinning)) cube->SetSpinning(spinning);
+        DrawSurfaceInspector(cube->GetSurface());
+    }
     if (auto* model = dynamic_cast<ModelObject*>(object)) DrawModelInspector(model);
 }
 
@@ -324,19 +605,8 @@ void EditorLayer::ImportModelWithDialog(LayerContext& ctx)
     // Files come in any unit and any position: make the longest side 10 units and put the model's base in
     // front of the camera, so it is visible straight away.
     model->FitToSize(10.0f);
-    const Camera& camera = ctx.scene.GetCamera();
-    const XMFLOAT3 eye = camera.GetPosition(), target = camera.GetTarget();
-    XMVECTOR forward = XMVector3Normalize(XMVectorSubtract(XMLoadFloat3(&target), XMLoadFloat3(&eye)));
-    XMFLOAT3 position;
-    XMStoreFloat3(&position, XMVectorAdd(XMLoadFloat3(&eye), XMVectorScale(forward, 20.0f)));
-    XMFLOAT3 oldPosition, rotation, scale;
-    model->GetEditorTransform(oldPosition, rotation, scale);
-    model->SetEditorTransform(position, rotation, scale);
-
-    const auto& objects = ctx.scene.GetObjects();
-    for (int i = 0; i < static_cast<int>(objects.size()); ++i) {
-        if (objects[i]->GetId() == model->GetId()) { selectedObject_ = i; selectionKind_ = SelectionKind::Object; }
-    }
+    PlaceInFrontOfCamera(model, 20.0f);
+    Select(model);
 }
 
 void EditorLayer::DrawModelInspector(ModelObject* model)
