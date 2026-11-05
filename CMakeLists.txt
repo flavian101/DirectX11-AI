@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.22)
 project(D3D11Example LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -13,6 +13,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 #   For the bundled submodule, use -DFETCHCONTENT_SOURCE_DIR_ASSIMP=${CMAKE_SOURCE_DIR}/extern/assimp
 # ---------------------------------------------------------------------------------------------
 include(FetchContent)
+if(NOT DEFINED FETCHCONTENT_SOURCE_DIR_ASSIMP AND EXISTS "${CMAKE_SOURCE_DIR}/extern/assimp/CMakeLists.txt")
+    set(FETCHCONTENT_SOURCE_DIR_ASSIMP "${CMAKE_SOURCE_DIR}/extern/assimp" CACHE PATH
+        "Use the checked-out Assimp source instead of downloading it")
+endif()
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
