@@ -5,6 +5,32 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ---------------------------------------------------------------------------------------------
+# Assimp reads model files (glTF/GLB, FBX, OBJ). It is downloaded and built from source the first
+# time you configure (a few minutes, once). Only the three importers we use are compiled, and
+# exporters, tools and tests are off, to keep that build small.
+#   Offline? Clone it yourself and pass  -DFETCHCONTENT_SOURCE_DIR_ASSIMP=<path to assimp>
+# ---------------------------------------------------------------------------------------------
+include(FetchContent)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE)
+set(ASSIMP_NO_EXPORT ON CACHE BOOL "" FORCE)
+set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_INJECT_DEBUG_POSTFIX OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_GLTF_IMPORTER ON CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_FBX_IMPORTER ON CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_OBJ_IMPORTER ON CACHE BOOL "" FORCE)
+FetchContent_Declare(assimp
+	GIT_REPOSITORY https://github.com/assimp/assimp.git
+	GIT_TAG v5.4.3
+	GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(assimp)
+
 option(BUILD_EDITOR "Build the editor executable (needs extern/imgui on its docking branch)" ON)
 
 # ---------------------------------------------------------------------------------------------
@@ -25,6 +51,9 @@ add_library(Engine STATIC
 	src/Scene.cpp
 	src/Camera.cpp
 	src/Mesh.cpp
+	src/Vertex.cpp
+	src/ModelImporter.cpp
+	src/ModelObject.cpp
 	src/Renderable.cpp
 	src/Material.cpp
 	src/SurfaceMaterial.cpp
@@ -50,7 +79,7 @@ target_include_directories(Engine PUBLIC ${CMAKE_SOURCE_DIR}/src)
 # Link against the Windows SDK libraries for DirectX 11
 # The d3d11 and dxgi libraries are part of the SDK and are available on Windows
 # dxguid supplies the interface IDs (e.g. for D3DReflect in Shader.cpp); MSVC can hide the need, MinGW cannot.
-target_link_libraries(Engine PUBLIC d3d11 dxgi d3dcompiler dxguid imm32 dwmapi)
+target_link_libraries(Engine PUBLIC d3d11 dxgi d3dcompiler dxguid imm32 dwmapi assimp::assimp)
 
 add_executable(D3D11Example src/main.cpp)
 target_link_libraries(D3D11Example PRIVATE Engine)
@@ -93,7 +122,7 @@ if(BUILD_EDITOR)
             ${CMAKE_SOURCE_DIR}/extern/imgui
             ${CMAKE_SOURCE_DIR}/extern/imgui/backends
         )
-        target_link_libraries(D3D11Editor PRIVATE Engine)
+        target_link_libraries(D3D11Editor PRIVATE Engine comdlg32)   # comdlg32: the Open File dialog
         sync_runtime_files(D3D11Editor)
     else()
         message(WARNING "extern/imgui is empty - skipping the editor. Run: git submodule update --init")

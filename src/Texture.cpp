@@ -31,6 +31,25 @@ Texture::Texture(ID3D11Device* device, const std::string& filePath, ColorSpace c
         return;
     }
 
+    const bool ok = CreateFromPixels(device, width, height, imageData, format);
+    stbi_image_free(imageData);
+    valid_ = ok;
+}
+
+std::unique_ptr<Texture> Texture::FromPixels(ID3D11Device* device, int width, int height, const std::uint8_t* rgba,
+                                             ColorSpace colorSpace)
+{
+    if (!device || !rgba || width <= 0 || height <= 0) return nullptr;
+    const DXGI_FORMAT format = (colorSpace == ColorSpace::SRGB) ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                                                                 : DXGI_FORMAT_R8G8B8A8_UNORM;
+    std::unique_ptr<Texture> texture(new Texture());
+    texture->valid_ = texture->CreateFromPixels(device, width, height, rgba, format);
+    return texture->valid_ ? std::move(texture) : nullptr;
+}
+
+// Shared by the file loader and FromPixels: one texture, a full mip chain, filled from `pixels`.
+bool Texture::CreateFromPixels(ID3D11Device* device, int width, int height, const void* pixels, DXGI_FORMAT format)
+{
     // Mipmaps: the GPU can only build them for a texture that is also a render target and
     // is flagged GENERATE_MIPS, so it must be DEFAULT usage (not IMMUTABLE) and we upload
     // only level 0 ourselves, then ask the GPU to fill in the smaller levels.
@@ -49,8 +68,7 @@ Texture::Texture(ID3D11Device* device, const std::string& filePath, ColorSpace c
     HRESULT hr = device->CreateTexture2D(&textureDesc, nullptr, &texture_);
     if (FAILED(hr)) {
         LOG_HR(hr, "Failed to create texture");
-        stbi_image_free(imageData);
-        return;
+        return false;
     }
 
     // Create shader resource view
@@ -65,18 +83,15 @@ Texture::Texture(ID3D11Device* device, const std::string& filePath, ColorSpace c
         LOG_HR(hr, "Failed to create shader resource view");
         texture_->Release();
         texture_ = nullptr;   // otherwise ~Texture() releases it a second time
-        stbi_image_free(imageData);
-        return;
+        return false;
     }
 
     ID3D11DeviceContext* context = nullptr;
     device->GetImmediateContext(&context);
-    context->UpdateSubresource(texture_, 0, nullptr, imageData, static_cast<UINT>(width * 4), 0);
+    context->UpdateSubresource(texture_, 0, nullptr, pixels, static_cast<UINT>(width * 4), 0);
     context->GenerateMips(shaderResourceView_);
     context->Release();
-
-    stbi_image_free(imageData);
-    valid_ = true;
+    return true;
 }
 
 Texture::Texture(ID3D11Device* device, const std::array<std::string, 6>& facePaths, ColorSpace colorSpace)

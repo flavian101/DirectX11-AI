@@ -12,6 +12,8 @@ enum class SurfaceDebugView { Lit = 0, VertexNormal, MappedNormal, Tangent };
 
 // The knobs of a textured surface. Plain data: the editor edits it, SurfaceMaterial uploads it.
 struct SurfaceSettings {
+    DirectX::XMFLOAT4 baseColor = { 1.0f, 1.0f, 1.0f, 1.0f };   // linear; multiplies the albedo map (glTF "base colour factor")
+    float alphaCutoff = 0.0f;          // 0 = opaque; above 0, pixels whose alpha is below it are discarded (leaves, fences)
     bool useNormalMap = true;          // off = light the smooth surface (compare with / without)
     float normalStrength = 1.0f;       // 0 = flat, 1 = as authored, above 1 = exaggerated
     bool flipGreen = false;            // OpenGL-style normal maps have green pointing "up"; DirectX-style, "down"
@@ -25,6 +27,8 @@ struct SurfaceSettings {
 struct SurfaceMaterialCB {
     DirectX::XMFLOAT4 params;   // x = normal strength, y = roughness scale, z = AO strength, w = emissive intensity
     DirectX::XMFLOAT4 flags;    // x = flip green, y = use normal map, z = debug view
+    DirectX::XMFLOAT4 baseColor;   // linear rgba, multiplies the albedo
+    DirectX::XMFLOAT4 extra;       // x = alpha cutoff
 };
 static_assert(sizeof(SurfaceMaterialCB) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
@@ -40,6 +44,11 @@ public:
     bool LoadNormal(const std::string& path);
     bool LoadOrm(const std::string& path);        // R = ambient occlusion, G = roughness, B = metallic
     bool LoadEmissive(const std::string& path);
+    // The same four maps, but already created (embedded images, repacked maps). Null = back to the neutral default.
+    void SetAlbedo(std::unique_ptr<Texture> texture)   { albedo_ = std::move(texture); }
+    void SetNormal(std::unique_ptr<Texture> texture)   { normal_ = std::move(texture); }
+    void SetOrm(std::unique_ptr<Texture> texture)      { orm_ = std::move(texture); }
+    void SetEmissive(std::unique_ptr<Texture> texture) { emissive_ = std::move(texture); }
 
     bool HasAlbedo() const { return albedo_ && albedo_->IsValid(); }
     bool HasNormalMap() const { return normal_ && normal_->IsValid(); }
@@ -52,7 +61,7 @@ public:
 
     // Binds the four maps to their slots (loaded one, or the neutral default).
     void Bind(ID3D11DeviceContext* ctx) const;
-    // Hands the settings to the renderable's material block (b4). Only touches the GPU copy when something changed.
+    // Hands the settings to the renderable's material block (b4). (Renderable skips the GPU copy if nothing changed.)
     void Upload(Renderable& renderable) const;
 
 private:
@@ -63,6 +72,4 @@ private:
     SurfaceSettings settings_;
     std::unique_ptr<Texture> albedo_, normal_, orm_, emissive_;                      // supplied by the artist (may be null)
     std::unique_ptr<Texture> defaultAlbedo_, defaultNormal_, defaultOrm_, defaultEmissive_;   // neutral stand-ins
-    mutable SurfaceMaterialCB lastUploaded_{};
-    mutable bool uploadedOnce_ = false;
 };

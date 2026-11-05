@@ -1,5 +1,7 @@
 #pragma once
 #include "Layer.h"
+#include "ModelObject.h"
+#include <string>
 #include "Scene.h"
 #include "SurfaceMaterial.h"
 #include "Water.h"
@@ -41,9 +43,12 @@ private:
     void DrawWaterInspector(Water* water);
     void DrawSkyboxInspector(Skybox* skybox);
     void DrawSurfaceInspector(SurfaceMaterial& surface);
+    void DrawModelInspector(ModelObject* model);
+    void ImportModelWithDialog(LayerContext& ctx);
     void DrawTransformEditor(SceneObject* object);
 
     bool attached_ = false;
+    HWND hwnd_ = nullptr;
     Scene* scene_ = nullptr;   // non-owning; refreshed from the LayerContext every frame
     SelectionKind selectionKind_ = SelectionKind::Object;
     int selectedObject_ = -1;
@@ -56,6 +61,11 @@ private:
     bool showInspector_ = true;
     bool showViewport_ = true;
     bool resetLayout_ = false;
+
+    // File > Import Model: the request is noted by the menu and carried out at the start of the next frame.
+    bool importRequested_ = false;
+    bool showImportError_ = false;
+    std::string importError_;
 
     // Viewport panel: the size we want the 3D view to have next frame, and whether the pointer is over it.
     unsigned int viewportWidth_ = 1280;

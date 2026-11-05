@@ -23,11 +23,17 @@ public:
     static std::unique_ptr<Texture> Solid(ID3D11Device* device, std::uint8_t r, std::uint8_t g,
                                           std::uint8_t b, std::uint8_t a, ColorSpace colorSpace);
 
+    // A texture from pixels already in memory (an image embedded in a model file, a repacked map):
+    // `rgba` is width*height*4 bytes. Gets a full mip chain like a file texture. nullptr on failure.
+    static std::unique_ptr<Texture> FromPixels(ID3D11Device* device, int width, int height, const std::uint8_t* rgba,
+                                               ColorSpace colorSpace);
+
     bool IsValid() const { return valid_; }
     ID3D11ShaderResourceView* GetShaderResourceView() const { return shaderResourceView_; }
 
 private:
     Texture() = default;   // only the factories above build empty shells
+    bool CreateFromPixels(ID3D11Device* device, int width, int height, const void* pixels, DXGI_FORMAT format);
     ID3D11ShaderResourceView* shaderResourceView_ = nullptr;
     ID3D11Texture2D* texture_ = nullptr;
     bool valid_ = false;

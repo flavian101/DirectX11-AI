@@ -45,6 +45,9 @@ void Renderable::SetMaterialBlock(const void* data, UINT byteSize)
         materialData_.assign(padded, 0);
         if (materialCb_) { materialCb_->Release(); materialCb_ = nullptr; }
     }
+    // Several renderables can share one material and re-send the same bytes every frame: only a real
+    // change should cost a GPU upload.
+    if (std::memcmp(materialData_.data(), data, byteSize) == 0 && materialCb_) return;
     std::memcpy(materialData_.data(), data, byteSize);
     materialDirty_ = true;
 }

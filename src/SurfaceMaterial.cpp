@@ -1,7 +1,6 @@
 #include "SurfaceMaterial.h"
 #include "Logger.h"
 #include "ShaderSlots.h"
-#include <cstring>
 #include <filesystem>
 
 SurfaceMaterial::SurfaceMaterial(ID3D11Device* device) : device_(device)
@@ -57,8 +56,7 @@ void SurfaceMaterial::Upload(Renderable& renderable) const
                                   settings_.aoStrength, settings_.emissiveIntensity);
     cb.flags = DirectX::XMFLOAT4(settings_.flipGreen ? 1.0f : 0.0f, settings_.useNormalMap ? 1.0f : 0.0f,
                                  static_cast<float>(settings_.debugView), 0.0f);
-    if (uploadedOnce_ && std::memcmp(&cb, &lastUploaded_, sizeof(cb)) == 0) return;   // nothing changed
+    cb.baseColor = settings_.baseColor;
+    cb.extra = DirectX::XMFLOAT4(settings_.alphaCutoff, 0.0f, 0.0f, 0.0f);
     renderable.SetMaterialBlock(&cb, sizeof(cb));
-    lastUploaded_ = cb;
-    uploadedOnce_ = true;
 }

@@ -10,6 +10,8 @@ SamplerState colorSampler : register(s0);
 cbuffer SurfaceMaterial : register(b4) {
     float4 surfaceParams;   // x = normal strength, y = roughness scale, z = AO strength, w = emissive intensity
     float4 surfaceFlags;    // x = flip green (1/0), y = use normal map (1/0), z = debug view (0 lit, 1 vertex normal, 2 mapped normal, 3 tangent)
+    float4 surfaceBaseColor; // linear rgba: multiplies the albedo map (a surface with no map is just this colour)
+    float4 surfaceExtra;     // x = alpha cutoff (0 = opaque)
 };
 
 struct PS_IN {
@@ -56,7 +58,10 @@ float4 main(PS_IN input) : SV_Target {
     ComputeLightingEx(input.worldPos, normal, shininess, ambient, direct, specular);
 
     const float occlusion = lerp(1.0f, orm.r, surfaceParams.z);   // occlusion darkens only the AMBIENT light: a crevice still catches direct sun
-    const float4 texColor = colorTexture.Sample(colorSampler, input.texCoord);
+    const float4 texColor = colorTexture.Sample(colorSampler, input.texCoord) * surfaceBaseColor;
+    // Cut-out transparency: leaves, fences, chain-link. Pixels below the cutoff are thrown away entirely,
+    // so they need no sorting (unlike blended transparency).
+    if (surfaceExtra.x > 0.0f && texColor.a < surfaceExtra.x) discard;
     const float3 emissive = emissiveTexture.Sample(colorSampler, input.texCoord).rgb * surfaceParams.w;
     const float3 litColor = texColor.rgb * (ambient * occlusion + direct) + specular * 0.5f * (1.0f - roughness) + emissive;
     return float4(litColor, texColor.a);

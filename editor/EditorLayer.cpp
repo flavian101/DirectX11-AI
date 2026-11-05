@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cstdio>
 #include "Cube.h"
+#include "ModelImporter.h"
 #include "Direct3D11Renderer.h"
 #include "Logger.h"
 #include "Skybox.h"
@@ -10,6 +11,7 @@
 #include "imgui_impl_win32.h"
 #include "imgui_internal.h"   // DockBuilder*: building the default panel layout from code
 #include <DirectXMath.h>
+#include <commdlg.h>   // GetOpenFileNameW: the Windows "Open" dialog
 
 #ifndef IMGUI_HAS_DOCK
 #error "The editor needs Dear ImGui's DOCKING branch: cd extern/imgui && git checkout docking"
@@ -50,6 +52,7 @@ bool EditorLayer::OnAttach(HWND hwnd, Direct3D11Renderer& renderer)
         ImGui::DestroyContext();
         return false;
     }
+    hwnd_ = hwnd;
     attached_ = true;
     return true;
 }
@@ -78,6 +81,13 @@ void EditorLayer::OnFrame(LayerContext& ctx)
     if (!attached_) return;
     scene_ = &ctx.scene;
 
+    // Import BEFORE the UI frame starts: the file dialog blocks and pumps messages, which must not happen
+    // between NewFrame and Render.
+    if (importRequested_) {
+        importRequested_ = false;
+        ImportModelWithDialog(ctx);
+    }
+
     // Apply the size the Viewport panel measured LAST frame. The panel only knows its size while
     // it is being laid out (below), which is too late to resize the textures for this frame.
     if (ctx.renderer.SetViewTargetSize(viewportWidth_, viewportHeight_) &&
@@ -95,6 +105,18 @@ void EditorLayer::OnFrame(LayerContext& ctx)
     DrawViewportPanel(ctx);
     DrawHierarchyPanel();
     DrawInspectorPanel();
+
+    if (showImportError_) {
+        ImGui::OpenPopup("Import failed");
+        showImportError_ = false;
+    }
+    if (ImGui::BeginPopupModal("Import failed", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+        ImGui::TextUnformatted(importError_.c_str());
+        ImGui::PopTextWrapPos();
+        if (ImGui::Button("OK")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 
     ImGui::Render();
 }
@@ -154,6 +176,8 @@ void EditorLayer::DrawMenuBar()
 {
     if (!ImGui::BeginMenuBar()) return;
     if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("Import Model...")) importRequested_ = true;
+        ImGui::Separator();
         if (ImGui::MenuItem("Exit")) PostQuitMessage(0);
         ImGui::EndMenu();
     }
@@ -249,6 +273,87 @@ void EditorLayer::DrawObjectInspector(SceneObject* object)
     if (auto* water = dynamic_cast<Water*>(object)) DrawWaterInspector(water);
     if (auto* skybox = dynamic_cast<Skybox*>(object)) DrawSkyboxInspector(skybox);
     if (auto* cube = dynamic_cast<Cube*>(object)) DrawSurfaceInspector(cube->GetSurface());
+    if (auto* model = dynamic_cast<ModelObject*>(object)) DrawModelInspector(model);
+}
+
+namespace {
+// Shows the Open dialog and returns the chosen file as UTF-8 (empty = cancelled).
+std::string PickModelFile(HWND owner)
+{
+    wchar_t file[MAX_PATH] = L"";
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = owner;
+    dialog.lpstrFilter = L"3D models (*.gltf;*.glb;*.fbx;*.obj)\0*.gltf;*.glb;*.fbx;*.obj\0All files (*.*)\0*.*\0";
+    dialog.lpstrFile = file;
+    dialog.nMaxFile = MAX_PATH;
+    // NOCHANGEDIR matters: without it the dialog moves the program's working directory to the folder you
+    // browsed, and every relative path afterwards ("shaders/vs.hlsl", "assets/...") stops resolving.
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&dialog)) return {};
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, file, -1, nullptr, 0, nullptr, nullptr);
+    if (bytes <= 1) return {};
+    std::string path(static_cast<size_t>(bytes - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, file, -1, path.data(), bytes, nullptr, nullptr);
+    return path;
+}
+}
+
+void EditorLayer::ImportModelWithDialog(LayerContext& ctx)
+{
+    const std::string path = PickModelFile(hwnd_);
+    if (path.empty()) return;
+
+    // Reading and uploading happens right here, on this thread, so a big model freezes the editor for a
+    // moment. (Loading in the background is a later improvement.)
+    ImportedModel imported;
+    std::string error;
+    if (!ImportModel(path, imported, error)) {
+        importError_ = error;
+        showImportError_ = true;
+        return;
+    }
+    ModelObject* model = ctx.scene.Add<ModelObject>(ctx.renderer.GetDevice(), std::move(imported));
+    if (!model->IsValid()) {
+        ctx.scene.Remove(model->GetId());
+        importError_ = "The model was read, but none of its parts could be uploaded to the GPU.";
+        showImportError_ = true;
+        return;
+    }
+
+    // Files come in any unit and any position: make the longest side 10 units and put the model's base in
+    // front of the camera, so it is visible straight away.
+    model->FitToSize(10.0f);
+    const Camera& camera = ctx.scene.GetCamera();
+    const XMFLOAT3 eye = camera.GetPosition(), target = camera.GetTarget();
+    XMVECTOR forward = XMVector3Normalize(XMVectorSubtract(XMLoadFloat3(&target), XMLoadFloat3(&eye)));
+    XMFLOAT3 position;
+    XMStoreFloat3(&position, XMVectorAdd(XMLoadFloat3(&eye), XMVectorScale(forward, 20.0f)));
+    XMFLOAT3 oldPosition, rotation, scale;
+    model->GetEditorTransform(oldPosition, rotation, scale);
+    model->SetEditorTransform(position, rotation, scale);
+
+    const auto& objects = ctx.scene.GetObjects();
+    for (int i = 0; i < static_cast<int>(objects.size()); ++i) {
+        if (objects[i]->GetId() == model->GetId()) { selectedObject_ = i; selectionKind_ = SelectionKind::Object; }
+    }
+}
+
+void EditorLayer::DrawModelInspector(ModelObject* model)
+{
+    ImGui::SeparatorText("Model");
+    ImGui::TextDisabled("%s", model->GetSourcePath().c_str());
+    ImGui::Text("%zu parts, %zu materials, %u triangles", model->GetPartCount(), model->GetMaterialCount(), model->GetTriangleCount());
+    if (ImGui::Button("Fit to 10 units")) model->FitToSize(10.0f);
+
+    for (size_t i = 0; i < model->GetMaterialCount(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::TreeNode(model->GetMaterialName(i).c_str())) {
+            DrawSurfaceInspector(model->GetMaterial(i));
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
 }
 
 void EditorLayer::DrawSurfaceInspector(SurfaceMaterial& surface)
@@ -266,6 +371,10 @@ void EditorLayer::DrawSurfaceInspector(SurfaceMaterial& surface)
     ImGui::SliderFloat("Roughness scale", &s.roughnessScale, 0.0f, 2.0f);
     ImGui::SliderFloat("AO strength", &s.aoStrength, 0.0f, 1.0f);
     ImGui::SliderFloat("Emissive intensity", &s.emissiveIntensity, 0.0f, 10.0f);
+    ImGui::ColorEdit4("Base colour", &s.baseColor.x, ImGuiColorEditFlags_Float);
+    ImGui::SetItemTooltip("Multiplies the albedo map (linear). A surface with no map is just this colour.");
+    ImGui::SliderFloat("Alpha cutoff", &s.alphaCutoff, 0.0f, 1.0f);
+    ImGui::SetItemTooltip("0 = opaque. Above 0, pixels whose alpha is lower are thrown away (leaves, fences).");
 
     static const char* const kDebugViews[] = { "Lit", "Vertex normal", "Mapped normal", "Tangent" };
     int debugView = static_cast<int>(s.debugView);
@@ -274,9 +383,14 @@ void EditorLayer::DrawSurfaceInspector(SurfaceMaterial& surface)
     }
     ImGui::SetItemTooltip("Shows a direction as a colour (x = red, y = green, z = blue).\nCompare 'Vertex normal' with 'Mapped normal': the bumps should appear only in the second.");
     if (ImGui::Button("Reset surface")) {
-        const bool flip = s.flipGreen;   // the flip belongs to the FILE, not to the look: keep it
+        // These come from the FILE (the map convention and the material's own factors), not from the look: keep them.
+        const bool flip = s.flipGreen;
+        const XMFLOAT4 baseColor = s.baseColor;
+        const float alphaCutoff = s.alphaCutoff;
         s = SurfaceSettings{};
         s.flipGreen = flip;
+        s.baseColor = baseColor;
+        s.alphaCutoff = alphaCutoff;
     }
 }
 
