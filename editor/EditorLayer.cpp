@@ -486,6 +486,12 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
     ImGui::SeparatorText("Layers");
     // Layer settings are only shader constants, so they apply live while you drag.
     bool layersChanged = false;
+    {
+        int albedoFiles = 0, normalFiles = 0, ormFiles = 0;
+        terrain->GetLayerFileCounts(albedoFiles, normalFiles, ormFiles);
+        ImGui::TextDisabled("Layer files found (of 4): albedo %d, normal %d, ORM %d", albedoFiles, normalFiles, ormFiles);
+        ImGui::SetItemTooltip("Looked up as assets/Terrain/<Grass|Rock|Sand|Snow>/albedo.png, normal.png, orm.png.\nA missing file falls back to a neutral map, so the layer is plain tinted colour.");
+    }
     layersChanged |= ImGui::Checkbox("Show layer weights", &s.showLayers);
     ImGui::SetItemTooltip("Paints rock as red, snow as green and shore sand as blue - use it to tune the thresholds.");
     layersChanged |= ImGui::SliderFloat("Rock starts at slope", &s.slopeStart, 0.0f, 1.0f, "%.2f");
@@ -505,10 +511,28 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
     layersChanged |= ImGui::SliderFloat("Edge breakup", &s.breakupAmount, 0.0f, 1.0f, "%.2f");
     layersChanged |= ImGui::SliderFloat("Breakup scale", &s.breakupScale, TerrainSettings::kBreakupScaleMin,
                                         TerrainSettings::kBreakupScaleMax, "%.3f", ImGuiSliderFlags_Logarithmic);
+    layersChanged |= ImGui::SliderFloat("Ground tiling", &s.groundTiling, TerrainSettings::kRockTilingMin,
+                                        TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
+    layersChanged |= ImGui::SliderFloat("Sand tiling", &s.sandTiling, TerrainSettings::kRockTilingMin,
+                                        TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
+    layersChanged |= ImGui::SliderFloat("Snow tiling", &s.snowTiling, TerrainSettings::kRockTilingMin,
+                                        TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
+    layersChanged |= ImGui::SliderFloat("Colour map influence", &s.macroInfluence, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("How much the terrain-wide colour map (Diffuse Map.png) tints the layer textures.\n0 = pure layer textures, 1 = full large-scale colour variation.");
+    layersChanged |= ImGui::SliderFloat("Height blend", &s.heightBlend, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("0 = layers fade into each other like a double exposure.\nHigher = the taller bumps of each layer win, so stones poke through sand.");
+    layersChanged |= ImGui::SliderFloat("Normal strength", &s.normalStrength, 0.0f, 3.0f, "%.2f");
+    layersChanged |= ImGui::Checkbox("Flip green (OpenGL maps)", &s.flipGreen);
+    layersChanged |= ImGui::SliderFloat("AO strength", &s.aoStrength, 0.0f, 1.0f, "%.2f");
+    layersChanged |= ImGui::SliderFloat("Roughness scale", &s.roughnessScale, 0.0f, 2.0f, "%.2f");
+    float groundRgb[3] = { s.groundTint.x, s.groundTint.y, s.groundTint.z };
+    if (ImGui::ColorEdit3("Ground tint", groundRgb)) { s.groundTint = { groundRgb[0], groundRgb[1], groundRgb[2] }; layersChanged = true; }
+    float rockRgb[3] = { s.rockTint.x, s.rockTint.y, s.rockTint.z };
+    if (ImGui::ColorEdit3("Rock tint", rockRgb)) { s.rockTint = { rockRgb[0], rockRgb[1], rockRgb[2] }; layersChanged = true; }
     float sand[3] = { s.shoreColor.x, s.shoreColor.y, s.shoreColor.z };
-    if (ImGui::ColorEdit3("Sand color", sand)) { s.shoreColor = { sand[0], sand[1], sand[2] }; layersChanged = true; }
+    if (ImGui::ColorEdit3("Sand tint", sand)) { s.shoreColor = { sand[0], sand[1], sand[2] }; layersChanged = true; }
     float snowRgb[3] = { s.snowColor.x, s.snowColor.y, s.snowColor.z };
-    if (ImGui::ColorEdit3("Snow color", snowRgb)) { s.snowColor = { snowRgb[0], snowRgb[1], snowRgb[2] }; layersChanged = true; }
+    if (ImGui::ColorEdit3("Snow tint", snowRgb)) { s.snowColor = { snowRgb[0], snowRgb[1], snowRgb[2] }; layersChanged = true; }
     if (ImGui::Button("Reset layers")) { s.ResetLayers(); layersChanged = true; }
     if (layersChanged) terrain->ApplySettings(s);
 

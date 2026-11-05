@@ -6,6 +6,14 @@
 #include "common.hlsli"
 #include "shadow.hlsli"
 
+// Roughness (0 = mirror, 1 = chalk) -> Blinn-Phong shininess. 2/r^4 - 2 is the usual conversion; r = 0.5
+// gives about 30, close to the fixed 32 this project started with. A stand-in until the PBR/IBL patch.
+float RoughnessToShininess(float roughness)
+{
+    const float r = clamp(roughness, 0.05f, 1.0f);
+    return clamp(2.0f / (r * r * r * r) - 2.0f, 2.0f, 1024.0f);
+}
+
 // ambient   : the light that comes from "everywhere" (a material's occlusion map dims this part only)
 // diffuse   : the DIRECT light arriving from the sun and the point lights (multiply by the surface colour)
 // specular  : the highlight to ADD on top. `shininess` is the Blinn-Phong exponent: higher = tighter, glossier.

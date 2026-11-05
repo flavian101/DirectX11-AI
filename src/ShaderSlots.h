@@ -21,6 +21,10 @@ namespace Slots {
     constexpr unsigned int kSrvNormal      = 5;  // tangent-space normal map (linear data, NOT sRGB)
     constexpr unsigned int kSrvOrm         = 6;  // R = ambient occlusion, G = roughness, B = metallic (linear)
     constexpr unsigned int kSrvEmissive    = 7;  // light the surface gives off by itself (sRGB colour)
+    // Terrain layers (Terrain::Render): Texture2DArray, slice 0 grass / 1 rock / 2 sand / 3 snow.
+    constexpr unsigned int kSrvTerrainAlbedo = 8;    // sRGB colour
+    constexpr unsigned int kSrvTerrainNormal = 9;    // rgb = tangent-space normal, a = HEIGHT (used for height-based blending)
+    constexpr unsigned int kSrvTerrainOrm    = 10;   // R = occlusion, G = roughness, B = metallic
 
     // Samplers (PS)
     constexpr unsigned int kSamplerLinear  = 0;  // trilinear + anisotropic, bound once by the renderer

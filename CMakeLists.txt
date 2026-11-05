@@ -29,6 +29,7 @@ add_library(Engine STATIC
 	src/Material.cpp
 	src/SurfaceMaterial.cpp
 	src/Texture.cpp
+	src/TextureArray.cpp
 	src/Light.cpp
 	src/FrameConstants.cpp
 	src/DepthTarget.cpp

@@ -5,9 +5,11 @@
 #include "Color.h"
 #include "Logger.h"
 #include "Mesh.h"
+#include "ShaderSlots.h"
 #include "libs/stb_image.h"
 #include <DirectXMath.h>
 #include <algorithm>
+#include <array>
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
@@ -19,11 +21,15 @@ using namespace DirectX;
 namespace {
 // Must match `cbuffer TerrainMaterial : register(b4)` in shaders/terrain_ps.hlsl, field for field.
 struct TerrainMaterialCB {
-	XMFLOAT4 layers;       // rock tiling, breakup scale, breakup amount, rock darkness
+	XMFLOAT4 layers;       // rock tiling, breakup scale, breakup amount, rock brightness
 	XMFLOAT4 heightBands;  // shore height, shore width, snow height, snow fade
-	XMFLOAT4 slope;        // slope start, slope fade, debug flag, unused
-	XMFLOAT4 shoreTint;    // linear rgb
-	XMFLOAT4 snowTint;     // linear rgb
+	XMFLOAT4 slope;        // slope start, slope fade, debug flag, height blend
+	XMFLOAT4 tilings;      // ground tiling, sand tiling, snow tiling, macro colour influence
+	XMFLOAT4 surface;      // normal strength, flip green (1/0), AO strength, roughness scale
+	XMFLOAT4 groundTint;   // linear rgb
+	XMFLOAT4 rockTint;
+	XMFLOAT4 shoreTint;
+	XMFLOAT4 snowTint;
 };
 static_assert(sizeof(TerrainMaterialCB) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
@@ -291,8 +297,16 @@ void TerrainSettings::Clamp()
 	noiseScale = std::clamp(noiseScale, kNoiseScaleMin, kNoiseScaleMax);
 	noiseOctaves = std::clamp(noiseOctaves, kOctavesMin, kOctavesMax);
 	uvTiling = std::clamp(uvTiling, kTilingMin, kTilingMax);
+	groundTiling = std::clamp(groundTiling, kRockTilingMin, kRockTilingMax);
 	rockTiling = std::clamp(rockTiling, kRockTilingMin, kRockTilingMax);
+	sandTiling = std::clamp(sandTiling, kRockTilingMin, kRockTilingMax);
+	snowTiling = std::clamp(snowTiling, kRockTilingMin, kRockTilingMax);
 	rockDarkness = std::clamp(rockDarkness, 0.1f, 1.5f);
+	macroInfluence = std::clamp(macroInfluence, 0.0f, 1.0f);
+	normalStrength = std::clamp(normalStrength, 0.0f, 3.0f);
+	heightBlend = std::clamp(heightBlend, 0.0f, 1.0f);
+	aoStrength = std::clamp(aoStrength, 0.0f, 1.0f);
+	roughnessScale = std::clamp(roughnessScale, 0.0f, 2.0f);
 	slopeStart = std::clamp(slopeStart, 0.0f, 1.0f);
 	slopeFade = std::clamp(slopeFade, 0.01f, 1.0f);
 	shoreHeight = std::clamp(shoreHeight, kBandMin, kBandMax);
@@ -308,7 +322,13 @@ void TerrainSettings::Clamp()
 void TerrainSettings::ResetLayers()
 {
 	const TerrainSettings defaults;
-	rockTiling = defaults.rockTiling;     rockDarkness = defaults.rockDarkness;
+	groundTiling = defaults.groundTiling; rockTiling = defaults.rockTiling;
+	sandTiling = defaults.sandTiling;     snowTiling = defaults.snowTiling;
+	rockDarkness = defaults.rockDarkness; macroInfluence = defaults.macroInfluence;
+	normalStrength = defaults.normalStrength; flipGreen = defaults.flipGreen;
+	heightBlend = defaults.heightBlend;   aoStrength = defaults.aoStrength;
+	roughnessScale = defaults.roughnessScale;
+	groundTint = defaults.groundTint;     rockTint = defaults.rockTint;
 	slopeStart = defaults.slopeStart;     slopeFade = defaults.slopeFade;
 	shoreHeight = defaults.shoreHeight;   shoreWidth = defaults.shoreWidth;
 	snowHeight = defaults.snowHeight;     snowFade = defaults.snowFade;
@@ -326,6 +346,22 @@ bool TerrainSettings::SameShape(const TerrainSettings& o) const
 Terrain::Terrain(ID3D11Device* device) : device_(device)
 {
 	texture_ = std::make_unique<Texture>(device, "assets/dark alien/Diffuse Map.png");
+
+	// The layer maps: assets/Terrain/<Layer>/albedo.png, normal.png (alpha = height), orm.png.
+	// Slice order is part of the contract with terrain_ps.hlsl: 0 grass, 1 rock, 2 sand, 3 snow.
+	static const char* const kLayerFolders[] = { "Grass", "Rock", "Sand", "Snow" };
+	std::vector<std::string> albedoPaths, normalPaths, ormPaths;
+	for (const char* folder : kLayerFolders) {
+		const std::string base = std::string("assets/Terrain/") + folder + "/";
+		albedoPaths.push_back(base + "albedo.png");
+		normalPaths.push_back(base + "normal.png");
+		ormPaths.push_back(base + "orm.png");
+	}
+	// The fill for a missing layer is the neutral value of each map: white colour (the tint decides the look),
+	// a flat normal with middling height, no occlusion + medium roughness + not metal.
+	layerAlbedo_ = std::make_unique<TextureArray>(device, albedoPaths, ColorSpace::SRGB, std::array<std::uint8_t, 4>{ 255, 255, 255, 255 });
+	layerNormal_ = std::make_unique<TextureArray>(device, normalPaths, ColorSpace::Linear, std::array<std::uint8_t, 4>{ 128, 128, 255, 128 });
+	layerOrm_ = std::make_unique<TextureArray>(device, ormPaths, ColorSpace::Linear, std::array<std::uint8_t, 4>{ 255, 128, 0, 255 });
 	LoadHeightmapFile("assets/dark alien/Height Map.png", heightmap_.width, heightmap_.height, heightmap_.values);
 	settings_.Clamp();
 	if (!Rebuild(settings_)) LOG_ERROR("Terrain mesh initialization failed");
@@ -340,7 +376,16 @@ Terrain::~Terrain()
 
 bool Terrain::IsValid() const
 {
-	return renderable_ && renderable_->IsValid() && texture_ && texture_->IsValid();
+	return renderable_ && renderable_->IsValid() && texture_ && texture_->IsValid() &&
+		layerAlbedo_ && layerAlbedo_->IsValid() && layerNormal_ && layerNormal_->IsValid() &&
+		layerOrm_ && layerOrm_->IsValid();
+}
+
+void Terrain::GetLayerFileCounts(int& albedo, int& normal, int& orm) const
+{
+	albedo = layerAlbedo_ ? layerAlbedo_->GetLoadedCount() : 0;
+	normal = layerNormal_ ? layerNormal_->GetLoadedCount() : 0;
+	orm = layerOrm_ ? layerOrm_->GetLoadedCount() : 0;
 }
 
 bool Terrain::ApplySettings(TerrainSettings settings)
@@ -479,12 +524,18 @@ void Terrain::UpdateMaterial()
 	if (!renderable_) return;
 	renderable_->SetMaterialParameters({ settings_.uvTiling, 1.0f, 1.0f, 1.0f });   // vs.hlsl: UV tiling
 
-	const XMFLOAT3 sand = SrgbToLinear(settings_.shoreColor);   // picked as sRGB, shader wants linear
+	const XMFLOAT3 ground = SrgbToLinear(settings_.groundTint);   // picked as sRGB, shader wants linear
+	const XMFLOAT3 rock = SrgbToLinear(settings_.rockTint);
+	const XMFLOAT3 sand = SrgbToLinear(settings_.shoreColor);
 	const XMFLOAT3 snow = SrgbToLinear(settings_.snowColor);
 	TerrainMaterialCB block;
 	block.layers = { settings_.rockTiling, settings_.breakupScale, settings_.breakupAmount, settings_.rockDarkness };
 	block.heightBands = { settings_.shoreHeight, settings_.shoreWidth, settings_.snowHeight, settings_.snowFade };
-	block.slope = { settings_.slopeStart, settings_.slopeFade, settings_.showLayers ? 1.0f : 0.0f, 0.0f };
+	block.slope = { settings_.slopeStart, settings_.slopeFade, settings_.showLayers ? 1.0f : 0.0f, settings_.heightBlend };
+	block.tilings = { settings_.groundTiling, settings_.sandTiling, settings_.snowTiling, settings_.macroInfluence };
+	block.surface = { settings_.normalStrength, settings_.flipGreen ? 1.0f : 0.0f, settings_.aoStrength, settings_.roughnessScale };
+	block.groundTint = { ground.x, ground.y, ground.z, 1.0f };
+	block.rockTint = { rock.x, rock.y, rock.z, 1.0f };
 	block.shoreTint = { sand.x, sand.y, sand.z, 1.0f };
 	block.snowTint = { snow.x, snow.y, snow.z, 1.0f };
 	renderable_->SetMaterialBlock(&block, sizeof(block));
@@ -537,6 +588,12 @@ void Terrain::Update(float /*dt*/)
 void Terrain::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 {
 	if (!IsValid()) return;
-	renderable_->SetTexture(ctx, texture_->GetShaderResourceView());
+	renderable_->SetTexture(ctx, texture_->GetShaderResourceView());   // t0: the terrain-wide colour map
+	ID3D11ShaderResourceView* albedo = layerAlbedo_->GetShaderResourceView();
+	ID3D11ShaderResourceView* normal = layerNormal_->GetShaderResourceView();
+	ID3D11ShaderResourceView* orm = layerOrm_->GetShaderResourceView();
+	ctx->PSSetShaderResources(Slots::kSrvTerrainAlbedo, 1, &albedo);
+	ctx->PSSetShaderResources(Slots::kSrvTerrainNormal, 1, &normal);
+	ctx->PSSetShaderResources(Slots::kSrvTerrainOrm, 1, &orm);
 	DrawChunks(ctx, nullptr, view);
 }

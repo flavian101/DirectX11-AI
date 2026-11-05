@@ -48,11 +48,9 @@ float4 main(PS_IN input) : SV_Target {
     if (debugView == 2) return float4(normal * 0.5f + 0.5f, 1.0f);
     if (debugView == 3) return float4(normalize(input.tangent.xyz) * 0.5f + 0.5f, 1.0f);
 
-    // Roughness -> Blinn-Phong shininess. 2/r^4 - 2 is the usual conversion; r = 0.5 gives about 30,
-    // which is what the old hard-coded 32 was. (Lesson 16: this is a stand-in until the PBR/IBL patch.)
     const float3 orm = ormTexture.Sample(colorSampler, input.texCoord).rgb;
     const float roughness = clamp(orm.g * surfaceParams.y, 0.05f, 1.0f);
-    const float shininess = clamp(2.0f / (roughness * roughness * roughness * roughness) - 2.0f, 2.0f, 1024.0f);
+    const float shininess = RoughnessToShininess(roughness);   // lesson 16: a stand-in until the PBR/IBL patch
 
     float3 ambient, direct, specular;
     ComputeLightingEx(input.worldPos, normal, shininess, ambient, direct, specular);

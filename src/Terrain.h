@@ -2,6 +2,7 @@
 #include "Renderable.h"
 #include "SceneObject.h"
 #include "Texture.h"
+#include "TextureArray.h"
 #include <memory>
 #include <vector>
 
@@ -36,9 +37,21 @@ struct TerrainSettings {
 	// --- material: cheap, applied without rebuilding ---
 	float uvTiling = 1.0f;      // how many times the texture repeats across the terrain
 
-	// Layers: ground (the texture), rock on steep slopes, sand near the water, snow up high.
-	float rockTiling = 0.05f;   // rock texture repeats per world unit (triplanar)
-	float rockDarkness = 0.6f;  // 1 = same brightness as the ground texture
+	// Layers: ground (grass), rock on steep slopes, sand near the water, snow up high. Each layer has its
+	// own albedo, normal and ORM map (assets/Terrain/<Layer>/), blended by the rules below (lesson 17).
+	float groundTiling = 0.08f; // how many times each layer's texture repeats per world unit
+	float rockTiling = 0.05f;   // (rock is triplanar, see terrain_ps.hlsl)
+	float sandTiling = 0.08f;
+	float snowTiling = 0.06f;
+	float rockDarkness = 1.0f;  // rock brightness: 1 = as in the texture
+	float macroInfluence = 0.5f; // how much the terrain-wide colour map ("Diffuse Map") tints the layers: 0 = not at all
+	float normalStrength = 1.0f; // 0 = flat layers, 1 = as authored
+	bool flipGreen = true;       // layer normal maps are OpenGL-style ("_nor_gl_"); untick for DirectX-style
+	float heightBlend = 0.6f;    // 0 = plain linear blends, 1 = the taller layer wins (pebbles poke through sand)
+	float aoStrength = 1.0f;
+	float roughnessScale = 1.0f;
+	DirectX::XMFLOAT3 groundTint = { 1.0f, 1.0f, 1.0f };      // sRGB; tints MULTIPLY the layer's texture
+	DirectX::XMFLOAT3 rockTint = { 1.0f, 1.0f, 1.0f };
 	float slopeStart = 0.25f;   // slope (0 flat .. 1 vertical) where rock starts to appear
 	float slopeFade = 0.25f;    // how quickly it takes over
 	float shoreHeight = 5.0f;   // world Y below which the ground turns to sand
@@ -47,7 +60,7 @@ struct TerrainSettings {
 	float snowFade = 6.0f;
 	float breakupScale = 0.06f; // size of the noise that roughens layer edges (per world unit)
 	float breakupAmount = 0.5f; // 0 = clean contour lines, 1 = very ragged
-	DirectX::XMFLOAT3 shoreColor = { 0.76f, 0.70f, 0.50f };   // sRGB, like every colour you pick
+	DirectX::XMFLOAT3 shoreColor = { 0.76f, 0.70f, 0.50f };   // sand tint: sRGB, like every colour you pick
 	DirectX::XMFLOAT3 snowColor = { 0.92f, 0.95f, 1.00f };
 	bool showLayers = false;    // debug: paint rock/snow/sand weights as red/green/blue
 	bool frustumCulling = true; // skip chunks outside the view (turn off to compare)
@@ -65,7 +78,7 @@ struct TerrainSettings {
 	static constexpr float kNoiseScaleMin = 0.5f, kNoiseScaleMax = 32.0f;
 	static constexpr int kOctavesMin = 1, kOctavesMax = 8;
 	static constexpr float kTilingMin = 0.25f, kTilingMax = 64.0f;
-	static constexpr float kRockTilingMin = 0.005f, kRockTilingMax = 0.5f;
+	static constexpr float kRockTilingMin = 0.005f, kRockTilingMax = 0.5f;   // also the range of every layer's tiling
 	static constexpr float kBandMin = -50.0f, kBandMax = 200.0f;     // world-Y limits for shore/snow heights
 	static constexpr float kBreakupScaleMin = 0.005f, kBreakupScaleMax = 0.5f;
 	static constexpr float kLodDistanceMin = 10.0f, kLodDistanceMax = 1500.0f;
@@ -97,6 +110,9 @@ public:
 	const TerrainSettings& GetSettings() const { return settings_; }
 	const TerrainViewStats& GetStats(ViewKind kind) const { return stats_[static_cast<int>(kind)]; }
 
+	// How many of the 4 layers found their albedo / normal / ORM file (the rest use neutral defaults).
+	void GetLayerFileCounts(int& albedo, int& normal, int& orm) const;
+
 	// For tools that need to fit things to the terrain (e.g. the water plane).
 	DirectX::XMFLOAT2 GetWorldExtent() const;               // x/z size in world units
 	void GetHeightRange(float& minY, float& maxY) const;    // world-space Y range of the surface
@@ -123,7 +139,10 @@ private:
 
 	ID3D11Device* device_ = nullptr;
 	std::unique_ptr<Renderable> renderable_;
-	std::unique_ptr<Texture> texture_;
+	std::unique_ptr<Texture> texture_;                  // the terrain-wide colour map ("macro" colour)
+	std::unique_ptr<TextureArray> layerAlbedo_;         // slices: 0 grass, 1 rock, 2 sand, 3 snow
+	std::unique_ptr<TextureArray> layerNormal_;
+	std::unique_ptr<TextureArray> layerOrm_;
 	Heightmap heightmap_;      // decoded ONCE; every rebuild reuses it instead of re-reading the PNG
 	float depth_ = 0.0f;       // world-space size along Z of the current mesh
 	std::vector<TerrainChunk> chunks_;                    // one per mesh in the model, same order
