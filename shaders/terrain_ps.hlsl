@@ -4,7 +4,7 @@
 Texture2D colorTexture : register(t0);          // the terrain-wide colour map ("macro" colour), mapped once over the whole terrain
 Texture2DArray layerAlbedo : register(t8);      // slice 0 grass, 1 rock, 2 sand, 3 snow (sRGB: arrives as linear light)
 Texture2DArray layerNormal : register(t9);      // rgb = tangent-space normal, a = height
-Texture2DArray layerOrm : register(t10);        // r = ambient occlusion, g = roughness, b = metallic (unused until IBL)
+Texture2DArray layerOrm : register(t10);        // r = ambient occlusion, g = roughness, b = metallic (not read: ground is not metal)
 SamplerState colorSampler : register(s0);
 
 static const int kGrass = 0;
@@ -157,7 +157,12 @@ float4 main(PS_IN input) : SV_Target
     const float occlusion = lerp(1.0f, grass.occlusion * w.x + rock.occlusion * w.y + sand.occlusion * w.z + snow.occlusion * w.w, surfaceParams.z);
     const float roughness = clamp((grass.roughness * w.x + rock.roughness * w.y + sand.roughness * w.z + snow.roughness * w.w) * surfaceParams.w, 0.05f, 1.0f);
 
-    float3 ambient, direct, specular;
-    ComputeLightingEx(p, normal, RoughnessToShininess(roughness), ambient, direct, specular);
-    return float4(albedo * (ambient * occlusion + direct) + specular * 0.5f * (1.0f - roughness), macroSample.a);
+    PbrInput surface;
+    surface.albedo = albedo;
+    surface.metallic = 0.0f;      // ground is not metal (the layers' ORM blue channel is not read)
+    surface.roughness = roughness;
+    surface.occlusion = occlusion;
+    surface.normal = normal;
+    surface.worldPos = p;
+    return float4(ShadePbr(surface), macroSample.a);
 }

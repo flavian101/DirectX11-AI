@@ -8,7 +8,9 @@ SurfaceMaterial::SurfaceMaterial(ID3D11Device* device) : device_(device)
     // The neutral value of each map: the one that changes nothing.
     defaultAlbedo_ = Texture::Solid(device, 255, 255, 255, 255, ColorSpace::SRGB);     // white: the surface colour is left alone
     defaultNormal_ = Texture::Solid(device, 128, 128, 255, 255, ColorSpace::Linear);   // (0.5, 0.5, 1.0) decodes to (0, 0, 1): straight out of the surface
-    defaultOrm_ = Texture::Solid(device, 255, 128, 0, 255, ColorSpace::Linear);        // no occlusion, medium roughness, not metal
+    // All white: "no occlusion, and a factor of 1 for roughness and metallic". With no ORM map the settings'
+    // constants (fallbackRoughness / fallbackMetallic) are what the shader multiplies this white by.
+    defaultOrm_ = Texture::Solid(device, 255, 255, 255, 255, ColorSpace::Linear);
     defaultEmissive_ = Texture::Solid(device, 0, 0, 0, 255, ColorSpace::SRGB);         // gives off no light
     if (!IsReady()) LOG_ERROR("SurfaceMaterial: could not create the default textures");
 }
@@ -52,11 +54,14 @@ void SurfaceMaterial::Bind(ID3D11DeviceContext* ctx) const
 void SurfaceMaterial::Upload(Renderable& renderable) const
 {
     SurfaceMaterialCB cb{};
-    cb.params = DirectX::XMFLOAT4(settings_.normalStrength, settings_.roughnessScale,
+    // Shader: roughness = ORM.g * params.y, metallic = ORM.b * extra.y. A real map holds the values, so the
+    // scales multiply it; the neutral default is white, so the constants take the scales' place.
+    const bool hasMap = HasOrmMap();
+    cb.params = DirectX::XMFLOAT4(settings_.normalStrength, hasMap ? settings_.roughnessScale : settings_.fallbackRoughness,
                                   settings_.aoStrength, settings_.emissiveIntensity);
     cb.flags = DirectX::XMFLOAT4(settings_.flipGreen ? 1.0f : 0.0f, settings_.useNormalMap ? 1.0f : 0.0f,
                                  static_cast<float>(settings_.debugView), 0.0f);
     cb.baseColor = settings_.baseColor;
-    cb.extra = DirectX::XMFLOAT4(settings_.alphaCutoff, 0.0f, 0.0f, 0.0f);
+    cb.extra = DirectX::XMFLOAT4(settings_.alphaCutoff, hasMap ? settings_.metallicScale : settings_.fallbackMetallic, 0.0f, 0.0f);
     renderable.SetMaterialBlock(&cb, sizeof(cb));
 }

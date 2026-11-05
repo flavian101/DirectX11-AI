@@ -75,6 +75,7 @@ add_library(Engine STATIC
 	src/Terrain.cpp
 	src/Water.cpp
 	src/Skybox.cpp
+	src/EnvironmentLighting.cpp
 	src/libs/stb_image.cpp
 )
 

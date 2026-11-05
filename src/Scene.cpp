@@ -188,6 +188,33 @@ void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
     shadow_->End(ctx);
 }
 
+void Scene::PrepareEnvironment(ID3D11DeviceContext* ctx) const
+{
+    const Skybox* skybox = GetSkybox();
+    if (!ctx || !skybox || !skybox->IsValid()) return;
+    ID3D11ShaderResourceView* sky = skybox->GetCubemapView();
+    if (environmentLighting_.IsBaked() && environmentLighting_.GetSource() == sky) return;   // up to date
+
+    ID3D11Device* device = nullptr;
+    ctx->GetDevice(&device);
+    if (device) {
+        environmentLighting_.Bake(device, ctx, sky);
+        device->Release();   // GetDevice added a reference
+    }
+}
+
+void Scene::FillEnvironmentFrameData(FrameData& frame) const
+{
+    if (!environmentLighting_.IsBaked()) return;   // stays zeros: shaders use the flat ambient colour
+    const Skybox* skybox = GetSkybox();
+    const float skyIntensity = skybox ? skybox->GetIntensity() : 1.0f;   // dimming the sky dims its light, too
+    if (environment_.enabled) {
+        frame.iblParams = DirectX::XMFLOAT4(1.0f, environment_.diffuseIntensity * skyIntensity,
+                                            environment_.specularIntensity * skyIntensity, EnvironmentLighting::MaxPrefilterMip());
+    }
+    frame.iblDebug = DirectX::XMFLOAT4(static_cast<float>(environment_.skyView), environment_.debugMip, 0.0f, 0.0f);
+}
+
 void Scene::BeginFrame(ID3D11DeviceContext* ctx) const
 {
     // Resources that stay the same for every pass this frame, however many views we draw.
@@ -196,6 +223,7 @@ void Scene::BeginFrame(ID3D11DeviceContext* ctx) const
     ID3D11ShaderResourceView* environment =
         (skybox && skybox->IsValid()) ? skybox->GetCubemapView() : nullptr;
     ctx->PSSetShaderResources(Slots::kSrvEnvironment, 1, &environment);
+    environmentLighting_.Bind(ctx);      // irradiance -> t11, prefiltered sky -> t12, BRDF table -> t13
 }
 
 void Scene::SetMainView(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewportHeight,
@@ -206,6 +234,7 @@ void Scene::SetMainView(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewp
     frame.viewportHeight = static_cast<float>(viewportHeight);
     frame.reflectionAvailable = reflectionAvailable;
     shadow_->FillFrameData(frame);       // the sun's matrix + shadow parameters
+    FillEnvironmentFrameData(frame);     // image-based lighting settings
     frame_.Apply(ctx, frame);
 }
 
@@ -263,6 +292,7 @@ void Scene::RenderReflection(ID3D11DeviceContext* ctx, float planeHeight,
     // Keep only what is ABOVE the water: dot((0,1,0), p) - h >= 0.
     frame.clipPlane = XMFLOAT4(0.0f, 1.0f, 0.0f, -planeHeight);
     shadow_->FillFrameData(frame);
+    FillEnvironmentFrameData(frame);   // the mirrored world is lit by the same sky
     frame_.Apply(ctx, frame);
 
     RenderView reflectionView;

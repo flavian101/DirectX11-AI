@@ -5,6 +5,7 @@
 #include "Terrain.h"
 #include "Water.h"
 #include "Skybox.h"
+#include "EnvironmentLighting.h"
 #include "FrameConstants.h"
 #include "PostSettings.h"
 #include "ShadowMap.h"
@@ -100,17 +101,28 @@ public:
     void RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase, const RenderView& view) const;
     RenderView GetMainView() const;   // the camera's view: its frustum and position
     ShadowMap& GetShadowMap() { return *shadow_; }
+    // Image-based lighting: the sky baked into small textures (lesson 19). The first frame bakes it;
+    // InvalidateEnvironment() makes the next frame bake again.
+    EnvironmentSettings& GetEnvironment() { return environment_; }
+    const EnvironmentSettings& GetEnvironment() const { return environment_; }
+    const EnvironmentLighting& GetEnvironmentLighting() const { return environmentLighting_; }
+    void InvalidateEnvironment() { environmentLighting_.Release(); }
+    // Bakes the sky if it has not been (or has changed). Called by the renderer before it draws.
+    void PrepareEnvironment(ID3D11DeviceContext* ctx) const;
     PostSettings& GetPostSettings() { return post_; }
     const PostSettings& GetPostSettings() const { return post_; }
 
 private:
     void UpdateCamera(const InputState& input, float dt);
+    void FillEnvironmentFrameData(FrameData& frame) const;   // the IBL numbers every lit pixel needs
     bool ComputeShadowBounds(DirectX::XMFLOAT3& center, float& radius) const;
     SceneObject* Adopt(std::unique_ptr<SceneObject> object);
 
     Camera camera_;
     FrameConstants frame_;   // view/proj/camera/time, uploaded once per frame
     PostSettings post_;      // how the HDR image is converted for display (a property of the "camera")
+    EnvironmentSettings environment_;
+    mutable EnvironmentLighting environmentLighting_;   // a cache of the baked sky: rebuilt on demand, so "mutable" even in const methods
     float time_ = 0.0f;      // scene clock shared by every animated material
     std::unique_ptr<LightSystem> lights_;
     std::unique_ptr<ShadowMap> shadow_;

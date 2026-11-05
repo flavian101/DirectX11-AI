@@ -298,7 +298,10 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
     // The background colour is picked as sRGB, but the HDR buffers hold LINEAR light.
     const float clearColor[] = { SrgbToLinear(0.1f), SrgbToLinear(0.1f), SrgbToLinear(0.2f), 1.0f };
 
-    // Resources shared by every view below (shadow map, environment map).
+    // Bake the sky into image-based lighting if that has not happened yet (a one-off, a few milliseconds).
+    scene.PrepareEnvironment(m_context);
+
+    // Resources shared by every view below (shadow map, environment map, baked sky lighting).
     scene.BeginFrame(m_context);
 
     // PASS 2 - the scene seen in the water: drawn from a camera mirrored below the surface.

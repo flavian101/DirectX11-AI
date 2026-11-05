@@ -64,6 +64,8 @@ void FrameConstants::Apply(ID3D11DeviceContext* ctx, const FrameData& frame) con
     data->screenParams = XMFLOAT4(1.0f / frame.viewportWidth, 1.0f / frame.viewportHeight, frame.nearPlane, frame.farPlane);
     data->clipPlane = frame.clipPlane;
     data->reflectionParams = XMFLOAT4(frame.reflectionAvailable ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+    data->iblParams = frame.iblParams;
+    data->iblDebug = frame.iblDebug;
 
     ctx->Unmap(cb_, 0);
     ctx->VSSetConstantBuffers(Slots::kCbPerFrame, 1, &cb_);

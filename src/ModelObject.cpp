@@ -56,9 +56,9 @@ ModelObject::ModelObject(ID3D11Device* device, ImportedModel&& imported)
         if (!material->HasEmissiveMap() && (source.emissiveColor.x > 0.0f || source.emissiveColor.y > 0.0f || source.emissiveColor.z > 0.0f)) {
             material->SetEmissive(SolidFromLinear(device, source.emissiveColor));   // an emissive COLOUR with no map
         }
-        // The shader computes roughness = ormMap.g * scale. With a real ORM map the file's factor is that scale
-        // (the glTF rule). Without one the neutral map's green is 0.5, so scale by factor / 0.5 to land on the factor.
-        settings.roughnessScale = material->HasOrmMap() ? source.roughness : source.roughness / 0.5f;
+        // glTF's rule: value = factor * texture. With an ORM map the factors scale it; without one they ARE the values.
+        settings.roughnessScale = settings.fallbackRoughness = source.roughness;
+        settings.metallicScale = settings.fallbackMetallic = source.metallic;
         materials_.push_back(std::move(material));
         materialNames_.push_back(source.name.empty() ? "Material" : source.name);
     }

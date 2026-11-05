@@ -16,6 +16,8 @@ struct CBPerFrame {
     DirectX::XMFLOAT4   screenParams; // x = 1/width, y = 1/height (of the viewport being drawn), z = near, w = far
     DirectX::XMFLOAT4   clipPlane;    // world-space plane; (0,0,0,1) = no clipping
     DirectX::XMFLOAT4   reflectionParams; // x = planar reflection available this frame
+    DirectX::XMFLOAT4   iblParams;    // x = image-based lighting on (1/0), y = diffuse intensity, z = specular intensity, w = last prefilter mip
+    DirectX::XMFLOAT4   iblDebug;     // x = sky background: 0 sky, 1 irradiance, 2 prefiltered; y = mip to show
 };
 static_assert(sizeof(CBPerFrame) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
@@ -33,6 +35,8 @@ struct FrameData {
     float farPlane = Camera::kFarPlane;
     DirectX::XMFLOAT4 clipPlane{ 0.0f, 0.0f, 0.0f, 1.0f };   // always positive: nothing is clipped
     bool reflectionAvailable = false;
+    DirectX::XMFLOAT4 iblParams{};         // zeros = image-based lighting off (the sun's shadow pass uses that)
+    DirectX::XMFLOAT4 iblDebug{};
     DirectX::XMFLOAT4X4 lightViewProj{};   // identity-free zero matrix is fine while strength is 0
     DirectX::XMFLOAT4 shadowParams{};      // z = 0 means "no shadows this frame"
 

@@ -25,6 +25,10 @@ namespace Slots {
     constexpr unsigned int kSrvTerrainAlbedo = 8;    // sRGB colour
     constexpr unsigned int kSrvTerrainNormal = 9;    // rgb = tangent-space normal, a = HEIGHT (used for height-based blending)
     constexpr unsigned int kSrvTerrainOrm    = 10;   // R = occlusion, G = roughness, B = metallic
+    // Image-based lighting, baked from the sky by EnvironmentLighting and bound once per frame by Scene.
+    constexpr unsigned int kSrvIrradiance  = 11;  // TextureCube: soft light from every direction (diffuse)
+    constexpr unsigned int kSrvPrefiltered = 12;  // TextureCube: the sky blurred per roughness level, in its mips (reflections)
+    constexpr unsigned int kSrvBrdfTable   = 13;  // Texture2D: reflectivity vs. view angle and roughness (kSrvIrradiance + 2: keep them consecutive)
 
     // Samplers (PS)
     constexpr unsigned int kSamplerLinear  = 0;  // trilinear + anisotropic, bound once by the renderer

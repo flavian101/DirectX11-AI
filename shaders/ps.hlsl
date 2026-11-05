@@ -2,7 +2,7 @@
 
 Texture2D colorTexture : register(t0);       // albedo (sRGB: the GPU hands us linear light)
 Texture2D normalTexture : register(t5);      // tangent-space normal map (linear data)
-Texture2D ormTexture : register(t6);         // R = ambient occlusion, G = roughness, B = metallic (not used until IBL)
+Texture2D ormTexture : register(t6);         // R = ambient occlusion, G = roughness, B = metallic
 Texture2D emissiveTexture : register(t7);    // light the surface gives off by itself
 SamplerState colorSampler : register(s0);
 
@@ -11,7 +11,7 @@ cbuffer SurfaceMaterial : register(b4) {
     float4 surfaceParams;   // x = normal strength, y = roughness scale, z = AO strength, w = emissive intensity
     float4 surfaceFlags;    // x = flip green (1/0), y = use normal map (1/0), z = debug view (0 lit, 1 vertex normal, 2 mapped normal, 3 tangent)
     float4 surfaceBaseColor; // linear rgba: multiplies the albedo map (a surface with no map is just this colour)
-    float4 surfaceExtra;     // x = alpha cutoff (0 = opaque)
+    float4 surfaceExtra;     // x = alpha cutoff (0 = opaque), y = metallic scale
 };
 
 struct PS_IN {
@@ -51,18 +51,18 @@ float4 main(PS_IN input) : SV_Target {
     if (debugView == 3) return float4(normalize(input.tangent.xyz) * 0.5f + 0.5f, 1.0f);
 
     const float3 orm = ormTexture.Sample(colorSampler, input.texCoord).rgb;
-    const float roughness = clamp(orm.g * surfaceParams.y, 0.05f, 1.0f);
-    const float shininess = RoughnessToShininess(roughness);   // lesson 16: a stand-in until the PBR/IBL patch
 
-    float3 ambient, direct, specular;
-    ComputeLightingEx(input.worldPos, normal, shininess, ambient, direct, specular);
-
-    const float occlusion = lerp(1.0f, orm.r, surfaceParams.z);   // occlusion darkens only the AMBIENT light: a crevice still catches direct sun
+    PbrInput surface;
+    surface.roughness = orm.g * surfaceParams.y;
+    surface.metallic = saturate(orm.b * surfaceExtra.y);
+    surface.occlusion = lerp(1.0f, orm.r, surfaceParams.z);   // occlusion darkens only the SKY light: a crevice still catches direct sun
+    surface.normal = normal;
+    surface.worldPos = input.worldPos;
     const float4 texColor = colorTexture.Sample(colorSampler, input.texCoord) * surfaceBaseColor;
     // Cut-out transparency: leaves, fences, chain-link. Pixels below the cutoff are thrown away entirely,
     // so they need no sorting (unlike blended transparency).
     if (surfaceExtra.x > 0.0f && texColor.a < surfaceExtra.x) discard;
     const float3 emissive = emissiveTexture.Sample(colorSampler, input.texCoord).rgb * surfaceParams.w;
-    const float3 litColor = texColor.rgb * (ambient * occlusion + direct) + specular * 0.5f * (1.0f - roughness) + emissive;
-    return float4(litColor, texColor.a);
+    surface.albedo = texColor.rgb;
+    return float4(ShadePbr(surface) + emissive, texColor.a);
 }

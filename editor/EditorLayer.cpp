@@ -356,6 +356,29 @@ void EditorLayer::DrawModelInspector(ModelObject* model)
     }
 }
 
+void EditorLayer::DrawEnvironmentInspector()
+{
+    EnvironmentSettings& env = scene_->GetEnvironment();
+    ImGui::SeparatorText("Image-based lighting");
+    ImGui::Checkbox("Sky lighting", &env.enabled);
+    ImGui::SetItemTooltip("On: the sky lights everything (soft light + reflections).\nOff: the flat 'Ambient' colour above, like before.");
+    ImGui::SliderFloat("Diffuse intensity", &env.diffuseIntensity, 0.0f, 3.0f);
+    ImGui::SliderFloat("Specular intensity", &env.specularIntensity, 0.0f, 3.0f);
+
+    static const char* const kViews[] = { "Sky", "Irradiance (diffuse)", "Prefiltered (reflections)" };
+    int view = static_cast<int>(env.skyView);
+    if (ImGui::Combo("Show as sky background", &view, kViews, IM_ARRAYSIZE(kViews))) env.skyView = static_cast<SkyDebugView>(view);
+    if (env.skyView == SkyDebugView::Prefiltered) {
+        ImGui::SliderFloat("Roughness level (mip)", &env.debugMip, 0.0f, EnvironmentLighting::MaxPrefilterMip());
+    }
+    if (ImGui::Button("Bake again")) scene_->InvalidateEnvironment();
+
+    if (ID3D11ShaderResourceView* table = scene_->GetEnvironmentLighting().GetBrdfTable()) {
+        ImGui::TextDisabled("BRDF table: x = view angle, y = roughness (red = scale, green = bias)");
+        ImGui::Image(static_cast<ImTextureID>(reinterpret_cast<intptr_t>(table)), ImVec2(128.0f, 128.0f));
+    }
+}
+
 void EditorLayer::DrawSurfaceInspector(SurfaceMaterial& surface)
 {
     SurfaceSettings& s = surface.Settings();
@@ -368,7 +391,14 @@ void EditorLayer::DrawSurfaceInspector(SurfaceMaterial& surface)
     ImGui::SliderFloat("Normal strength", &s.normalStrength, 0.0f, 3.0f);
     ImGui::Checkbox("Flip green (OpenGL maps)", &s.flipGreen);
     ImGui::SetItemTooltip("If the bricks look like they stick OUT where they should be sunken (or the lighting\nseems to come from the wrong side), toggle this.");
-    ImGui::SliderFloat("Roughness scale", &s.roughnessScale, 0.0f, 2.0f);
+    if (surface.HasOrmMap()) {
+        ImGui::SliderFloat("Roughness scale", &s.roughnessScale, 0.0f, 2.0f);
+        ImGui::SliderFloat("Metallic scale", &s.metallicScale, 0.0f, 1.0f);
+    } else {
+        ImGui::SliderFloat("Roughness", &s.fallbackRoughness, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("0 = mirror, 1 = chalk. (This surface has no ORM map, so this value is the roughness.)");
+        ImGui::SliderFloat("Metallic", &s.fallbackMetallic, 0.0f, 1.0f);
+    }
     ImGui::SliderFloat("AO strength", &s.aoStrength, 0.0f, 1.0f);
     ImGui::SliderFloat("Emissive intensity", &s.emissiveIntensity, 0.0f, 10.0f);
     ImGui::ColorEdit4("Base colour", &s.baseColor.x, ImGuiColorEditFlags_Float);
@@ -383,14 +413,16 @@ void EditorLayer::DrawSurfaceInspector(SurfaceMaterial& surface)
     }
     ImGui::SetItemTooltip("Shows a direction as a colour (x = red, y = green, z = blue).\nCompare 'Vertex normal' with 'Mapped normal': the bumps should appear only in the second.");
     if (ImGui::Button("Reset surface")) {
-        // These come from the FILE (the map convention and the material's own factors), not from the look: keep them.
-        const bool flip = s.flipGreen;
-        const XMFLOAT4 baseColor = s.baseColor;
-        const float alphaCutoff = s.alphaCutoff;
+        // Reset only the LOOK. The map convention and the material's own factors come from the FILE: keep them.
+        const SurfaceSettings fromFile = s;
         s = SurfaceSettings{};
-        s.flipGreen = flip;
-        s.baseColor = baseColor;
-        s.alphaCutoff = alphaCutoff;
+        s.flipGreen = fromFile.flipGreen;
+        s.baseColor = fromFile.baseColor;
+        s.alphaCutoff = fromFile.alphaCutoff;
+        s.roughnessScale = fromFile.roughnessScale;
+        s.metallicScale = fromFile.metallicScale;
+        s.fallbackRoughness = fromFile.fallbackRoughness;
+        s.fallbackMetallic = fromFile.fallbackMetallic;
     }
 }
 
@@ -484,6 +516,7 @@ void EditorLayer::DrawLightsInspector()
     ImGui::SliderFloat("Directional intensity", &directional.intensity, 0.0f, 5.0f);
 
     DrawShadowInspector();
+    DrawEnvironmentInspector();
 
     ImGui::SeparatorText("Point lights");
     auto& pointLights = lights.PointLights();

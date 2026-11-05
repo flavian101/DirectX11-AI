@@ -17,7 +17,12 @@ struct SurfaceSettings {
     bool useNormalMap = true;          // off = light the smooth surface (compare with / without)
     float normalStrength = 1.0f;       // 0 = flat, 1 = as authored, above 1 = exaggerated
     bool flipGreen = false;            // OpenGL-style normal maps have green pointing "up"; DirectX-style, "down"
-    float roughnessScale = 1.0f;       // multiplies the roughness read from the ORM map
+    // With an ORM map the shader reads roughness (G) and metallic (B) from it and multiplies by these scales.
+    float roughnessScale = 1.0f;
+    float metallicScale = 1.0f;
+    // With NO ORM map there is nothing to read, so these constants ARE the roughness and metallic.
+    float fallbackRoughness = 0.5f;
+    float fallbackMetallic = 0.0f;
     float aoStrength = 1.0f;           // 0 = ignore the occlusion map, 1 = full effect
     float emissiveIntensity = 1.0f;    // multiplies the emissive map
     SurfaceDebugView debugView = SurfaceDebugView::Lit;
@@ -25,10 +30,10 @@ struct SurfaceSettings {
 
 // Must match `cbuffer SurfaceMaterial : register(b4)` in shaders/ps.hlsl, field for field (lesson 11).
 struct SurfaceMaterialCB {
-    DirectX::XMFLOAT4 params;   // x = normal strength, y = roughness scale, z = AO strength, w = emissive intensity
+    DirectX::XMFLOAT4 params;   // x = normal strength, y = roughness scale (or the constant, see Upload), z = AO strength, w = emissive intensity
     DirectX::XMFLOAT4 flags;    // x = flip green, y = use normal map, z = debug view
     DirectX::XMFLOAT4 baseColor;   // linear rgba, multiplies the albedo
-    DirectX::XMFLOAT4 extra;       // x = alpha cutoff
+    DirectX::XMFLOAT4 extra;       // x = alpha cutoff, y = metallic scale
 };
 static_assert(sizeof(SurfaceMaterialCB) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
