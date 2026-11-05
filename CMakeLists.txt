@@ -9,7 +9,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Assimp reads model files (glTF/GLB, FBX, OBJ). It is downloaded and built from source the first
 # time you configure (a few minutes, once). Only the three importers we use are compiled, and
 # exporters, tools and tests are off, to keep that build small.
-#   Offline? Clone it yourself and pass  -DFETCHCONTENT_SOURCE_DIR_ASSIMP=<path to assimp>
+#   Offline/local source: pass -DFETCHCONTENT_SOURCE_DIR_ASSIMP=<path to assimp>
+#   For the bundled submodule, use -DFETCHCONTENT_SOURCE_DIR_ASSIMP=${CMAKE_SOURCE_DIR}/extern/assimp
 # ---------------------------------------------------------------------------------------------
 include(FetchContent)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
