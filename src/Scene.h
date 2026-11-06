@@ -51,6 +51,8 @@ public:
     bool Remove(SceneObjectId id);
     SceneObject* Duplicate(SceneObjectId id);
     SceneObject* CreateCube();
+    // Removes every object (and the baked sky lighting that belonged to the old sky). Lights, camera and settings stay.
+    void ClearObjects();
 
     template <class T>
     T* FindFirst()
@@ -101,6 +103,7 @@ public:
     void RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase, const RenderView& view) const;
     RenderView GetMainView() const;   // the camera's view: its frustum and position
     ShadowMap& GetShadowMap() { return *shadow_; }
+    const ShadowMap& GetShadowMap() const { return *shadow_; }
     // Image-based lighting: the sky baked into small textures (lesson 19). The first frame bakes it;
     // InvalidateEnvironment() makes the next frame bake again.
     EnvironmentSettings& GetEnvironment() { return environment_; }

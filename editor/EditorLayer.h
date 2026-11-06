@@ -58,6 +58,8 @@ private:
     void DrawSurfaceInspector(SurfaceMaterial& surface);
     void DrawModelInspector(ModelObject* model);
     void ImportModelWithDialog(LayerContext& ctx);
+    void HandleSceneFileRequests(LayerContext& ctx);
+    void ShowMessage(const std::string& title, const std::string& text);
     void DrawTransformEditor(SceneObject* object);
 
     bool attached_ = false;
@@ -87,8 +89,17 @@ private:
 
     // File > Import Model: the request is noted by the menu and carried out at the start of the next frame.
     bool importRequested_ = false;
-    bool showImportError_ = false;
-    std::string importError_;
+    // Scene files: File > Open / Save. Like the import, the dialogs run at the start of the next frame.
+    bool openSceneRequested_ = false;
+    bool saveSceneRequested_ = false;
+    bool saveSceneAsRequested_ = false;
+    std::string currentScenePath_;    // empty = not saved yet
+    double lastSavedTime_ = -100.0;   // ImGui time of the last successful save, for the little "Saved" flash
+
+    // One pop-up for every message the user must read (import errors, scene warnings).
+    bool showMessage_ = false;
+    std::string messageTitle_;
+    std::string message_;
 
     // Viewport panel: the size we want the 3D view to have next frame, and whether the pointer is over it.
     unsigned int viewportWidth_ = 1280;

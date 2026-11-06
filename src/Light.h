@@ -43,6 +43,7 @@ public:
     bool AddPointLight(const PointLight& light);
     void ClearPointLights() { pointLights_.clear(); }
     std::vector<PointLight>& PointLights() { return pointLights_; }
+    const std::vector<PointLight>& PointLights() const { return pointLights_; }
 
     // Uploads the light data and binds it to PS constant buffer slot b1.
     void Apply(ID3D11DeviceContext* ctx, const DirectX::XMFLOAT3& cameraPos) const;

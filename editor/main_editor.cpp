@@ -16,9 +16,9 @@ int main()
     window.SetLayer(std::make_unique<EditorLayer>());
     if (!window.HasLayer()) return 1;
 
-    auto scene = std::make_unique<Scene>();
-    if (!BuildDemoScene(*scene, window.GetDevice())) {
-        LOG_ERROR("Failed to build the demo scene");
+    auto scene = BuildStartScene(window.GetDevice());
+    if (!scene) {
+        LOG_ERROR("Failed to build the start scene");
         return 1;
     }
     window.SetScene(std::move(scene));

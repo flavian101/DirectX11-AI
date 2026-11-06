@@ -2,8 +2,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include "Cube.h"
 #include "ModelImporter.h"
+#include "SceneSerializer.h"
 #include "Direct3D11Renderer.h"
 #include "Logger.h"
 #include "Skybox.h"
@@ -162,7 +164,8 @@ void EditorLayer::OnFrame(LayerContext& ctx)
         importRequested_ = false;
         ImportModelWithDialog(ctx);
     }
-    ProcessPendingActions(ctx);   // add / duplicate / delete asked for by the previous frame's UI
+    HandleSceneFileRequests(ctx);   // File > Open / Save, also before the UI frame starts
+    ProcessPendingActions(ctx);     // add / duplicate / delete asked for by the previous frame's UI
 
     // Apply the size the Viewport panel measured LAST frame. The panel only knows its size while
     // it is being laid out (below), which is too late to resize the textures for this frame.
@@ -184,13 +187,13 @@ void EditorLayer::OnFrame(LayerContext& ctx)
     DrawInspectorPanel();
     HandleShortcuts();
 
-    if (showImportError_) {
-        ImGui::OpenPopup("Import failed");
-        showImportError_ = false;
+    if (showMessage_) {
+        ImGui::OpenPopup(messageTitle_.c_str());
+        showMessage_ = false;
     }
-    if (ImGui::BeginPopupModal("Import failed", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
-        ImGui::TextUnformatted(importError_.c_str());
+    if (ImGui::BeginPopupModal(messageTitle_.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 36.0f);
+        ImGui::TextUnformatted(message_.c_str());
         ImGui::PopTextWrapPos();
         if (ImGui::Button("OK")) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
@@ -254,6 +257,10 @@ void EditorLayer::DrawMenuBar()
 {
     if (!ImGui::BeginMenuBar()) return;
     if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("Open Scene...")) openSceneRequested_ = true;
+        if (ImGui::MenuItem("Save Scene", "Ctrl+S")) saveSceneRequested_ = true;
+        if (ImGui::MenuItem("Save Scene As...")) saveSceneAsRequested_ = true;
+        ImGui::Separator();
         if (ImGui::MenuItem("Import Model...")) importRequested_ = true;
         ImGui::Separator();
         if (ImGui::MenuItem("Exit")) PostQuitMessage(0);
@@ -278,6 +285,13 @@ void EditorLayer::DrawMenuBar()
         ImGui::Separator();
         if (ImGui::MenuItem("Reset layout")) resetLayout_ = true;
         ImGui::EndMenu();
+    }
+    // Which scene is open, and a short confirmation after a save.
+    const std::string name = currentScenePath_.empty() ? "unsaved scene" : std::filesystem::path(currentScenePath_).filename().string();
+    ImGui::TextDisabled("  |  %s", name.c_str());
+    if (ImGui::GetTime() - lastSavedTime_ < 2.0) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.5f, 1.0f), "Saved");
     }
     ImGui::EndMenuBar();
 }
@@ -469,6 +483,7 @@ void EditorLayer::HandleShortcuts()
 {
     const ImGuiIO& io = ImGui::GetIO();
     if (io.WantTextInput) return;   // typing a number into a slider: "1" must not switch tools
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) saveSceneRequested_ = true;
 
     const bool inViewport = viewportHovered_ || viewportFocused_;
     if (inViewport) {
@@ -580,6 +595,90 @@ std::string PickModelFile(HWND owner)
 }
 }
 
+namespace {
+// Open / Save dialog for scene files. Returns UTF-8, empty if cancelled. For saving, makes sure the name ends in
+// ".scene.json" so the Open dialog's filter finds it again.
+std::string PickSceneFile(HWND owner, bool save)
+{
+    std::error_code error;
+    std::filesystem::create_directories("assets/scenes", error);   // the dialog starts here
+    wchar_t file[MAX_PATH] = L"";
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = owner;
+    dialog.lpstrFilter = L"Scene files (*.scene.json)\0*.scene.json\0All files (*.*)\0*.*\0";
+    dialog.lpstrFile = file;
+    dialog.nMaxFile = MAX_PATH;
+    dialog.lpstrInitialDir = L"assets\\scenes";
+    dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    if (!(save ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog))) return {};
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, file, -1, nullptr, 0, nullptr, nullptr);
+    if (bytes <= 1) return {};
+    std::string path(static_cast<size_t>(bytes - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, file, -1, path.data(), bytes, nullptr, nullptr);
+    if (save) {
+        auto endsWith = [&](const std::string& suffix) { return path.size() >= suffix.size() && path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0; };
+        if (!endsWith(".scene.json")) {
+            if (endsWith(".json")) path.resize(path.size() - 5);
+            path += ".scene.json";
+        }
+    }
+    return path;
+}
+
+std::string JoinLines(const std::vector<std::string>& lines)
+{
+    std::string text;
+    for (const std::string& line : lines) text += "- " + line + "\n\n";
+    return text;
+}
+}
+
+void EditorLayer::ShowMessage(const std::string& title, const std::string& text)
+{
+    messageTitle_ = title;
+    message_ = text;
+    showMessage_ = true;
+}
+
+void EditorLayer::HandleSceneFileRequests(LayerContext& ctx)
+{
+    if (openSceneRequested_) {
+        openSceneRequested_ = false;
+        const std::string path = PickSceneFile(hwnd_, false);
+        if (!path.empty()) {
+            std::vector<std::string> warnings;
+            std::string error;
+            if (LoadScene(ctx.scene, ctx.renderer.GetDevice(), path, warnings, error)) {
+                currentScenePath_ = path;
+                selectedId_ = 0;                       // the old objects are gone, and so are their ids
+                selectionKind_ = SelectionKind::Object;
+                if (!warnings.empty()) ShowMessage("Scene opened, with warnings", JoinLines(warnings));
+            } else {
+                ShowMessage("Could not open the scene", error);
+            }
+        }
+    }
+
+    if (saveSceneRequested_ || saveSceneAsRequested_) {
+        const bool askForName = saveSceneAsRequested_ || currentScenePath_.empty();
+        saveSceneRequested_ = false;
+        saveSceneAsRequested_ = false;
+        const std::string path = askForName ? PickSceneFile(hwnd_, true) : currentScenePath_;
+        if (!path.empty()) {
+            std::vector<std::string> warnings;
+            std::string error;
+            if (SaveScene(ctx.scene, path, warnings, error)) {
+                currentScenePath_ = path;
+                lastSavedTime_ = ImGui::GetTime();
+                if (!warnings.empty()) ShowMessage("Scene saved, with warnings", JoinLines(warnings));
+            } else {
+                ShowMessage("Could not save the scene", error);
+            }
+        }
+    }
+}
+
 void EditorLayer::ImportModelWithDialog(LayerContext& ctx)
 {
     const std::string path = PickModelFile(hwnd_);
@@ -590,15 +689,13 @@ void EditorLayer::ImportModelWithDialog(LayerContext& ctx)
     ImportedModel imported;
     std::string error;
     if (!ImportModel(path, imported, error)) {
-        importError_ = error;
-        showImportError_ = true;
+        ShowMessage("Import failed", error);
         return;
     }
     ModelObject* model = ctx.scene.Add<ModelObject>(ctx.renderer.GetDevice(), std::move(imported));
     if (!model->IsValid()) {
         ctx.scene.Remove(model->GetId());
-        importError_ = "The model was read, but none of its parts could be uploaded to the GPU.";
-        showImportError_ = true;
+        ShowMessage("Import failed", "The model was read, but none of its parts could be uploaded to the GPU.");
         return;
     }
 

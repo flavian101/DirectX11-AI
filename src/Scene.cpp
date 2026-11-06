@@ -88,6 +88,12 @@ SceneObject* Scene::Duplicate(SceneObjectId id)
     return result;
 }
 
+void Scene::ClearObjects()
+{
+    objects_.clear();
+    environmentLighting_.Release();   // it was baked from the old skybox
+}
+
 SceneObject* Scene::CreateCube()
 {
     return device_ ? Add<Cube>(device_) : nullptr;

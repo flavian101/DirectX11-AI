@@ -1,6 +1,8 @@
 #include "DemoScene.h"
 #include "Cube.h"
 #include "Logger.h"
+#include "SceneSerializer.h"
+#include <filesystem>
 #include "Skybox.h"
 #include "Terrain.h"
 #include "Water.h"
@@ -60,4 +62,24 @@ bool BuildDemoScene(Scene& scene, ID3D11Device* device)
     waterSettings.size = (std::max)(extent.x, extent.y) * 1.2f;
     water->SetSettings(waterSettings);
     return true;
+}
+
+std::unique_ptr<Scene> BuildStartScene(ID3D11Device* device)
+{
+    std::error_code error;
+    if (std::filesystem::exists(kStartSceneFile, error)) {
+        auto scene = std::make_unique<Scene>();
+        if (scene->Initialize(device)) {
+            std::vector<std::string> warnings;
+            std::string message;
+            if (LoadScene(*scene, device, kStartSceneFile, warnings, message)) {
+                for (const std::string& warning : warnings) LOG_WARNING(warning);
+                return scene;
+            }
+            LOG_ERROR(std::string("Could not load ") + kStartSceneFile + ": " + message + " (showing the demo scene instead)");
+        }
+        // `scene` is dropped here: a half-loaded scene is in an unknown state, so the demo gets a fresh one.
+    }
+    auto scene = std::make_unique<Scene>();
+    return BuildDemoScene(*scene, device) ? std::move(scene) : nullptr;
 }

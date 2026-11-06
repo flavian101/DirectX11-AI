@@ -42,6 +42,7 @@ public:
     size_t GetPartCount() const { return parts_.size(); }
     size_t GetMaterialCount() const { return materials_.size(); }
     SurfaceMaterial& GetMaterial(size_t index) { return *materials_[index]; }
+    const SurfaceMaterial& GetMaterial(size_t index) const { return *materials_[index]; }
     const std::string& GetMaterialName(size_t index) const { return materialNames_[index]; }
     std::uint32_t GetTriangleCount() const { return triangleCount_; }
 

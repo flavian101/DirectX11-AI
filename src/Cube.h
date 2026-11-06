@@ -28,6 +28,7 @@ public:
 
     // The cube's maps and settings (the editor's Inspector edits these).
     SurfaceMaterial& GetSurface() { return *surface_; }
+    const SurfaceMaterial& GetSurface() const { return *surface_; }
     // The demo cube turns by itself. Moving it with the editor (gizmo or Inspector) switches that off.
     bool IsSpinning() const { return spinning_; }
     void SetSpinning(bool spinning) { spinning_ = spinning; }

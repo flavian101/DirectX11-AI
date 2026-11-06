@@ -36,6 +36,10 @@ FetchContent_Declare(assimp
 )
 FetchContent_MakeAvailable(assimp)
 
+# nlohmann/json: reads and writes the scene files. Header-only. Offline? -DFETCHCONTENT_SOURCE_DIR_JSON=<path>
+FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
+FetchContent_MakeAvailable(json)
+
 option(BUILD_EDITOR "Build the editor executable (needs extern/imgui on its docking branch)" ON)
 
 # ---------------------------------------------------------------------------------------------
@@ -60,6 +64,7 @@ add_library(Engine STATIC
 	src/ModelImporter.cpp
 	src/ModelObject.cpp
 	src/RayPicking.cpp
+	src/SceneSerializer.cpp
 	src/Renderable.cpp
 	src/Material.cpp
 	src/SurfaceMaterial.cpp
@@ -86,7 +91,7 @@ target_include_directories(Engine PUBLIC ${CMAKE_SOURCE_DIR}/src)
 # Link against the Windows SDK libraries for DirectX 11
 # The d3d11 and dxgi libraries are part of the SDK and are available on Windows
 # dxguid supplies the interface IDs (e.g. for D3DReflect in Shader.cpp); MSVC can hide the need, MinGW cannot.
-target_link_libraries(Engine PUBLIC d3d11 dxgi d3dcompiler dxguid imm32 dwmapi assimp::assimp)
+target_link_libraries(Engine PUBLIC d3d11 dxgi d3dcompiler dxguid imm32 dwmapi assimp::assimp nlohmann_json::nlohmann_json)
 
 add_executable(D3D11Example src/main.cpp)
 target_link_libraries(D3D11Example PRIVATE Engine)
