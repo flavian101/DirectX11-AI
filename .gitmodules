@@ -4,4 +4,9 @@
 	branch = docking
 [submodule "extern/assimp"]
 	path = extern/assimp
-	url = https://github.com/assimp/assimp.git
+	url = https://github.com/assimp/assimp.git[submodule "extern/ImGuizmo"]
+	path = extern/ImGuizmo
+	url = https://github.com/CedricGuillemet/ImGuizmo.git
+[submodule "extern/ImGuizmo"]
+	path = extern/ImGuizmo
+	url = https://github.com/CedricGuillemet/ImGuizmo.git
