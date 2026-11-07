@@ -49,7 +49,11 @@ public:
     SceneObject* Find(SceneObjectId id);
     const SceneObject* Find(SceneObjectId id) const;
     bool Remove(SceneObjectId id);
-    SceneObject* Duplicate(SceneObjectId id);
+    // Take an object OUT of the scene without destroying it, and put it back later with the SAME id and name.
+    // Undo of "delete" needs this: the object (and its GPU resources) must stay alive while it is not in the scene.
+    // `index` is where it stood in the object list, so that Attach can restore the order.
+    std::unique_ptr<SceneObject> Detach(SceneObjectId id, size_t* index = nullptr);
+    SceneObject* Attach(std::unique_ptr<SceneObject> object, size_t index);    SceneObject* Duplicate(SceneObjectId id);
     SceneObject* CreateCube();
     // Removes every object (and the baked sky lighting that belonged to the old sky). Lights, camera and settings stay.
     void ClearObjects();

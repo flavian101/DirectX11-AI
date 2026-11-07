@@ -65,6 +65,25 @@ bool Scene::Remove(SceneObjectId id)
     return true;
 }
 
+std::unique_ptr<SceneObject> Scene::Detach(SceneObjectId id, size_t* index)
+{
+    const auto it = std::find_if(objects_.begin(), objects_.end(),
+        [id](const std::unique_ptr<SceneObject>& object) { return object && object->GetId() == id; });
+    if (it == objects_.end()) return nullptr;
+    if (index) *index = static_cast<size_t>(it - objects_.begin());
+    std::unique_ptr<SceneObject> taken = std::move(*it);
+    objects_.erase(it);
+    return taken;
+}
+
+SceneObject* Scene::Attach(std::unique_ptr<SceneObject> object, size_t index)
+{
+    if (!object) return nullptr;
+    SceneObject* result = object.get();   // keeps the id and name it had: nothing else in the editor refers to it by pointer
+    objects_.insert(objects_.begin() + static_cast<std::ptrdiff_t>((std::min)(index, objects_.size())), std::move(object));
+    return result;
+}
+
 SceneObject* Scene::Duplicate(SceneObjectId id)
 {
     SceneObject* original = Find(id);

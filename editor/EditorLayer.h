@@ -3,6 +3,7 @@
 #include "ModelObject.h"
 #include "RayPicking.h"
 #include "SceneObject.h"
+#include "UndoHistory.h"
 #include <string>
 #include "Scene.h"
 #include "SurfaceMaterial.h"
@@ -58,6 +59,14 @@ private:
     void DrawSurfaceInspector(SurfaceMaterial& surface);
     void DrawModelInspector(ModelObject* model);
     void ImportModelWithDialog(LayerContext& ctx);
+
+    // --- undo / redo ---
+    void TrackEdits(LayerContext& ctx);                 // notices finished edits and records them
+    void ApplyHistoryRequests();                        // carries out Undo / Redo / jumps asked for last frame
+    void RecordAdded(SceneObject* object, const std::string& name);   // an object was just put into the scene
+    void RecordPropertyChange(SceneObjectId id, const std::string& name, const std::string& before, const std::string& after);
+    void RecordGlobalChange(const std::string& before, const std::string& after);
+    void DrawHistoryPanel();
     void HandleSceneFileRequests(LayerContext& ctx);
     void HandleTerrainFileRequest(LayerContext& ctx);
     void ShowMessage(const std::string& title, const std::string& text);
@@ -104,6 +113,16 @@ private:
         int map = 0;
     };
     TerrainFileRequest terrainFileRequest_;
+
+    // Undo / redo. The history holds the commands; the two detectors turn "the state, once per frame" into finished
+    // edits (one for the selected object, one for the global settings).
+    UndoHistory history_;
+    ChangeDetector objectDetector_;
+    ChangeDetector globalDetector_;
+    bool undoRequested_ = false;
+    bool redoRequested_ = false;
+    int historyJump_ = -1;       // >= 0: stand at this history position (clicked in the History panel)
+    bool showHistory_ = false;
 
     // One pop-up for every message the user must read (import errors, scene warnings).
     bool showMessage_ = false;

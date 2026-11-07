@@ -45,6 +45,192 @@ std::string MakeStoredPath(const fs::path& target, const fs::path& sceneFolder, 
     return (relative.empty() ? absolute : relative).generic_string();   // forward slashes: the same file text on any machine
 }
 
+
+// ------------------------------------------------------------------------------------------------------------
+// One object <-> one JSON entry. The same code serves THREE jobs: saving a file, loading a file, and the
+// snapshots that undo/redo takes. With `folder` set (file mode) image and model paths are stored relative to the
+// scene file; with `folder == nullptr` (snapshot mode) they are kept exactly as they are, so comparing two
+// snapshots is a plain text comparison.
+// ------------------------------------------------------------------------------------------------------------
+json DescribeObject(const SceneObject& object, const fs::path* folder, std::vector<std::string>* warnings)
+{
+    const bool snapshot = (folder == nullptr);
+    auto warn = [&](const std::string& text) { if (warnings) warnings->push_back(text); };
+    // A path as it goes into the entry. Returns null when `current` is the default (defaults need no entry).
+    auto storedImage = [&](const std::string& current, const std::string& standard) -> json {
+        if (current == standard) return nullptr;
+        if (snapshot) return current;
+        bool outside = false;
+        const std::string text = MakeStoredPath(fs::path(current), *folder, "assets", outside);
+        if (outside) warn("The terrain image \"" + current + "\" lives outside the assets folder. It will not be shipped with the game: copy it into assets/ and choose it again.");
+        return text;
+    };
+
+    json entry;
+    if (const auto* terrain = dynamic_cast<const Terrain*>(&object)) {
+        entry["type"] = "Terrain";
+        entry["settings"] = terrain->GetSettings();
+        json maps = json::object();
+        if (json v = storedImage(terrain->GetHeightmapPath(), Terrain::DefaultHeightmapPath()); !v.is_null()) maps["heightmap"] = v;
+        if (json v = storedImage(terrain->GetColorMapPath(), Terrain::DefaultColorMapPath()); !v.is_null()) maps["colorMap"] = v;
+        static const char* const kMapKeys[] = { "albedo", "normal", "orm" };
+        json layers = json::array();
+        bool anyLayer = false;
+        for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+            json one = json::object();
+            for (int kind = 0; kind < 3; ++kind) {
+                const auto map = static_cast<TerrainLayerMap>(kind);
+                if (json v = storedImage(terrain->GetLayerMapPath(layer, map), Terrain::DefaultLayerMapPath(layer, map)); !v.is_null()) {
+                    one[kMapKeys[kind]] = v;
+                    anyLayer = true;
+                }
+            }
+            layers.push_back(one);
+        }
+        if (anyLayer) maps["layers"] = layers;
+        if (!maps.empty()) entry["maps"] = maps;
+    } else if (const auto* water = dynamic_cast<const Water*>(&object)) {
+        entry["type"] = "Water";
+        entry["settings"] = water->GetSettings();
+    } else if (const auto* sky = dynamic_cast<const Skybox*>(&object)) {
+        entry["type"] = "Skybox";
+        entry["intensity"] = sky->GetIntensity();
+    } else if (const auto* cube = dynamic_cast<const Cube*>(&object)) {
+        entry["type"] = "Cube";
+        entry["spinning"] = cube->IsSpinning();
+        entry["surface"] = cube->GetSurface().Settings();
+    } else if (const auto* model = dynamic_cast<const ModelObject*>(&object)) {
+        entry["type"] = "Model";
+        if (snapshot) {
+            entry["path"] = model->GetSourcePath();
+        } else {
+            bool outside = false;
+            entry["path"] = MakeStoredPath(fs::path(model->GetSourcePath()), *folder, "assets", outside);
+            if (outside) {
+                warn("The model \"" + std::string(model->GetEditorName()) + "\" lives outside the assets folder (" +
+                     model->GetSourcePath() + "). It will not be shipped with the game: copy its folder into assets/ and import it from there.");
+            }
+        }
+        json materials = json::array();
+        for (size_t i = 0; i < model->GetMaterialCount(); ++i) {
+            materials.push_back({ { "name", model->GetMaterialName(i) }, { "surface", model->GetMaterial(i).Settings() } });
+        }
+        entry["materials"] = materials;
+    } else {
+        warn(std::string("Skipped an object this editor cannot save yet: ") + object.GetEditorName());
+        return nullptr;
+    }
+
+    // A spinning demo cube changes its rotation every frame by itself. In a snapshot that would look like an edit
+    // on every frame, so a spinning cube's transform is left out (a file still stores it).
+    const bool spinningCube = snapshot && entry["type"] == "Cube" && entry.value("spinning", false);
+    if (!spinningCube) {
+        const json transform = TransformToJson(object);
+        if (!transform.is_null()) entry["transform"] = transform;
+    }
+    return entry;
+}
+
+// Puts the properties in `entry` onto an object that already exists (just created by the loader, or alive in the
+// scene when undo restores an earlier state). Images that already match are not loaded again.
+void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFolder, std::vector<std::string>& warnings)
+{
+    auto resolve = [&](const std::string& text) {
+        fs::path p(text);
+        if (sceneFolder && p.is_relative()) p = *sceneFolder / p;   // file mode: stored relative to the scene file
+        return p.string();
+    };
+
+    if (auto* terrain = dynamic_cast<Terrain*>(&object)) {
+        // Images first (the heightmap decides the mesh shape), then the settings. A key that is ABSENT means "the
+        // default image", which matters for undo: undoing an image import must put the old image back.
+        const json maps = entry.value("maps", json::object());
+        auto wanted = [&](const json& source, const char* key, const std::string& standard) {
+            return source.is_object() && source.contains(key) ? resolve(source[key].get<std::string>()) : standard;
+        };
+        const std::string height = wanted(maps, "heightmap", Terrain::DefaultHeightmapPath());
+        if (height != terrain->GetHeightmapPath() && !terrain->SetHeightmap(height)) warnings.push_back("The terrain's heightmap could not be loaded: " + height);
+        const std::string color = wanted(maps, "colorMap", Terrain::DefaultColorMapPath());
+        if (color != terrain->GetColorMapPath() && !terrain->SetColorMap(color)) warnings.push_back("The terrain's colour map could not be loaded: " + color);
+        static const char* const kMapKeys[] = { "albedo", "normal", "orm" };
+        for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+            const json layerEntry = (maps.contains("layers") && maps["layers"].is_array() && layer < static_cast<int>(maps["layers"].size()))
+                                        ? maps["layers"][layer] : json::object();
+            for (int kind = 0; kind < 3; ++kind) {
+                const auto map = static_cast<TerrainLayerMap>(kind);
+                const std::string path = wanted(layerEntry, kMapKeys[kind], Terrain::DefaultLayerMapPath(layer, map));
+                if (path != terrain->GetLayerMapPath(layer, map) && !terrain->SetLayerMap(layer, map, path)) {
+                    warnings.push_back(std::string("A terrain ") + kTerrainLayerNames[layer] + " " + kMapKeys[kind] + " image could not be loaded: " + path);
+                }
+            }
+        }
+        if (!terrain->ApplySettings(entry.value("settings", TerrainSettings{}))) {
+            warnings.push_back("The terrain mesh could not be rebuilt with the saved settings.");
+        }
+    } else if (auto* water = dynamic_cast<Water*>(&object)) {
+        water->SetSettings(entry.value("settings", WaterSettings{}));
+    } else if (auto* sky = dynamic_cast<Skybox*>(&object)) {
+        sky->SetIntensity(entry.value("intensity", 1.0f));
+    } else if (auto* cube = dynamic_cast<Cube*>(&object)) {
+        cube->GetSurface().Settings() = entry.value("surface", SurfaceSettings{});
+    } else if (auto* model = dynamic_cast<ModelObject*>(&object)) {
+        const json materials = entry.value("materials", json::array());
+        for (size_t i = 0; i < materials.size() && i < model->GetMaterialCount(); ++i) {
+            if (materials[i].value("name", "") != model->GetMaterialName(i)) {   // the model file changed since saving
+                warnings.push_back("A material of \"" + model->GetSourcePath() + "\" no longer matches the saved one; its saved settings were skipped.");
+                continue;
+            }
+            model->GetMaterial(i).Settings() = materials[i].value("surface", model->GetMaterial(i).Settings());
+        }
+    }
+
+    // Transform LAST: setting the transform of some objects (the cube, the water) changes other state.
+    if (entry.contains("transform")) ApplyTransform(object, entry["transform"]);
+    if (dynamic_cast<Cube*>(&object)) static_cast<Cube*>(&object)->SetSpinning(entry.value("spinning", false));
+}
+
+// Lights, shadow, post-processing and sky lighting: everything global that the Inspector edits (the camera is not
+// part of it: flying around is not an edit).
+json DescribeGlobals(const Scene& scene)
+{
+    json globals;
+    const LightSystem& lights = scene.GetLightSystem();
+    json points = json::array();
+    for (const PointLight& light : lights.PointLights()) points.push_back(light);
+    globals["lights"] = { { "ambient", lights.Ambient() }, { "directional", lights.Directional() }, { "points", points } };
+    globals["shadow"] = scene.GetShadowMap().GetSettings();
+    globals["post"] = scene.GetPostSettings();
+    globals["environment"] = scene.GetEnvironment();
+    return globals;
+}
+
+void ApplyGlobals(Scene& scene, const json& root, std::vector<std::string>& warnings)
+{
+    auto attempt = [&](const std::string& what, auto&& action) {
+        try {
+            action();
+        } catch (const json::exception& e) {
+            warnings.push_back(what + ": " + e.what());
+        }
+    };
+    attempt("lights", [&] {
+        const json lights = root.value("lights", json::object());
+        LightSystem& system = scene.GetLightSystem();
+        system.Ambient() = lights.value("ambient", system.Ambient());
+        system.Directional() = lights.value("directional", system.Directional());
+        system.ClearPointLights();
+        for (const json& point : lights.value("points", json::array())) {
+            if (!system.AddPointLight(point.get<PointLight>())) { warnings.push_back("Too many point lights: the extra ones were dropped."); break; }
+        }
+    });
+    attempt("shadow settings", [&] { scene.GetShadowMap().SetSettings(root.value("shadow", scene.GetShadowMap().GetSettings())); });
+    attempt("post-processing", [&] {
+        scene.GetPostSettings() = root.value("post", scene.GetPostSettings());
+        scene.GetPostSettings().Clamp();
+    });
+    attempt("environment", [&] { scene.GetEnvironment() = root.value("environment", scene.GetEnvironment()); });
+}
+
 }  // namespace
 
 bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::string>& warnings, std::string& error)
@@ -57,82 +243,13 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
     root["version"] = kSceneFileVersion;
     root["camera"] = { { "position", scene.GetCamera().GetPosition() }, { "target", scene.GetCamera().GetTarget() } };
 
-    const LightSystem& lights = scene.GetLightSystem();
-    json points = json::array();
-    for (const PointLight& light : lights.PointLights()) points.push_back(light);
-    root["lights"] = { { "ambient", lights.Ambient() }, { "directional", lights.Directional() }, { "points", points } };
-    root["shadow"] = scene.GetShadowMap().GetSettings();
-    root["post"] = scene.GetPostSettings();
-    root["environment"] = scene.GetEnvironment();
+    for (auto& [key, value] : DescribeGlobals(scene).items()) root[key] = value;
 
     json objects = json::array();
     for (const auto& owned : scene.GetObjects()) {
-        const SceneObject* object = owned.get();
-        if (!object) continue;
-        json entry;
-        if (const auto* terrain = dynamic_cast<const Terrain*>(object)) {
-            entry["type"] = "Terrain";
-            entry["settings"] = terrain->GetSettings();
-
-            // The images the terrain was made from. Only the ones the user REPLACED are written; the defaults need no entry.
-            auto stored = [&](const std::string& current, const std::string& standard) -> json {
-                if (current == standard) return nullptr;
-                bool outside = false;
-                const std::string text = MakeStoredPath(fs::path(current), folder, "assets", outside);
-                if (outside) {
-                    warnings.push_back("The terrain image \"" + current + "\" lives outside the assets folder. It will not be shipped with the game: copy it into assets/ and choose it again.");
-                }
-                return text;
-            };
-            json maps = json::object();
-            if (json v = stored(terrain->GetHeightmapPath(), Terrain::DefaultHeightmapPath()); !v.is_null()) maps["heightmap"] = v;
-            if (json v = stored(terrain->GetColorMapPath(), Terrain::DefaultColorMapPath()); !v.is_null()) maps["colorMap"] = v;
-            static const char* const kMapKeys[] = { "albedo", "normal", "orm" };
-            json layers = json::array();
-            bool anyLayer = false;
-            for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
-                json one = json::object();
-                for (int kind = 0; kind < 3; ++kind) {
-                    const auto map = static_cast<TerrainLayerMap>(kind);
-                    if (json v = stored(terrain->GetLayerMapPath(layer, map), Terrain::DefaultLayerMapPath(layer, map)); !v.is_null()) {
-                        one[kMapKeys[kind]] = v;
-                        anyLayer = true;
-                    }
-                }
-                layers.push_back(one);
-            }
-            if (anyLayer) maps["layers"] = layers;
-            if (!maps.empty()) entry["maps"] = maps;
-        } else if (const auto* water = dynamic_cast<const Water*>(object)) {
-            entry["type"] = "Water";
-            entry["settings"] = water->GetSettings();
-        } else if (const auto* sky = dynamic_cast<const Skybox*>(object)) {
-            entry["type"] = "Skybox";
-            entry["intensity"] = sky->GetIntensity();
-        } else if (const auto* cube = dynamic_cast<const Cube*>(object)) {
-            entry["type"] = "Cube";
-            entry["spinning"] = cube->IsSpinning();
-            entry["surface"] = cube->GetSurface().Settings();
-        } else if (const auto* model = dynamic_cast<const ModelObject*>(object)) {
-            entry["type"] = "Model";
-            bool outside = false;
-            entry["path"] = MakeStoredPath(fs::path(model->GetSourcePath()), folder, "assets", outside);
-            if (outside) {
-                warnings.push_back("The model \"" + std::string(model->GetEditorName()) + "\" lives outside the assets folder (" +
-                                   model->GetSourcePath() + "). It will not be shipped with the game: copy its folder into assets/ and import it from there.");
-            }
-            json materials = json::array();
-            for (size_t i = 0; i < model->GetMaterialCount(); ++i) {
-                materials.push_back({ { "name", model->GetMaterialName(i) }, { "surface", model->GetMaterial(i).Settings() } });
-            }
-            entry["materials"] = materials;
-        } else {
-            warnings.push_back(std::string("Skipped an object this editor cannot save yet: ") + object->GetEditorName());
-            continue;
-        }
-        const json transform = TransformToJson(*object);
-        if (!transform.is_null()) entry["transform"] = transform;
-        objects.push_back(std::move(entry));
+        if (!owned) continue;
+        json entry = DescribeObject(*owned, &folder, &warnings);
+        if (!entry.is_null()) objects.push_back(std::move(entry));
     }
     root["objects"] = std::move(objects);
 
@@ -193,72 +310,17 @@ bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std:
         scene.GetCamera().SetPosition(camera.value("position", scene.GetCamera().GetPosition()));
         scene.GetCamera().SetTarget(camera.value("target", scene.GetCamera().GetTarget()));
     });
-    attempt("lights", [&] {
-        const json lights = root.value("lights", json::object());
-        LightSystem& system = scene.GetLightSystem();
-        system.Ambient() = lights.value("ambient", system.Ambient());
-        system.Directional() = lights.value("directional", system.Directional());
-        system.ClearPointLights();
-        for (const json& point : lights.value("points", json::array())) {
-            if (!system.AddPointLight(point.get<PointLight>())) { warnings.push_back("Too many point lights: the extra ones were dropped."); break; }
-        }
-    });
-    attempt("shadow settings", [&] { scene.GetShadowMap().SetSettings(root.value("shadow", scene.GetShadowMap().GetSettings())); });
-    attempt("post-processing", [&] {
-        scene.GetPostSettings() = root.value("post", scene.GetPostSettings());
-        scene.GetPostSettings().Clamp();
-    });
-    attempt("environment", [&] { scene.GetEnvironment() = root.value("environment", scene.GetEnvironment()); });
+    ApplyGlobals(scene, root, warnings);   // lights, shadow, post-processing, sky lighting
 
     for (const json& entry : root.value("objects", json::array())) {
         const std::string type = entry.value("type", "");
         attempt("object \"" + type + "\"", [&] {
             SceneObject* created = nullptr;
-            if (type == "Terrain") {
-                Terrain* terrain = scene.Add<Terrain>(device);
-
-                // Replaced images first (the heightmap decides the mesh shape), then the settings.
-                const json maps = entry.value("maps", json::object());
-                auto resolve = [&](const std::string& text) {
-                    fs::path p(text);
-                    if (p.is_relative()) p = sceneFolder / p;   // stored relative to the scene file
-                    return p.string();
-                };
-                if (maps.contains("heightmap") && !terrain->SetHeightmap(resolve(maps["heightmap"].get<std::string>()))) {
-                    warnings.push_back("The terrain's heightmap could not be loaded: " + maps["heightmap"].get<std::string>() + " (the default is used)");
-                }
-                if (maps.contains("colorMap") && !terrain->SetColorMap(resolve(maps["colorMap"].get<std::string>()))) {
-                    warnings.push_back("The terrain's colour map could not be loaded: " + maps["colorMap"].get<std::string>() + " (the default is used)");
-                }
-                if (maps.contains("layers") && maps["layers"].is_array()) {
-                    static const char* const kMapKeys[] = { "albedo", "normal", "orm" };
-                    for (int layer = 0; layer < kTerrainLayerCount && layer < static_cast<int>(maps["layers"].size()); ++layer) {
-                        for (int kind = 0; kind < 3; ++kind) {
-                            if (!maps["layers"][layer].contains(kMapKeys[kind])) continue;
-                            const std::string text = maps["layers"][layer][kMapKeys[kind]].get<std::string>();
-                            if (!terrain->SetLayerMap(layer, static_cast<TerrainLayerMap>(kind), resolve(text))) {
-                                warnings.push_back(std::string("A terrain ") + kTerrainLayerNames[layer] + " " + kMapKeys[kind] + " image could not be loaded: " + text + " (the default is used)");
-                            }
-                        }
-                    }
-                }
-                if (!terrain->ApplySettings(entry.value("settings", TerrainSettings{}))) {
-                    warnings.push_back("The terrain mesh could not be rebuilt with the saved settings; the default terrain is shown.");
-                }
-                created = terrain;
-            } else if (type == "Water") {
-                Water* water = scene.Add<Water>(device);
-                water->SetSettings(entry.value("settings", WaterSettings{}));
-                created = water;
-            } else if (type == "Skybox") {
-                Skybox* sky = scene.Add<Skybox>(device);
-                sky->SetIntensity(entry.value("intensity", 1.0f));
-                created = sky;
-            } else if (type == "Cube") {
-                Cube* cube = scene.Add<Cube>(device);
-                cube->GetSurface().Settings() = entry.value("surface", SurfaceSettings{});
-                created = cube;
-            } else if (type == "Model") {
+            if (type == "Terrain") created = scene.Add<Terrain>(device);
+            else if (type == "Water") created = scene.Add<Water>(device);
+            else if (type == "Skybox") created = scene.Add<Skybox>(device);
+            else if (type == "Cube") created = scene.Add<Cube>(device);
+            else if (type == "Model") {
                 fs::path modelPath(entry.value("path", ""));
                 if (modelPath.is_relative()) modelPath = sceneFolder / modelPath;   // stored relative to the scene file
                 ImportedModel imported;
@@ -273,23 +335,50 @@ bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std:
                     warnings.push_back("Skipped a model that could not be uploaded to the GPU: " + modelPath.string());
                     return;
                 }
-                const json materials = entry.value("materials", json::array());
-                for (size_t i = 0; i < materials.size() && i < model->GetMaterialCount(); ++i) {
-                    if (materials[i].value("name", "") != model->GetMaterialName(i)) {   // the model file changed since saving
-                        warnings.push_back("A material of \"" + model->GetSourcePath() + "\" no longer matches the saved one; its saved settings were skipped.");
-                        continue;
-                    }
-                    model->GetMaterial(i).Settings() = materials[i].value("surface", model->GetMaterial(i).Settings());
-                }
                 created = model;
             } else {
                 warnings.push_back("Skipped an object of unknown type: \"" + type + "\"");
                 return;
             }
-            // Transform LAST: setting the transform of some objects (the cube, the water) changes other state.
-            if (entry.contains("transform")) ApplyTransform(*created, entry["transform"]);
-            if (type == "Cube") static_cast<Cube*>(created)->SetSpinning(entry.value("spinning", false));
+            ApplyObject(*created, entry, &sceneFolder, warnings);   // settings, images, materials, transform
         });
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Snapshots for undo / redo: the same description a file uses, as compact JSON text. Object keys are sorted, so
+// the same state always gives the same text, and "did anything change?" is just comparing two strings.
+// ---------------------------------------------------------------------------------------------------------
+std::string CaptureObjectState(const SceneObject& object)
+{
+    const json entry = DescribeObject(object, nullptr, nullptr);
+    return entry.is_null() ? std::string() : entry.dump();
+}
+
+bool ApplyObjectState(SceneObject& object, const std::string& state, std::vector<std::string>& warnings)
+{
+    try {
+        ApplyObject(object, json::parse(state), nullptr, warnings);
+        return true;
+    } catch (const json::exception& e) {
+        warnings.push_back(std::string("Could not restore an earlier state: ") + e.what());
+        return false;
+    }
+}
+
+std::string CaptureGlobalState(const Scene& scene)
+{
+    return DescribeGlobals(scene).dump();
+}
+
+bool ApplyGlobalState(Scene& scene, const std::string& state, std::vector<std::string>& warnings)
+{
+    try {
+        ApplyGlobals(scene, json::parse(state), warnings);
+        return true;
+    } catch (const json::exception& e) {
+        warnings.push_back(std::string("Could not restore earlier settings: ") + e.what());
+        return false;
+    }
 }

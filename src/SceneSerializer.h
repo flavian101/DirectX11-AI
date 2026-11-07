@@ -20,3 +20,18 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
 // file is missing) is skipped and reported in `warnings`; the rest still loads.
 bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std::vector<std::string>& warnings,
                std::string& error);
+
+// ---------------------------------------------------------------------------------------------------------------
+// Snapshots, for undo and redo. A snapshot is the state of ONE object (or of the global settings) as compact JSON
+// text, in the same description a scene file uses. Two snapshots of the same thing are equal text exactly when
+// nothing changed, so detecting an edit is just comparing strings.
+// ---------------------------------------------------------------------------------------------------------------
+
+// "" if this kind of object cannot be captured. A spinning demo cube leaves its transform out (it changes by itself).
+std::string CaptureObjectState(const SceneObject& object);
+// Puts a snapshot back on the object it was taken from. Images that already match are not loaded again.
+bool ApplyObjectState(SceneObject& object, const std::string& state, std::vector<std::string>& warnings);
+
+// Lights, shadow, post-processing and sky lighting. The camera is NOT part of it: flying around is not an edit.
+std::string CaptureGlobalState(const Scene& scene);
+bool ApplyGlobalState(Scene& scene, const std::string& state, std::vector<std::string>& warnings);

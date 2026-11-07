@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include "Cube.h"
 #include "ModelImporter.h"
 #include "SceneSerializer.h"
@@ -24,6 +26,23 @@
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 using namespace DirectX;
+
+namespace {
+// An undoable action made of two small functions. Everything an editor action needs (an id, a snapshot, the object
+// itself) is captured by the lambdas, so one class covers every kind of command.
+class LambdaCommand final : public UndoCommand {
+public:
+    LambdaCommand(std::string name, std::function<void()> undo, std::function<void()> redo)
+        : name_(std::move(name)), undo_(std::move(undo)), redo_(std::move(redo)) {}
+    void Undo() override { undo_(); }
+    void Redo() override { redo_(); }
+    std::string Name() const override { return name_; }
+private:
+    std::string name_;
+    std::function<void()> undo_;
+    std::function<void()> redo_;
+};
+}
 
 namespace {
 // The gizmo edits ONE 4x4 matrix; the objects store position, rotation and scale. These two functions convert
@@ -158,6 +177,10 @@ void EditorLayer::OnFrame(LayerContext& ctx)
     if (!attached_) return;
     scene_ = &ctx.scene;
 
+    // Record whatever the user finished editing in the previous frame, BEFORE this frame's actions change anything.
+    TrackEdits(ctx);
+    ApplyHistoryRequests();
+
     // Import BEFORE the UI frame starts: the file dialog blocks and pumps messages, which must not happen
     // between NewFrame and Render.
     if (importRequested_) {
@@ -186,6 +209,7 @@ void EditorLayer::OnFrame(LayerContext& ctx)
     DrawViewportPanel(ctx);
     DrawHierarchyPanel();
     DrawInspectorPanel();
+    DrawHistoryPanel();
     HandleShortcuts();
 
     if (showMessage_) {
@@ -268,6 +292,11 @@ void EditorLayer::DrawMenuBar()
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
+        const std::string undoLabel = history_.CanUndo() ? "Undo " + history_.UndoName() : std::string("Undo");
+        const std::string redoLabel = history_.CanRedo() ? "Redo " + history_.RedoName() : std::string("Redo");
+        if (ImGui::MenuItem(undoLabel.c_str(), "Ctrl+Z", false, history_.CanUndo())) undoRequested_ = true;
+        if (ImGui::MenuItem(redoLabel.c_str(), "Ctrl+Y", false, history_.CanRedo())) redoRequested_ = true;
+        ImGui::Separator();
         const SceneObject* selected = SelectedObject();
         if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, selected && selected->CanClone())) duplicateRequested_ = true;
         if (ImGui::MenuItem("Delete", "Del", false, selected && selected->IsUserContent())) deleteRequested_ = true;
@@ -283,6 +312,7 @@ void EditorLayer::DrawMenuBar()
         ImGui::MenuItem("Hierarchy", nullptr, &showHierarchy_);
         ImGui::MenuItem("Viewport", nullptr, &showViewport_);
         ImGui::MenuItem("Inspector", nullptr, &showInspector_);
+        ImGui::MenuItem("History", nullptr, &showHistory_);
         ImGui::Separator();
         if (ImGui::MenuItem("Reset layout")) resetLayout_ = true;
         ImGui::EndMenu();
@@ -464,20 +494,128 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
         if (SceneObject* cube = ctx.scene.CreateCube()) {
             PlaceInFrontOfCamera(cube, 12.0f);
             Select(cube);
+            RecordAdded(cube, "Add cube");
         }
     }
     if (duplicateRequested_) {
         duplicateRequested_ = false;
-        if (SceneObject* copy = ctx.scene.Duplicate(selectedId_)) Select(copy);
+        if (SceneObject* copy = ctx.scene.Duplicate(selectedId_)) {
+            Select(copy);
+            RecordAdded(copy, std::string("Duplicate ") + copy->GetEditorName());
+        }
     }
     if (deleteRequested_) {
         deleteRequested_ = false;
         const SceneObject* selected = SelectedObject();
         if (selected && selected->IsUserContent()) {
-            ctx.scene.Remove(selectedId_);
+            // Not destroyed: the object is taken OUT of the scene and kept in the history, so that undo can put the very
+            // same object back (with its GPU resources, id and name) instead of rebuilding it.
+            auto holder = std::make_shared<std::unique_ptr<SceneObject>>();
+            auto position = std::make_shared<size_t>(0);
+            const SceneObjectId id = selectedId_;
+            const std::string name = selected->GetEditorName();
+            *holder = ctx.scene.Detach(id, position.get());
             selectedId_ = 0;
+            history_.Push(std::make_unique<LambdaCommand>(
+                "Delete " + name,
+                [this, holder, position]() { if (*holder) Select(scene_->Attach(std::move(*holder), *position)); },       // undo: put it back
+                [this, holder, position, id]() { *holder = scene_->Detach(id, position.get()); if (selectedId_ == id) selectedId_ = 0; }));   // redo
+            objectDetector_.Reset();
         }
     }
+}
+
+// ----------------------------------------------------------------------------------------------------------------
+// Undo / redo.
+//
+// Two kinds of thing are recorded:
+//   * PROPERTY edits (a slider, a colour, a gizmo drag): found by comparing snapshots, see TrackEdits.
+//   * OBJECT lifetime (add, duplicate, import, delete): recorded by the code that does it.
+// ----------------------------------------------------------------------------------------------------------------
+void EditorLayer::TrackEdits(LayerContext& ctx)
+{
+    // "Interacting" = the user is holding a slider, dragging a gizmo or typing in a field. While they are, the
+    // baseline stays frozen; the first idle frame afterwards reports ONE edit. This runs before NewFrame, so
+    // IsAnyItemActive reflects the end of the previous frame.
+    const bool interacting = ImGui::IsAnyItemActive() || ImGuizmo::IsUsing();
+
+    std::string before;
+    const std::string globals = CaptureGlobalState(ctx.scene);
+    if (globalDetector_.Observe(0, globals, interacting, before)) RecordGlobalChange(before, globals);
+
+    SceneObject* selected = (selectionKind_ == SelectionKind::Object) ? SelectedObject() : nullptr;
+    const std::string state = selected ? CaptureObjectState(*selected) : std::string();
+    if (selected && !state.empty()) {
+        if (objectDetector_.Observe(selected->GetId(), state, interacting, before)) {
+            RecordPropertyChange(selected->GetId(), std::string("Edit ") + selected->GetEditorName(), before, state);
+        }
+    } else {
+        objectDetector_.Reset();
+    }
+}
+
+void EditorLayer::RecordPropertyChange(SceneObjectId id, const std::string& name, const std::string& before, const std::string& after)
+{
+    auto restore = [this, id](const std::string& state) {
+        std::vector<std::string> warnings;
+        if (SceneObject* object = scene_->Find(id)) ApplyObjectState(*object, state, warnings);   // gone (deleted) = nothing to restore
+        for (const std::string& warning : warnings) LOG_WARNING(warning);
+    };
+    history_.Push(std::make_unique<LambdaCommand>(name, [restore, before]() { restore(before); }, [restore, after]() { restore(after); }));
+}
+
+void EditorLayer::RecordGlobalChange(const std::string& before, const std::string& after)
+{
+    auto restore = [this](const std::string& state) {
+        std::vector<std::string> warnings;
+        ApplyGlobalState(*scene_, state, warnings);
+        for (const std::string& warning : warnings) LOG_WARNING(warning);
+    };
+    history_.Push(std::make_unique<LambdaCommand>("Edit scene settings", [restore, before]() { restore(before); }, [restore, after]() { restore(after); }));
+}
+
+void EditorLayer::RecordAdded(SceneObject* object, const std::string& name)
+{
+    // The object is in the scene now. Undo takes it OUT (and keeps it alive in this holder); redo puts the same
+    // object back with the same id.
+    auto holder = std::make_shared<std::unique_ptr<SceneObject>>();
+    auto position = std::make_shared<size_t>(0);
+    const SceneObjectId id = object->GetId();
+    history_.Push(std::make_unique<LambdaCommand>(
+        name,
+        [this, holder, position, id]() { *holder = scene_->Detach(id, position.get()); if (selectedId_ == id) selectedId_ = 0; },
+        [this, holder, position]() { if (*holder) Select(scene_->Attach(std::move(*holder), *position)); }));
+}
+
+void EditorLayer::ApplyHistoryRequests()
+{
+    const bool wanted = undoRequested_ || redoRequested_ || historyJump_ >= 0;
+    if (undoRequested_) history_.Undo();
+    if (redoRequested_) history_.Redo();
+    if (historyJump_ >= 0) history_.JumpTo(static_cast<size_t>(historyJump_));
+    undoRequested_ = redoRequested_ = false;
+    historyJump_ = -1;
+    if (wanted) {
+        // The scene was changed by us, not by the user's hand: make the restored state the new baseline.
+        objectDetector_.Reset();
+        globalDetector_.Reset();
+    }
+}
+
+void EditorLayer::DrawHistoryPanel()
+{
+    if (!showHistory_) return;
+    if (!ImGui::Begin("History", &showHistory_)) { ImGui::End(); return; }
+    ImGui::TextDisabled("Click a line to go back (or forward) to that point.");
+    // Entry i is "done" when i < Position(). The line marked with > is where you stand now.
+    const size_t position = history_.Position();
+    if (ImGui::Selectable(position == 0 ? "> (start)" : "  (start)", position == 0)) historyJump_ = 0;
+    for (size_t i = 0; i < history_.Size(); ++i) {
+        const bool current = (i + 1 == position);
+        const std::string label = std::string(current ? "> " : "  ") + history_.At(i).Name() + "##history" + std::to_string(i);
+        if (ImGui::Selectable(label.c_str(), current)) historyJump_ = static_cast<int>(i + 1);
+    }
+    ImGui::End();
 }
 
 void EditorLayer::HandleShortcuts()
@@ -485,6 +623,11 @@ void EditorLayer::HandleShortcuts()
     const ImGuiIO& io = ImGui::GetIO();
     if (io.WantTextInput) return;   // typing a number into a slider: "1" must not switch tools
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) saveSceneRequested_ = true;
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+        if (io.KeyShift) redoRequested_ = true;   // Ctrl+Shift+Z
+        else undoRequested_ = true;
+    }
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) redoRequested_ = true;
 
     const bool inViewport = viewportHovered_ || viewportFocused_;
     if (inViewport) {
@@ -704,6 +847,9 @@ void EditorLayer::HandleSceneFileRequests(LayerContext& ctx)
             std::vector<std::string> warnings;
             std::string error;
             if (LoadScene(ctx.scene, ctx.renderer.GetDevice(), path, warnings, error)) {
+                history_.Clear();                      // every id in the history now refers to an object that is gone
+                objectDetector_.Reset();
+                globalDetector_.Reset();
                 currentScenePath_ = path;
                 selectedId_ = 0;                       // the old objects are gone, and so are their ids
                 selectionKind_ = SelectionKind::Object;
@@ -758,6 +904,7 @@ void EditorLayer::ImportModelWithDialog(LayerContext& ctx)
     model->FitToSize(10.0f);
     PlaceInFrontOfCamera(model, 20.0f);
     Select(model);
+    RecordAdded(model, std::string("Import ") + model->GetEditorName());
 }
 
 void EditorLayer::DrawModelInspector(ModelObject* model)
