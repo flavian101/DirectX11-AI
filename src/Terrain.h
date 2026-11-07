@@ -3,17 +3,23 @@
 #include "SceneObject.h"
 #include "Texture.h"
 #include "TextureArray.h"
+#include "TerrainSkirts.h"
 #include <memory>
 #include <vector>
 
 // One tile of the terrain: its own small mesh plus a box that bounds it. The box is what lets us
 // ask "can the camera possibly see this tile?" without looking at a single triangle.
+constexpr int kTerrainLayerCount = 4;   // grass, rock, sand, snow (the slice order the shader expects)
+constexpr const char* kTerrainLayerNames[kTerrainLayerCount] = { "Grass", "Rock", "Sand", "Snow" };
+enum class TerrainLayerMap { Albedo = 0, Normal = 1, Orm = 2 };
+
 constexpr int kTerrainLodCount = 3;   // level 0 = every quad, 1 = every 2nd, 2 = every 4th
 
 struct TerrainChunk {
 	DirectX::XMFLOAT3 boundsMin;   // in the terrain's local space (includes the skirt)
 	DirectX::XMFLOAT3 boundsMax;
-	int triangleCount[kTerrainLodCount] = {};   // triangles at each level of detail
+	int triangleCount[kTerrainLodCount] = {};   // SURFACE triangles at each level of detail (skirts are counted separately)
+	int skirtTriangles[kTerrainLodCount][4] = {};   // per level, per edge (north, south, west, east): triangles of that skirt
 };
 
 // What one view (camera / mirror / sun) drew last frame - shown in the editor.
@@ -44,7 +50,7 @@ struct TerrainSettings {
 	float sandTiling = 0.08f;
 	float snowTiling = 0.06f;
 	float rockDarkness = 1.0f;  // rock brightness: 1 = as in the texture
-	float macroInfluence = 0.5f; // how much the terrain-wide colour map ("Diffuse Map") tints the layers: 0 = not at all
+	float macroInfluence = 0.0f; // how much the terrain-wide colour map ("Diffuse Map") tints the layers: 0 = layers keep their own colours
 	float normalStrength = 1.0f; // 0 = flat layers, 1 = as authored
 	bool flipGreen = true;       // layer normal maps are OpenGL-style ("_nor_gl_"); untick for DirectX-style
 	float heightBlend = 0.6f;    // 0 = plain linear blends, 1 = the taller layer wins (pebbles poke through sand)
@@ -60,8 +66,9 @@ struct TerrainSettings {
 	float snowFade = 6.0f;
 	float breakupScale = 0.06f; // size of the noise that roughens layer edges (per world unit)
 	float breakupAmount = 0.5f; // 0 = clean contour lines, 1 = very ragged
-	DirectX::XMFLOAT3 shoreColor = { 0.76f, 0.70f, 0.50f };   // sand tint: sRGB, like every colour you pick
-	DirectX::XMFLOAT3 snowColor = { 0.92f, 0.95f, 1.00f };
+	// Tints MULTIPLY a layer's texture. White (the default) leaves the texture exactly as it was made.
+	DirectX::XMFLOAT3 shoreColor = { 1.0f, 1.0f, 1.0f };   // sand tint: sRGB, like every colour you pick
+	DirectX::XMFLOAT3 snowColor = { 1.0f, 1.0f, 1.0f };
 	bool showLayers = false;    // debug: paint rock/snow/sand weights as red/green/blue
 	bool frustumCulling = true; // skip chunks outside the view (turn off to compare)
 
@@ -113,6 +120,19 @@ public:
 	// How many of the 4 layers found their albedo / normal / ORM file (the rest use neutral defaults).
 	void GetLayerFileCounts(int& albedo, int& normal, int& orm) const;
 
+	// --- The images the terrain is made from. All can be replaced while the program runs. ---
+	// An empty path means "the default file". The Set functions return false (and change nothing) if the file is
+	// missing or cannot be read.
+	static std::string DefaultLayerMapPath(int layer, TerrainLayerMap map);   // assets/Terrain/<Layer>/albedo.png ...
+	static const char* DefaultHeightmapPath() { return "assets/dark alien/Height Map.png"; }
+	static const char* DefaultColorMapPath() { return "assets/dark alien/Diffuse Map.png"; }
+	const std::string& GetLayerMapPath(int layer, TerrainLayerMap map) const { return layerMapPaths_[layer][static_cast<int>(map)]; }
+	bool SetLayerMap(int layer, TerrainLayerMap map, const std::string& path);
+	const std::string& GetHeightmapPath() const { return heightmapPath_; }
+	bool SetHeightmap(const std::string& path);   // 8-bit or 16-bit greyscale image; 16-bit gives much smoother slopes
+	const std::string& GetColorMapPath() const { return colorMapPath_; }
+	bool SetColorMap(const std::string& path);
+
 	// For tools that need to fit things to the terrain (e.g. the water plane).
 	DirectX::XMFLOAT2 GetWorldExtent() const;               // x/z size in world units
 	void GetHeightRange(float& minY, float& maxY) const;    // world-space Y range of the surface
@@ -132,6 +152,7 @@ private:
 	};
 
 	bool Rebuild(const TerrainSettings& settings);
+	bool RebuildLayerTexture(TerrainLayerMap map);   // re-reads the four files of one kind of map into its texture array
 	// Draws the chunks that are inside `view`. shaderOverride == nullptr -> the terrain's own shader.
 	void DrawChunks(ID3D11DeviceContext* ctx, const Shader* shaderOverride, const RenderView& view) const;
 	void UpdateMaterial();
@@ -144,10 +165,16 @@ private:
 	std::unique_ptr<TextureArray> layerNormal_;
 	std::unique_ptr<TextureArray> layerOrm_;
 	Heightmap heightmap_;      // decoded ONCE; every rebuild reuses it instead of re-reading the PNG
+	std::string heightmapPath_;
+	std::string colorMapPath_;
+	std::string layerMapPaths_[kTerrainLayerCount][3];   // [layer][albedo / normal / orm]
 	float depth_ = 0.0f;       // world-space size along Z of the current mesh
 	std::vector<TerrainChunk> chunks_;                    // one per mesh in the model, same order
 	mutable std::vector<unsigned char> drawList_;         // scratch: per chunk, the LOD to draw or Model::kSkipMesh
 	mutable std::vector<unsigned char> chunkLod_;         // each chunk's CURRENT level (kept for hysteresis)
+	mutable std::vector<unsigned char> partMasks_;        // scratch: per chunk, which skirt edges to draw (see TerrainSkirts.h)
+	int chunksX_ = 0;                                     // the grid of tiles: chunksX_ x chunksZ_
+	int chunksZ_ = 0;
 	mutable ID3D11RasterizerState* wireframeState_ = nullptr;   // created on first use (debug view)
 	mutable TerrainViewStats stats_[kViewKindCount];
 	TerrainSettings settings_;

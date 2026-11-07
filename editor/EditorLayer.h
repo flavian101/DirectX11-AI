@@ -59,6 +59,7 @@ private:
     void DrawModelInspector(ModelObject* model);
     void ImportModelWithDialog(LayerContext& ctx);
     void HandleSceneFileRequests(LayerContext& ctx);
+    void HandleTerrainFileRequest(LayerContext& ctx);
     void ShowMessage(const std::string& title, const std::string& text);
     void DrawTransformEditor(SceneObject* object);
 
@@ -95,6 +96,14 @@ private:
     bool saveSceneAsRequested_ = false;
     std::string currentScenePath_;    // empty = not saved yet
     double lastSavedTime_ = -100.0;   // ImGui time of the last successful save, for the little "Saved" flash
+
+    // Terrain > Texture files: which image the user asked to replace (the file dialog opens at the start of the next frame).
+    struct TerrainFileRequest {
+        int kind = 0;    // 0 none, 1 a layer map, 2 the heightmap, 3 the colour map
+        int layer = 0;
+        int map = 0;
+    };
+    TerrainFileRequest terrainFileRequest_;
 
     // One pop-up for every message the user must read (import errors, scene warnings).
     bool showMessage_ = false;

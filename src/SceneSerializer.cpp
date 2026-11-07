@@ -73,6 +73,36 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
         if (const auto* terrain = dynamic_cast<const Terrain*>(object)) {
             entry["type"] = "Terrain";
             entry["settings"] = terrain->GetSettings();
+
+            // The images the terrain was made from. Only the ones the user REPLACED are written; the defaults need no entry.
+            auto stored = [&](const std::string& current, const std::string& standard) -> json {
+                if (current == standard) return nullptr;
+                bool outside = false;
+                const std::string text = MakeStoredPath(fs::path(current), folder, "assets", outside);
+                if (outside) {
+                    warnings.push_back("The terrain image \"" + current + "\" lives outside the assets folder. It will not be shipped with the game: copy it into assets/ and choose it again.");
+                }
+                return text;
+            };
+            json maps = json::object();
+            if (json v = stored(terrain->GetHeightmapPath(), Terrain::DefaultHeightmapPath()); !v.is_null()) maps["heightmap"] = v;
+            if (json v = stored(terrain->GetColorMapPath(), Terrain::DefaultColorMapPath()); !v.is_null()) maps["colorMap"] = v;
+            static const char* const kMapKeys[] = { "albedo", "normal", "orm" };
+            json layers = json::array();
+            bool anyLayer = false;
+            for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+                json one = json::object();
+                for (int kind = 0; kind < 3; ++kind) {
+                    const auto map = static_cast<TerrainLayerMap>(kind);
+                    if (json v = stored(terrain->GetLayerMapPath(layer, map), Terrain::DefaultLayerMapPath(layer, map)); !v.is_null()) {
+                        one[kMapKeys[kind]] = v;
+                        anyLayer = true;
+                    }
+                }
+                layers.push_back(one);
+            }
+            if (anyLayer) maps["layers"] = layers;
+            if (!maps.empty()) entry["maps"] = maps;
         } else if (const auto* water = dynamic_cast<const Water*>(object)) {
             entry["type"] = "Water";
             entry["settings"] = water->GetSettings();
@@ -186,6 +216,32 @@ bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std:
             SceneObject* created = nullptr;
             if (type == "Terrain") {
                 Terrain* terrain = scene.Add<Terrain>(device);
+
+                // Replaced images first (the heightmap decides the mesh shape), then the settings.
+                const json maps = entry.value("maps", json::object());
+                auto resolve = [&](const std::string& text) {
+                    fs::path p(text);
+                    if (p.is_relative()) p = sceneFolder / p;   // stored relative to the scene file
+                    return p.string();
+                };
+                if (maps.contains("heightmap") && !terrain->SetHeightmap(resolve(maps["heightmap"].get<std::string>()))) {
+                    warnings.push_back("The terrain's heightmap could not be loaded: " + maps["heightmap"].get<std::string>() + " (the default is used)");
+                }
+                if (maps.contains("colorMap") && !terrain->SetColorMap(resolve(maps["colorMap"].get<std::string>()))) {
+                    warnings.push_back("The terrain's colour map could not be loaded: " + maps["colorMap"].get<std::string>() + " (the default is used)");
+                }
+                if (maps.contains("layers") && maps["layers"].is_array()) {
+                    static const char* const kMapKeys[] = { "albedo", "normal", "orm" };
+                    for (int layer = 0; layer < kTerrainLayerCount && layer < static_cast<int>(maps["layers"].size()); ++layer) {
+                        for (int kind = 0; kind < 3; ++kind) {
+                            if (!maps["layers"][layer].contains(kMapKeys[kind])) continue;
+                            const std::string text = maps["layers"][layer][kMapKeys[kind]].get<std::string>();
+                            if (!terrain->SetLayerMap(layer, static_cast<TerrainLayerMap>(kind), resolve(text))) {
+                                warnings.push_back(std::string("A terrain ") + kTerrainLayerNames[layer] + " " + kMapKeys[kind] + " image could not be loaded: " + text + " (the default is used)");
+                            }
+                        }
+                    }
+                }
                 if (!terrain->ApplySettings(entry.value("settings", TerrainSettings{}))) {
                     warnings.push_back("The terrain mesh could not be rebuilt with the saved settings; the default terrain is shown.");
                 }

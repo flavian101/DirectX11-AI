@@ -15,7 +15,9 @@ public:
     // `drawList` (optional): one byte per mesh = which level of detail to draw, or kSkipMesh to
     // skip it (culling). Without a list every mesh is drawn at full detail.
     static constexpr unsigned char kSkipMesh = 255;
-    void Draw(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* drawList = nullptr) const;
+    // `partMasks` (optional): one byte per mesh = which extra parts to draw (see Mesh::Draw).
+    void Draw(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* drawList = nullptr,
+              const std::vector<unsigned char>* partMasks = nullptr) const;
     size_t GetMeshCount() const { return meshes_.size(); }
 
 private:

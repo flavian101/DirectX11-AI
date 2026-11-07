@@ -13,7 +13,8 @@ Model::~Model()
     for (Mesh* mesh : meshes_) delete mesh;
 }
 
-void Model::Draw(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* drawList) const
+void Model::Draw(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* drawList,
+                 const std::vector<unsigned char>* partMasks) const
 {
     if (!ctx) return;
     for (size_t i = 0; i < meshes_.size(); ++i) {
@@ -23,6 +24,7 @@ void Model::Draw(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* dra
             if ((*drawList)[i] == kSkipMesh) continue;
             lod = (*drawList)[i];
         }
-        meshes_[i]->Draw(ctx, lod);
+        const unsigned int mask = (partMasks && i < partMasks->size()) ? (*partMasks)[i] : ~0u;
+        meshes_[i]->Draw(ctx, lod, mask);
     }
 }

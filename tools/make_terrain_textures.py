@@ -71,17 +71,16 @@ def main(root):
     height = 0.7 * ridged + 0.3 * noise(1.0, 6)
     save(os.path.join(root, "Rock"), albedo, height, 9.0, 0.35 + 0.65 * height, 0.90 - 0.1 * ridged)
 
-    # Sand: near-neutral light grey (the tint colour in the editor supplies the yellow), fine grain + ripples.
+    # Sand: warm tan with fine grain and soft ripples. Its colours are in the TEXTURE; the editor's tints are
+    # white by default and only adjust it.
     grain, ripples = noise(0.3, 7), noise(3.0, 8)
-    shade = 0.8 + 0.12 * (grain - 0.5) + 0.08 * (ripples - 0.5)
-    albedo = np.stack([shade] * 3, -1)
+    albedo = mix(np.array([0.60, 0.51, 0.36]), np.array([0.80, 0.72, 0.54]), 0.55 * ripples + 0.45 * grain)
     height = 0.6 * ripples + 0.4 * grain
     save(os.path.join(root, "Sand"), albedo, height, 3.0, 0.8 + 0.2 * height, 0.95 - 0.05 * grain)
 
-    # Snow: near-white, very soft undulation with a little sparkle.
+    # Snow: near-white with a faint blue cast, very soft undulation, a little sparkle.
     soft, sparkle = noise(3.0, 9), noise(0.2, 10)
-    shade = 0.93 + 0.05 * (soft - 0.5) + 0.03 * (sparkle - 0.5)
-    albedo = np.stack([shade] * 3, -1)
+    albedo = mix(np.array([0.86, 0.90, 0.96]), np.array([0.97, 0.98, 1.00]), 0.7 * soft + 0.3 * sparkle)
     height = 0.8 * soft + 0.2 * sparkle
     save(os.path.join(root, "Snow"), albedo, height, 2.0, 0.85 + 0.15 * height, 0.55 + 0.1 * sparkle)
     print("wrote", root)

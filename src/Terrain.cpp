@@ -10,6 +10,7 @@
 #include <DirectXMath.h>
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
@@ -78,10 +79,23 @@ float FractalNoise(float x, float z, int seed, int octaves)
 	return value / amplitudeTotal;
 }
 
-// Decodes the heightmap once (red channel, 0..1).
+// Decodes the heightmap once (red channel, 0..1). A 16-bit image has 65,536 height steps instead of 256, which is the
+// difference between smooth slopes and visible terraces on a gentle hill.
 bool LoadHeightmapFile(const char* path, int& width, int& height, std::vector<float>& values)
 {
 	int channels = 0;
+	if (stbi_is_16_bit(path)) {
+		stbi_us* image = stbi_load_16(path, &width, &height, &channels, STBI_rgb_alpha);
+		if (!image || width < 2 || height < 2) {
+			LOG_ERROR("Failed to load terrain heightmap: " + std::string(path));
+			if (image) stbi_image_free(image);
+			return false;
+		}
+		values.resize(static_cast<size_t>(width) * height);
+		for (size_t i = 0; i < values.size(); ++i) values[i] = image[i * 4] / 65535.0f;
+		stbi_image_free(image);
+		return true;
+	}
 	unsigned char* image = stbi_load(path, &width, &height, &channels, STBI_rgb_alpha);
 	if (!image || width < 2 || height < 2) {
 		LOG_ERROR("Failed to load terrain heightmap: " + std::string(path));
@@ -111,10 +125,13 @@ float SampleHeightmap(const std::vector<float>& values, int width, int height, f
 	return top + (bottom - top) * tz;
 }
 
+static_assert(kTerrainSkipChunk == Model::kSkipMesh, "the terrain and the model must agree on the \"not drawn\" marker");
+
 constexpr int kChunkCells = 32;   // grid cells per tile side: 32x32 quads = 2048 triangles per tile
 
 Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, int mapWidth, int mapHeight,
-						 const TerrainSettings& settings, float& outDepth, std::vector<TerrainChunk>& outChunks)
+						 const TerrainSettings& settings, float& outDepth, std::vector<TerrainChunk>& outChunks,
+						 int& outChunksX, int& outChunksZ)
 {
 	if (!device || map.empty()) return nullptr;
 
@@ -168,6 +185,8 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 	// right/bottom edge are smaller when the grid does not divide evenly.
 	const int chunksX = (cellsX + kChunkCells - 1) / kChunkCells;
 	const int chunksZ = (cellsZ + kChunkCells - 1) / kChunkCells;
+	outChunksX = chunksX;
+	outChunksZ = chunksZ;
 	// How far the skirts hang down: enough to cover the height gap a coarser neighbour can leave.
 	const float skirtDepth = (std::max)(1.5f, settings.heightScale * 0.06f);
 	std::vector<Mesh*> meshes;
@@ -197,9 +216,11 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 			const int cellsInZ = z1 - z0;
 
 			// SKIRTS. Two neighbouring tiles at different detail levels do not share edge vertices,
-			// which opens thin cracks between them. We hang a vertical strip of triangles below every
+			// which opens thin cracks between them. We hang a vertical strip of triangles below a
 			// tile edge so that whatever is behind a crack is the terrain, not the sky. These extra
-			// vertices are copies of the edge vertices, moved straight down.
+			// vertices are copies of the edge vertices, moved straight down. The skirts are stored as
+			// separate PARTS of the index buffer (north, south, west, east) so that a draw can include
+			// only the edges that really have a neighbour at a different level (see TerrainSkirts.h).
 			const int gridVertexCount = static_cast<int>(vertices.size());
 			const int northBase = gridVertexCount;                       // z = 0 edge, one per x
 			const int southBase = northBase + (cellsInX + 1);             // z = cellsInZ edge
@@ -220,7 +241,7 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 			// LEVELS OF DETAIL: the same vertices, connected more coarsely. Level L skips grid lines
 			// so that only every (2^L)-th vertex is used. The last line is always kept, so the tile's
 			// outline never changes.
-			std::vector<std::vector<uint32_t>> lodIndices;
+			std::vector<MeshLevel> levels;
 			for (int lod = 0; lod < kTerrainLodCount; ++lod) {
 				const int step = 1 << lod;
 				auto lines = [step](int cells) {
@@ -232,8 +253,9 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 				const std::vector<int> xs = lines(cellsInX);
 				const std::vector<int> zs = lines(cellsInZ);
 
-				std::vector<uint32_t> indices;
-				indices.reserve((xs.size() - 1) * (zs.size() - 1) * 6 + (xs.size() + zs.size()) * 12);
+				std::vector<uint32_t> indices;                 // the surface (part 0)
+				std::vector<uint32_t> skirtIndices[4];         // north, south, west, east (parts 1..4)
+				indices.reserve((xs.size() - 1) * (zs.size() - 1) * 6);
 
 				// The surface itself (clockwise seen from above = front face).
 				for (size_t zi = 0; zi + 1 < zs.size(); ++zi) {
@@ -252,33 +274,42 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 					const int a = xs[i], b = xs[i + 1];
 					{   // north edge (faces -z)
 						const uint32_t ea = grid(a, 0), eb = grid(b, 0), sa = northBase + a, sb = northBase + b;
-						indices.insert(indices.end(), {ea, eb, sa,  eb, sb, sa});
+						skirtIndices[0].insert(skirtIndices[0].end(), {ea, eb, sa,  eb, sb, sa});
 					}
 					{   // south edge (faces +z)
 						const uint32_t ea = grid(a, cellsInZ), eb = grid(b, cellsInZ), sa = southBase + a, sb = southBase + b;
-						indices.insert(indices.end(), {eb, ea, sb,  ea, sa, sb});
+						skirtIndices[1].insert(skirtIndices[1].end(), {eb, ea, sb,  ea, sa, sb});
 					}
 				}
 				for (size_t i = 0; i + 1 < zs.size(); ++i) {
 					const int a = zs[i], b = zs[i + 1];
 					{   // west edge (faces -x)
 						const uint32_t ea = grid(0, a), eb = grid(0, b), sa = westBase + a, sb = westBase + b;
-						indices.insert(indices.end(), {eb, ea, sb,  ea, sa, sb});
+						skirtIndices[2].insert(skirtIndices[2].end(), {eb, ea, sb,  ea, sa, sb});
 					}
 					{   // east edge (faces +x)
 						const uint32_t ea = grid(cellsInX, a), eb = grid(cellsInX, b), sa = eastBase + a, sb = eastBase + b;
-						indices.insert(indices.end(), {ea, eb, sa,  eb, sb, sa});
+						skirtIndices[3].insert(skirtIndices[3].end(), {ea, eb, sa,  eb, sb, sa});
 					}
 				}
-				lodIndices.push_back(std::move(indices));
+				// One index buffer per level: the surface first (part 0, always drawn), then the four skirts.
+				MeshLevel level;
+				level.partIndexCounts.push_back(static_cast<uint32_t>(indices.size()));
+				level.indices = std::move(indices);
+				for (int edge = 0; edge < 4; ++edge) {
+					level.partIndexCounts.push_back(static_cast<uint32_t>(skirtIndices[edge].size()));
+					level.indices.insert(level.indices.end(), skirtIndices[edge].begin(), skirtIndices[edge].end());
+				}
+				levels.push_back(std::move(level));
 			}
 
-			meshes.push_back(new Mesh(device, vertices, lodIndices));
+			meshes.push_back(new Mesh(device, vertices, levels));
 			TerrainChunk chunk;
 			chunk.boundsMin = boundsMin;
 			chunk.boundsMax = boundsMax;
 			for (int lod = 0; lod < kTerrainLodCount; ++lod) {
-				chunk.triangleCount[lod] = static_cast<int>(lodIndices[lod].size() / 3);
+				chunk.triangleCount[lod] = static_cast<int>(levels[lod].partIndexCounts[0] / 3);
+				for (int edge = 0; edge < 4; ++edge) chunk.skirtTriangles[lod][edge] = static_cast<int>(levels[lod].partIndexCounts[1 + edge] / 3);
 			}
 			outChunks.push_back(chunk);
 		}
@@ -343,26 +374,28 @@ bool TerrainSettings::SameShape(const TerrainSettings& o) const
 		noiseOctaves == o.noiseOctaves && noiseSeed == o.noiseSeed;
 }
 
+std::string Terrain::DefaultLayerMapPath(int layer, TerrainLayerMap map)
+{
+	static const char* const kFileNames[] = { "albedo.png", "normal.png", "orm.png" };
+	if (layer < 0 || layer >= kTerrainLayerCount) return {};
+	return std::string("assets/Terrain/") + kTerrainLayerNames[layer] + "/" + kFileNames[static_cast<int>(map)];
+}
+
 Terrain::Terrain(ID3D11Device* device) : device_(device)
 {
-	texture_ = std::make_unique<Texture>(device, "assets/dark alien/Diffuse Map.png");
+	heightmapPath_ = DefaultHeightmapPath();
+	colorMapPath_ = DefaultColorMapPath();
+	texture_ = std::make_unique<Texture>(device, colorMapPath_);
 
-	// The layer maps: assets/Terrain/<Layer>/albedo.png, normal.png (alpha = height), orm.png.
+	// The layer maps: assets/Terrain/<Layer>/albedo.png, normal.png (alpha = height), orm.png, unless replaced.
 	// Slice order is part of the contract with terrain_ps.hlsl: 0 grass, 1 rock, 2 sand, 3 snow.
-	static const char* const kLayerFolders[] = { "Grass", "Rock", "Sand", "Snow" };
-	std::vector<std::string> albedoPaths, normalPaths, ormPaths;
-	for (const char* folder : kLayerFolders) {
-		const std::string base = std::string("assets/Terrain/") + folder + "/";
-		albedoPaths.push_back(base + "albedo.png");
-		normalPaths.push_back(base + "normal.png");
-		ormPaths.push_back(base + "orm.png");
+	for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+		for (int map = 0; map < 3; ++map) layerMapPaths_[layer][map] = DefaultLayerMapPath(layer, static_cast<TerrainLayerMap>(map));
 	}
-	// The fill for a missing layer is the neutral value of each map: white colour (the tint decides the look),
-	// a flat normal with middling height, no occlusion + medium roughness + not metal.
-	layerAlbedo_ = std::make_unique<TextureArray>(device, albedoPaths, ColorSpace::SRGB, std::array<std::uint8_t, 4>{ 255, 255, 255, 255 });
-	layerNormal_ = std::make_unique<TextureArray>(device, normalPaths, ColorSpace::Linear, std::array<std::uint8_t, 4>{ 128, 128, 255, 128 });
-	layerOrm_ = std::make_unique<TextureArray>(device, ormPaths, ColorSpace::Linear, std::array<std::uint8_t, 4>{ 255, 128, 0, 255 });
-	LoadHeightmapFile("assets/dark alien/Height Map.png", heightmap_.width, heightmap_.height, heightmap_.values);
+	RebuildLayerTexture(TerrainLayerMap::Albedo);
+	RebuildLayerTexture(TerrainLayerMap::Normal);
+	RebuildLayerTexture(TerrainLayerMap::Orm);
+	LoadHeightmapFile(heightmapPath_.c_str(), heightmap_.width, heightmap_.height, heightmap_.values);
 	settings_.Clamp();
 	if (!Rebuild(settings_)) LOG_ERROR("Terrain mesh initialization failed");
 	UpdateWorldTransform();
@@ -388,6 +421,69 @@ void Terrain::GetLayerFileCounts(int& albedo, int& normal, int& orm) const
 	orm = layerOrm_ ? layerOrm_->GetLoadedCount() : 0;
 }
 
+// Reads the four files of one kind of map into a fresh texture array. The fill for a missing file is the neutral
+// value of that kind: white colour (the tint decides the look), a flat normal with middling height, no occlusion +
+// medium roughness + not metal. The old array stays if the new one cannot be built.
+bool Terrain::RebuildLayerTexture(TerrainLayerMap map)
+{
+	const int kind = static_cast<int>(map);
+	std::vector<std::string> paths;
+	for (int layer = 0; layer < kTerrainLayerCount; ++layer) paths.push_back(layerMapPaths_[layer][kind]);
+
+	std::unique_ptr<TextureArray>& target = (map == TerrainLayerMap::Albedo) ? layerAlbedo_
+										  : (map == TerrainLayerMap::Normal) ? layerNormal_ : layerOrm_;
+	const ColorSpace colorSpace = (map == TerrainLayerMap::Albedo) ? ColorSpace::SRGB : ColorSpace::Linear;
+	const std::array<std::uint8_t, 4> fill = (map == TerrainLayerMap::Albedo) ? std::array<std::uint8_t, 4>{ 255, 255, 255, 255 }
+										   : (map == TerrainLayerMap::Normal) ? std::array<std::uint8_t, 4>{ 128, 128, 255, 128 }
+																			  : std::array<std::uint8_t, 4>{ 255, 128, 0, 255 };
+	auto replacement = std::make_unique<TextureArray>(device_, paths, colorSpace, fill);
+	if (!replacement->IsValid()) return false;
+	target = std::move(replacement);
+	return true;
+}
+
+bool Terrain::SetLayerMap(int layer, TerrainLayerMap map, const std::string& path)
+{
+	if (layer < 0 || layer >= kTerrainLayerCount) return false;
+	const std::string wanted = path.empty() ? DefaultLayerMapPath(layer, map) : path;
+	std::error_code error;
+	if (!path.empty() && !std::filesystem::exists(wanted, error)) return false;
+
+	std::string& slot = layerMapPaths_[layer][static_cast<int>(map)];
+	const std::string previous = slot;
+	slot = wanted;
+	if (!RebuildLayerTexture(map)) {   // the files for the other layers could not be read together: undo
+		slot = previous;
+		return false;
+	}
+	return true;
+}
+
+bool Terrain::SetHeightmap(const std::string& path)
+{
+	const std::string wanted = path.empty() ? std::string(DefaultHeightmapPath()) : path;
+	Heightmap loaded;
+	if (!LoadHeightmapFile(wanted.c_str(), loaded.width, loaded.height, loaded.values)) return false;
+
+	std::swap(heightmap_, loaded);   // `loaded` now holds the OLD map, in case the rebuild fails
+	if (!Rebuild(settings_)) {
+		std::swap(heightmap_, loaded);
+		return false;
+	}
+	heightmapPath_ = wanted;
+	return true;
+}
+
+bool Terrain::SetColorMap(const std::string& path)
+{
+	const std::string wanted = path.empty() ? std::string(DefaultColorMapPath()) : path;
+	auto replacement = std::make_unique<Texture>(device_, wanted);
+	if (!replacement->IsValid()) return false;
+	texture_ = std::move(replacement);
+	colorMapPath_ = wanted;
+	return true;
+}
+
 bool Terrain::ApplySettings(TerrainSettings settings)
 {
 	settings.Clamp();
@@ -405,8 +501,9 @@ bool Terrain::Rebuild(const TerrainSettings& settings)
 
 	float depth = 0.0f;
 	std::vector<TerrainChunk> chunks;
+	int chunksX = 0, chunksZ = 0;
 	Model* model = BuildTerrainModel(device_, heightmap_.values, heightmap_.width, heightmap_.height,
-									 settings, depth, chunks);
+									 settings, depth, chunks, chunksX, chunksZ);
 	if (!model) return false;
 	auto replacement = std::make_unique<Renderable>(device_, model, L"shaders/vs.hlsl", L"shaders/terrain_ps.hlsl");
 	if (!replacement->IsValid()) return false;
@@ -415,6 +512,8 @@ bool Terrain::Rebuild(const TerrainSettings& settings)
 	settings_ = settings;
 	depth_ = depth;
 	chunks_ = std::move(chunks);
+	chunksX_ = chunksX;
+	chunksZ_ = chunksZ;
 	chunkLod_.assign(chunks_.size(), Model::kSkipMesh);   // "no level chosen yet": the first frame picks without hysteresis
 	UpdateMaterial();
 	UpdateWorldTransform();
@@ -501,7 +600,24 @@ void Terrain::DrawChunks(ID3D11DeviceContext* ctx, const Shader* shaderOverride,
 		stats.trianglesDrawn += chunks_[i].triangleCount[lod];
 	}
 
-	// 3. Draw. In wireframe mode the main and mirror views show the mesh as wires; the sun view
+	// 3. Skirts. Now that EVERY tile's level is known, decide per tile which of its four edges needs a skirt:
+	//    only an edge facing a neighbour at a different level (a crack could open there) or the edge of the
+	//    whole terrain. Interior edges between equal tiles get none, which is most of them.
+	partMasks_.assign(chunks_.size(), 0);
+	const bool gridMatches = static_cast<size_t>(chunksX_) * chunksZ_ == chunks_.size();
+	for (size_t i = 0; i < chunks_.size(); ++i) {
+		const unsigned char lod = drawList_[i];
+		if (lod == Model::kSkipMesh) continue;
+		const unsigned char mask = gridMatches
+			? ComputeSkirtMask(static_cast<int>(i % chunksX_), static_cast<int>(i / chunksX_), chunksX_, chunksZ_, drawList_)
+			: static_cast<unsigned char>(15);   // (cannot happen) fall back to every skirt rather than risk a crack
+		partMasks_[i] = mask;
+		for (int edge = 0; edge < 4; ++edge) {
+			if (mask & (1 << edge)) stats.trianglesDrawn += chunks_[i].skirtTriangles[lod][edge];
+		}
+	}
+
+	// 4. Draw. In wireframe mode the main and mirror views show the mesh as wires; the sun view
 	//    keeps the shadow pass's own rasterizer state.
 	const bool wire = settings_.wireframe && view.kind != ViewKind::Shadow;
 	if (wire) {
@@ -514,8 +630,8 @@ void Terrain::DrawChunks(ID3D11DeviceContext* ctx, const Shader* shaderOverride,
 		}
 		ctx->RSSetState(wireframeState_);
 	}
-	if (shaderOverride) renderable_->RenderWith(ctx, *shaderOverride, &drawList_);
-	else renderable_->Render(ctx, &drawList_);
+	if (shaderOverride) renderable_->RenderWith(ctx, *shaderOverride, &drawList_, &partMasks_);
+	else renderable_->Render(ctx, &drawList_, &partMasks_);
 	if (wire) ctx->RSSetState(nullptr);
 }
 

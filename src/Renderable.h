@@ -25,10 +25,13 @@ public:
 
     bool IsValid() const { return valid_; }
     // `drawList` (optional): per-mesh level of detail, or Model::kSkipMesh (see Model::Draw).
-    void Render(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* drawList = nullptr) const;
+    // `partMasks` (optional): per-mesh extra parts to draw (see Model::Draw).
+    void Render(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* drawList = nullptr,
+                const std::vector<unsigned char>* partMasks = nullptr) const;
     // Same mesh and world matrix, but a different shader (used by the shadow pass).
     void RenderWith(ID3D11DeviceContext* ctx, const Shader& shader,
-                    const std::vector<unsigned char>* drawList = nullptr) const;
+                    const std::vector<unsigned char>* drawList = nullptr,
+                    const std::vector<unsigned char>* partMasks = nullptr) const;
     void SetWorld(const DirectX::XMFLOAT4X4& world) { if (model_) model_->SetWorld(world); }
     void SetMaterialColor(const DirectX::XMFLOAT4& color) { materialColor_ = color; }
     void SetMaterialParameters(const DirectX::XMFLOAT4& parameters) { materialParameters_ = parameters; }

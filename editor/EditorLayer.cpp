@@ -165,6 +165,7 @@ void EditorLayer::OnFrame(LayerContext& ctx)
         ImportModelWithDialog(ctx);
     }
     HandleSceneFileRequests(ctx);   // File > Open / Save, also before the UI frame starts
+    HandleTerrainFileRequest(ctx);  // Terrain > Texture files
     ProcessPendingActions(ctx);     // add / duplicate / delete asked for by the previous frame's UI
 
     // Apply the size the Viewport panel measured LAST frame. The panel only knows its size while
@@ -596,6 +597,59 @@ std::string PickModelFile(HWND owner)
 }
 
 namespace {
+// Open dialog for an image (a terrain texture or heightmap). Returns UTF-8, empty if cancelled.
+std::string PickImageFile(HWND owner)
+{
+    wchar_t file[MAX_PATH] = L"";
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = owner;
+    dialog.lpstrFilter = L"Images (*.png;*.jpg;*.jpeg;*.tga;*.bmp)\0*.png;*.jpg;*.jpeg;*.tga;*.bmp\0All files (*.*)\0*.*\0";
+    dialog.lpstrFile = file;
+    dialog.nMaxFile = MAX_PATH;
+    dialog.lpstrInitialDir = L"assets";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;   // NOCHANGEDIR: see PickModelFile
+    if (!GetOpenFileNameW(&dialog)) return {};
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, file, -1, nullptr, 0, nullptr, nullptr);
+    if (bytes <= 1) return {};
+    std::string path(static_cast<size_t>(bytes - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, file, -1, path.data(), bytes, nullptr, nullptr);
+    return path;
+}
+
+// Is the file inside the "assets" folder, the folder that is shipped with the game?
+bool IsInsideAssets(const std::string& path)
+{
+    std::error_code error;
+    const std::filesystem::path relative = std::filesystem::weakly_canonical(path, error).lexically_relative(std::filesystem::weakly_canonical("assets", error));
+    return !relative.empty() && *relative.begin() != "..";
+}
+}
+
+void EditorLayer::HandleTerrainFileRequest(LayerContext& ctx)
+{
+    if (terrainFileRequest_.kind == 0) return;
+    const TerrainFileRequest request = terrainFileRequest_;
+    terrainFileRequest_ = TerrainFileRequest{};
+    Terrain* terrain = ctx.scene.GetTerrain();
+    if (!terrain) return;
+
+    const std::string path = PickImageFile(hwnd_);
+    if (path.empty()) return;   // cancelled
+
+    bool ok = false;
+    if (request.kind == 1) ok = terrain->SetLayerMap(request.layer, static_cast<TerrainLayerMap>(request.map), path);
+    else if (request.kind == 2) ok = terrain->SetHeightmap(path);
+    else if (request.kind == 3) ok = terrain->SetColorMap(path);
+
+    if (!ok) {
+        ShowMessage("Could not use that image", "The image could not be read (or the terrain could not be rebuilt with it):\n" + path);
+    } else if (!IsInsideAssets(path)) {
+        ShowMessage("Image applied, with a warning", "That image is outside the assets folder, so it will not be shipped with the game.\nCopy it into assets/ (for example assets/Terrain/<Layer>/) and choose it again from there.");
+    }
+}
+
+namespace {
 // Open / Save dialog for scene files. Returns UTF-8, empty if cancelled. For saving, makes sure the name ends in
 // ".scene.json" so the Open dialog's filter finds it again.
 std::string PickSceneFile(HWND owner, bool save)
@@ -997,6 +1051,57 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
         terrain->ApplySettings(s);
     }
 
+    ImGui::SeparatorText("Texture files");
+    ImGui::TextDisabled("Click a button to choose an image. Right-click it to go back to the default.");
+    {
+        // The label is the file name ("default" for the stock file); the tooltip shows the whole path.
+        // Returns 0 = nothing, 1 = clicked, 2 = right-clicked.
+        auto fileButton = [](const char* id, const std::string& current, const std::string& standard, float width) -> int {
+            std::string label = (current == standard) ? std::string("default") : std::filesystem::path(current).filename().string();
+            if (label.size() > 14) label = label.substr(0, 11) + "...";
+            label += "##";
+            label += id;
+            const bool clicked = ImGui::Button(label.c_str(), ImVec2(width, 0.0f));
+            ImGui::SetItemTooltip("%s", current.c_str());
+            if (clicked) return 1;
+            return ImGui::IsItemClicked(ImGuiMouseButton_Right) ? 2 : 0;
+        };
+
+        if (ImGui::BeginTable("terrainTextureFiles", 4, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 48.0f);
+            ImGui::TableSetupColumn("Albedo");
+            ImGui::TableSetupColumn("Normal");
+            ImGui::TableSetupColumn("ORM");
+            ImGui::TableHeadersRow();
+            for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(kTerrainLayerNames[layer]);
+                for (int map = 0; map < 3; ++map) {
+                    ImGui::TableNextColumn();
+                    const auto kind = static_cast<TerrainLayerMap>(map);
+                    char id[32];
+                    std::snprintf(id, sizeof(id), "layer%d_%d", layer, map);
+                    const int result = fileButton(id, terrain->GetLayerMapPath(layer, kind), Terrain::DefaultLayerMapPath(layer, kind), -FLT_MIN);
+                    if (result == 1) terrainFileRequest_ = { 1, layer, map };
+                    else if (result == 2) terrain->SetLayerMap(layer, kind, "");
+                }
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TextUnformatted("Heightmap");
+        ImGui::SameLine(90.0f);
+        const int heightResult = fileButton("heightmap", terrain->GetHeightmapPath(), Terrain::DefaultHeightmapPath(), 160.0f);
+        if (heightResult == 1) terrainFileRequest_ = { 2, 0, 0 };
+        else if (heightResult == 2) terrain->SetHeightmap("");
+        ImGui::SetItemTooltip("%s\nA 16-bit greyscale image gives much smoother slopes than 8-bit.", terrain->GetHeightmapPath().c_str());
+        ImGui::TextUnformatted("Colour map");
+        ImGui::SameLine(90.0f);
+        const int colorResult = fileButton("colormap", terrain->GetColorMapPath(), Terrain::DefaultColorMapPath(), 160.0f);
+        if (colorResult == 1) terrainFileRequest_ = { 3, 0, 0 };
+        else if (colorResult == 2) terrain->SetColorMap("");
+    }
+
     ImGui::SeparatorText("Layers");
     // Layer settings are only shader constants, so they apply live while you drag.
     bool layersChanged = false;
@@ -1039,6 +1144,13 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
     layersChanged |= ImGui::Checkbox("Flip green (OpenGL maps)", &s.flipGreen);
     layersChanged |= ImGui::SliderFloat("AO strength", &s.aoStrength, 0.0f, 1.0f, "%.2f");
     layersChanged |= ImGui::SliderFloat("Roughness scale", &s.roughnessScale, 0.0f, 2.0f, "%.2f");
+    if (ImGui::Button("Use original colours")) {
+        const XMFLOAT3 white(1.0f, 1.0f, 1.0f);
+        s.groundTint = white; s.rockTint = white; s.shoreColor = white; s.snowColor = white;
+        s.macroInfluence = 0.0f;
+        layersChanged = true;
+    }
+    ImGui::SetItemTooltip("Tints MULTIPLY the layer textures, and the colour map blends its own colours in.\nThis turns both off, so every layer shows exactly the colours of its image.");
     float groundRgb[3] = { s.groundTint.x, s.groundTint.y, s.groundTint.z };
     if (ImGui::ColorEdit3("Ground tint", groundRgb)) { s.groundTint = { groundRgb[0], groundRgb[1], groundRgb[2] }; layersChanged = true; }
     float rockRgb[3] = { s.rockTint.x, s.rockTint.y, s.rockTint.z };
