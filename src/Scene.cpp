@@ -252,12 +252,13 @@ void Scene::BeginFrame(ID3D11DeviceContext* ctx) const
 }
 
 void Scene::SetMainView(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewportHeight,
-                        bool reflectionAvailable) const
+                        bool reflectionAvailable, bool refractionAvailable) const
 {
     FrameData frame = FrameData::FromCamera(camera_, time_);
     frame.viewportWidth = static_cast<float>(viewportWidth);
     frame.viewportHeight = static_cast<float>(viewportHeight);
     frame.reflectionAvailable = reflectionAvailable;
+    frame.refractionAvailable = refractionAvailable;
     shadow_->FillFrameData(frame);       // the sun's matrix + shadow parameters
     FillEnvironmentFrameData(frame);     // image-based lighting settings
     frame_.Apply(ctx, frame);
@@ -286,8 +287,24 @@ bool Scene::GetPlanarReflection(float& planeHeight, float& resolutionScale) cons
     planeHeight = settings.height;
     // Under the surface the water is culled and there is nothing to reflect.
     if (camera_.GetPosition().y <= planeHeight + 0.01f) return false;
-    resolutionScale = settings.reflectionMode == ReflectionMode::PlanarHalf ? 0.5f : 1.0f;
+    // Looking at the sky or away from the lake: the whole mirrored scene would be drawn for nothing.
+    if (!water->IsVisible(GetMainView().frustum)) return false;
+    switch (settings.reflectionMode) {
+    case ReflectionMode::PlanarQuarter: resolutionScale = 0.25f; break;
+    case ReflectionMode::PlanarHalf:    resolutionScale = 0.5f;  break;
+    default:                            resolutionScale = 1.0f;  break;
+    }
     return true;
+}
+
+bool Scene::WantsRefraction() const
+{
+    const Water* water = GetWater();
+    if (!water) return false;
+    const WaterSettings& settings = water->GetSettings();
+    if (settings.refraction <= 0.001f) return false;
+    if (camera_.GetPosition().y <= settings.height + 0.01f) return false;   // under the surface the water is culled
+    return water->IsVisible(GetMainView().frustum);
 }
 
 void Scene::RenderReflection(ID3D11DeviceContext* ctx, float planeHeight,

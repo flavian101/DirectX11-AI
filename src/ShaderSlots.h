@@ -29,6 +29,7 @@ namespace Slots {
     constexpr unsigned int kSrvIrradiance  = 11;  // TextureCube: soft light from every direction (diffuse)
     constexpr unsigned int kSrvPrefiltered = 12;  // TextureCube: the sky blurred per roughness level, in its mips (reflections)
     constexpr unsigned int kSrvBrdfTable   = 13;  // Texture2D: reflectivity vs. view angle and roughness (kSrvIrradiance + 2: keep them consecutive)
+    constexpr unsigned int kSrvSceneColor  = 14;  // a copy of the opaque scene, bound only for the water pass (refraction)
 
     // Samplers (PS)
     constexpr unsigned int kSamplerLinear  = 0;  // trilinear + anisotropic, bound once by the renderer

@@ -28,7 +28,7 @@ inline void from_json(const json& j, XMFLOAT4& v) { v = XMFLOAT4(j.at(0).get<flo
 NLOHMANN_JSON_SERIALIZE_ENUM(ToneMapper, { { ToneMapper::Clamp, "clamp" }, { ToneMapper::Reinhard, "reinhard" },
                                            { ToneMapper::ACES, "aces" }, { ToneMapper::Filmic, "filmic" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, { ReflectionMode::PlanarHalf, "planar_half" },
-                                               { ReflectionMode::PlanarFull, "planar_full" } })
+                                               { ReflectionMode::PlanarFull, "planar_full" }, { ReflectionMode::PlanarQuarter, "planar_quarter" } })
 
 // "WITH_DEFAULT": a field missing from the file keeps the struct's default. That is what lets an OLD file load
 // after a settings struct gains a new field. Debug-only fields (debug views, wireframe...) are deliberately not
@@ -41,9 +41,13 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PointLight, position, color, int
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SurfaceSettings, baseColor, alphaCutoff, useNormalMap, normalStrength, flipGreen,
                                                 roughnessScale, metallicScale, fallbackRoughness, fallbackMetallic, aoStrength,
                                                 emissiveIntensity)
+// (WaterSettings::debugView and ::wireframe are debug-only and deliberately not listed.)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, height, size, color, alpha, shallowColor, absorption, fadeDistance,
-                                                foamDistance, foamStrength, waveAmplitude, waveSpeed, waveFrequency, reflectivity,
-                                                reflectionMode, reflectionDistortion, glintStrength, glintSharpness)
+                                                foamDistance, foamStrength, waveAmplitude, waveSpeed, waveFrequency, windDirection,
+                                                directionalSpread, choppiness, waveCount, detailNormal, detailScale, detailDistance,
+                                                reflectivity, reflectionMode, reflectionDistortion, refraction, scatter,
+                                                glintStrength, glintSharpness, crestFoam, crestFoamThreshold,
+                                                meshDetail, lodDistance, frustumCulling)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainSettings, width, heightScale, maxCells, noiseStrength, noiseScale,
                                                 noiseOctaves, noiseSeed, uvTiling, groundTiling, rockTiling, sandTiling, snowTiling,
                                                 rockDarkness, macroInfluence, normalStrength, flipGreen, heightBlend, aoStrength,

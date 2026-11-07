@@ -159,6 +159,7 @@ void Direct3D11Renderer::ReleaseViewResources()
     m_viewColor.Release();
     m_hdrScene.Release();
     m_sceneDepth.Release();
+    m_sceneColorCopy.Release();    // view-sized too
     m_reflectionColor.Release();   // view-sized too; rebuilt on demand at the new size
     m_reflectionDepth.Release();
 }
@@ -252,6 +253,14 @@ void Direct3D11Renderer::BindSceneTarget(bool readOnlyDepth)
     m_context->RSSetViewports(1, &viewport);
 }
 
+bool Direct3D11Renderer::EnsureSceneColorCopy()
+{
+    if (m_sceneColorCopy.IsValid() && m_sceneColorCopy.GetWidth() == m_viewWidth && m_sceneColorCopy.GetHeight() == m_viewHeight) return true;
+    if (m_sceneColorCopy.Create(m_device, m_viewWidth, m_viewHeight, m_hdrScene.GetFormat())) return true;
+    m_sceneColorCopy.Release();
+    return false;
+}
+
 bool Direct3D11Renderer::RenderReflectionPass(const Scene& scene, float planeHeight, float resolutionScale,
                                               const float clearColor[4])
 {
@@ -314,14 +323,24 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
         m_reflectionDepth.Release();
     }
 
+    // Refraction needs a copy of the opaque picture to read while the water is drawn over that same picture.
+    // Only made when the water is on screen and asks for it (refraction > 0): otherwise it costs nothing.
+    bool refractionReady = false;
+    if (scene.WantsRefraction()) {
+        refractionReady = EnsureSceneColorCopy();
+    } else {
+        m_sceneColorCopy.Release();   // not needed: give the memory back
+    }
+
     // PASS 3 - the camera's view into the HDR scene buffer (NOT the window any more).
     // OPAQUE phase first: sky, terrain, cube - everything that writes depth.
     BindSceneTarget(false);
     m_hdrScene.Clear(m_context, clearColor);
     m_sceneDepth.Clear(m_context);
-    scene.SetMainView(m_context, m_viewWidth, m_viewHeight, reflectionReady);
+    scene.SetMainView(m_context, m_viewWidth, m_viewHeight, reflectionReady, refractionReady);
     const RenderView mainView = scene.GetMainView();   // the camera's frustum, for culling
     scene.RenderPhase(m_context, ScenePhase::Opaque, mainView);
+    if (refractionReady) m_context->CopyResource(m_sceneColorCopy.GetTexture(), m_hdrScene.GetTexture());
 
     // TRANSPARENT phase (the water). Depth is now complete, so make it read-only and hand it to
     // the shaders as a texture, together with the reflection image.
@@ -330,10 +349,13 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
     ID3D11ShaderResourceView* reflection = reflectionReady ? m_reflectionColor.GetShaderView() : nullptr;
     m_context->PSSetShaderResources(Slots::kSrvSceneDepth, 1, &sceneDepth);
     m_context->PSSetShaderResources(Slots::kSrvReflection, 1, &reflection);
+    ID3D11ShaderResourceView* sceneColor = refractionReady ? m_sceneColorCopy.GetShaderView() : nullptr;
+    m_context->PSSetShaderResources(Slots::kSrvSceneColor, 1, &sceneColor);
     scene.RenderPhase(m_context, ScenePhase::Transparent, mainView);
     ID3D11ShaderResourceView* none = nullptr;
     m_context->PSSetShaderResources(Slots::kSrvSceneDepth, 1, &none);
     m_context->PSSetShaderResources(Slots::kSrvReflection, 1, &none);
+    m_context->PSSetShaderResources(Slots::kSrvSceneColor, 1, &none);
 
     // PASS 4 - turn the HDR buffer into the finished image. Normally that goes straight to the
     // window. In the editor it goes into a texture (shown by the Viewport panel) and the window

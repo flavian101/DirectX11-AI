@@ -15,7 +15,7 @@ cbuffer PerFrame : register(b0) {
     float4   shadowParams;  // x = 1/mapSize, y = world units per texel, z = strength (0 = off), w = normal offset in texels
     float4   screenParams;  // x = 1/viewport width, y = 1/viewport height, z = near plane, w = far plane
     float4   clipPlane;     // world-space plane (a,b,c,d): pixels with dot(abc, pos) + d < 0 are discarded. (0,0,0,1) = off
-    float4   reflectionParams; // x = 1 when a planar reflection was rendered this frame (the water may use t3)
+    float4   reflectionParams; // x = 1 when a planar reflection was rendered this frame (the water may use t3), y = 1 when the scene copy for refraction is bound (t14)
     float4   iblParams;     // x = image-based lighting on (1/0), y = diffuse intensity, z = specular intensity, w = last prefilter mip
     float4   iblDebug;      // x = sky background: 0 sky, 1 irradiance, 2 prefiltered; y = mip to show
 };

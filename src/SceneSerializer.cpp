@@ -168,7 +168,10 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
             warnings.push_back("The terrain mesh could not be rebuilt with the saved settings.");
         }
     } else if (auto* water = dynamic_cast<Water*>(&object)) {
-        water->SetSettings(entry.value("settings", WaterSettings{}));
+        WaterSettings loaded = entry.value("settings", WaterSettings{});
+        loaded.debugView = water->GetSettings().debugView;   // debug switches are not part of a scene: undo and load must not flip them
+        loaded.wireframe = water->GetSettings().wireframe;
+        water->SetSettings(loaded);
     } else if (auto* sky = dynamic_cast<Skybox*>(&object)) {
         sky->SetIntensity(entry.value("intensity", 1.0f));
     } else if (auto* cube = dynamic_cast<Cube*>(&object)) {

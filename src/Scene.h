@@ -99,10 +99,15 @@ public:
     //   RenderReflection- the scene seen from a camera mirrored under the water (optional pass)
     void BeginFrame(ID3D11DeviceContext* ctx) const;
     void SetMainView(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewportHeight,
-                     bool reflectionAvailable) const;
+                     bool reflectionAvailable, bool refractionAvailable = false) const;
     // Does the water want a planar reflection this frame? (A water plane exists, the mode is
     // not "Sky", and the camera is above it.) Gives the plane height and a resolution scale.
+    // (It also says no when no part of the water is on screen: the mirror image would never be seen.)
     bool GetPlanarReflection(float& planeHeight, float& resolutionScale) const;
+    // Does the water want a copy of the opaque scene this frame, to bend the view of the bottom? (Same visibility rules.)
+    bool WantsRefraction() const;
+    // The scene clock, in seconds: the same time the shaders animate with. Pass it to Water::SampleHeight.
+    float GetTime() const { return time_; }
     void RenderReflection(ID3D11DeviceContext* ctx, float planeHeight, UINT targetWidth, UINT targetHeight) const;
     void RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase, const RenderView& view) const;
     RenderView GetMainView() const;   // the camera's view: its frustum and position

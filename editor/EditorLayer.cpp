@@ -1347,78 +1347,151 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
 void EditorLayer::DrawWaterInspector(Water* water)
 {
     // Every water value is just a shader constant, so changes apply live - no pending copy,
-    // no Apply button. We read the current settings, edit them, and write back if anything moved.
+    // no Apply button (the one exception, Mesh detail, rebuilds the grid in a blink).
+    // We read the current settings, edit them, and write back if anything moved.
     WaterSettings s = water->GetSettings();
     bool changed = false;
-
-    ImGui::SeparatorText("Surface");
-    changed |= ImGui::SliderFloat("Level", &s.height, WaterSettings::kHeightMin, WaterSettings::kHeightMax, "%.1f");
-    changed |= ImGui::SliderFloat("Size", &s.size, WaterSettings::kSizeMin, WaterSettings::kSizeMax, "%.0f");
-    if (Terrain* terrain = scene_->GetTerrain()) {
-        if (ImGui::Button("Fit size to terrain")) {
-            const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();
-            s.size = (std::max)(extent.x, extent.y) * 1.2f;   // a little larger: no gap at the shore
+    auto colorEdit = [&changed](const char* label, DirectX::XMFLOAT3& value) {
+        float rgb[3] = { value.x, value.y, value.z };
+        if (ImGui::ColorEdit3(label, rgb)) {
+            value = { rgb[0], rgb[1], rgb[2] };
             changed = true;
         }
-        float minY = 0.0f, maxY = 0.0f;
-        terrain->GetHeightRange(minY, maxY);
+    };
+
+    // A whole look in one click: colours, depth and foam. Waves, level and size are left alone.
+    ImGui::TextDisabled("Looks");
+    static const struct { const char* name; WaterLook look; } kLooks[] = {
+        { "Tropical", WaterLook::Tropical }, { "Ocean", WaterLook::Ocean }, { "Lake", WaterLook::Lake },
+        { "Swamp", WaterLook::Swamp }, { "Arctic", WaterLook::Arctic } };
+    for (size_t i = 0; i < IM_ARRAYSIZE(kLooks); ++i) {
+        if (i > 0) ImGui::SameLine();
+        if (ImGui::SmallButton(kLooks[i].name)) { s.ApplyLook(kLooks[i].look); changed = true; }
+    }
+    ImGui::SetItemTooltip("Each button sets colours, depth fade, foam, refraction and scatter.\nWaves, level and size stay as they are. Tweak freely afterwards.");
+
+    if (ImGui::CollapsingHeader("Surface", ImGuiTreeNodeFlags_DefaultOpen)) {
+        changed |= ImGui::SliderFloat("Level", &s.height, WaterSettings::kHeightMin, WaterSettings::kHeightMax, "%.1f");
+        changed |= ImGui::SliderFloat("Size", &s.size, WaterSettings::kSizeMin, WaterSettings::kSizeMax, "%.0f");
+        if (Terrain* terrain = scene_->GetTerrain()) {
+            if (ImGui::Button("Fit size to terrain")) {
+                const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();
+                s.size = (std::max)(extent.x, extent.y) * 1.2f;   // a little larger: no gap at the shore
+                changed = true;
+            }
+            float minY = 0.0f, maxY = 0.0f;
+            terrain->GetHeightRange(minY, maxY);
+            ImGui::SameLine();
+            ImGui::TextDisabled("terrain Y %.1f to %.1f", minY, maxY);
+        }
+        colorEdit("Deep color", s.color);
+        changed |= ImGui::SliderFloat("Opacity", &s.alpha, 0.05f, 1.0f);
+        colorEdit("Shallow color", s.shallowColor);
+        changed |= ImGui::SliderFloat("Absorption", &s.absorption, WaterSettings::kAbsorptionMin,
+                                      WaterSettings::kAbsorptionMax, "%.2f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("How quickly the colour goes from shallow to deep as the water gets thicker.");
+        changed |= ImGui::SliderFloat("Shore softness", &s.fadeDistance, WaterSettings::kFadeMin,
+                                      WaterSettings::kFadeMax, "%.1f");
+        ImGui::SetItemTooltip("Depth at which the water becomes fully opaque. Smaller = sharper shoreline.");
+    }
+
+    if (ImGui::CollapsingHeader("Waves", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::Button("Calm"))   { s.ApplyWavePreset(WavePreset::Calm);   changed = true; }
         ImGui::SameLine();
-        ImGui::TextDisabled("terrain Y %.1f to %.1f", minY, maxY);
+        if (ImGui::Button("Choppy")) { s.ApplyWavePreset(WavePreset::Choppy); changed = true; }
+        ImGui::SameLine();
+        if (ImGui::Button("Stormy")) { s.ApplyWavePreset(WavePreset::Stormy); changed = true; }
+        changed |= ImGui::SliderFloat("Amplitude", &s.waveAmplitude, 0.0f, WaterSettings::kAmplitudeMax);
+        changed |= ImGui::SliderFloat("Speed", &s.waveSpeed, 0.0f, WaterSettings::kSpeedMax);
+        changed |= ImGui::SliderFloat("Frequency", &s.waveFrequency, WaterSettings::kFrequencyMin, WaterSettings::kFrequencyMax);
+        ImGui::SetItemTooltip("Radians per world unit. Lower = longer, lazier waves.");
+        changed |= ImGui::SliderFloat("Wind direction", &s.windDirection, 0.0f, 360.0f, "%.0f deg");
+        ImGui::SetItemTooltip("The way the waves travel. 0 = toward +X, 90 = toward +Z.");
+        changed |= ImGui::SliderFloat("Direction spread", &s.directionalSpread, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("0 = every wave runs with the wind (a clean swell). 1 = waves cross from many directions.");
+        changed |= ImGui::SliderFloat("Choppiness", &s.choppiness, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("0 = rounded sine waves. 1 = sharp crests and wide troughs (Gerstner waves). Never folds over.");
+        changed |= ImGui::SliderInt("Wave count", &s.waveCount, WaterSettings::kWaveCountMin, WaterSettings::kWaveCountMax);
+        ImGui::SetItemTooltip("How many waves are added together. Fewer = cheaper and simpler. Each costs a little in the\nvertex AND pixel shader.");
+        ImGui::SeparatorText("Ripples");
+        changed |= ImGui::SliderFloat("Ripple strength", &s.detailNormal, 0.0f, WaterSettings::kDetailMax);
+        ImGui::SetItemTooltip("Small wind-blown ripples on top of the waves. 0 turns them off and skips their cost.");
+        changed |= ImGui::SliderFloat("Ripple scale", &s.detailScale, WaterSettings::kDetailScaleMin, WaterSettings::kDetailScaleMax,
+                                      "%.2f", ImGuiSliderFlags_Logarithmic);
+        changed |= ImGui::SliderFloat("Ripple distance", &s.detailDistance, WaterSettings::kDetailDistanceMin,
+                                      WaterSettings::kDetailDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Ripples fade out by this distance (also hides shimmer on far water).");
     }
-    float color[3] = { s.color.x, s.color.y, s.color.z };
-    if (ImGui::ColorEdit3("Deep color", color)) {
-        s.color = { color[0], color[1], color[2] };
-        changed = true;
-    }
-    changed |= ImGui::SliderFloat("Opacity", &s.alpha, 0.05f, 1.0f);
 
-    ImGui::SeparatorText("Depth and shoreline");
-    float shallow[3] = { s.shallowColor.x, s.shallowColor.y, s.shallowColor.z };
-    if (ImGui::ColorEdit3("Shallow color", shallow)) {
-        s.shallowColor = { shallow[0], shallow[1], shallow[2] };
-        changed = true;
+    if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+        changed |= ImGui::SliderFloat("Reflection strength", &s.reflectivity, 0.0f, 1.0f);
+        static const char* const kReflectionNames[] = { "Sky only (cubemap)", "Planar (half resolution)",
+                                                        "Planar (full resolution)", "Planar (quarter resolution)" };
+        // The enum's values are saved in scene files, so they cannot be reordered: show them cheapest first instead.
+        static const ReflectionMode kReflectionOrder[] = { ReflectionMode::Sky, ReflectionMode::PlanarQuarter,
+                                                           ReflectionMode::PlanarHalf, ReflectionMode::PlanarFull };
+        static const char* const kReflectionLabels[] = { kReflectionNames[0], kReflectionNames[3], kReflectionNames[1], kReflectionNames[2] };
+        int reflectionIndex = 0;
+        for (int i = 0; i < 4; ++i) if (kReflectionOrder[i] == s.reflectionMode) reflectionIndex = i;
+        if (ImGui::Combo("Reflection", &reflectionIndex, kReflectionLabels, IM_ARRAYSIZE(kReflectionLabels))) {
+            s.reflectionMode = kReflectionOrder[reflectionIndex];
+            changed = true;
+        }
+        ImGui::SetItemTooltip("Planar modes draw the scene a second time from below the water, so the water\nreflects the terrain and cube too. That pass is skipped while no water is on screen.\nQuarter resolution is the cheapest; the waves blur it anyway.");
+        if (s.reflectionMode != ReflectionMode::Sky) {
+            changed |= ImGui::SliderFloat("Mirror distortion", &s.reflectionDistortion, 0.0f, WaterSettings::kDistortionMax, "%.3f");
+        }
+        changed |= ImGui::SliderFloat("Refraction", &s.refraction, 0.0f, WaterSettings::kRefractionMax, "%.3f");
+        ImGui::SetItemTooltip("How much the waves bend the view of the bottom. 0 = off, and the screen copy it needs is skipped.");
+        changed |= ImGui::SliderFloat("Crest glow", &s.scatter, 0.0f, WaterSettings::kScatterMax);
+        ImGui::SetItemTooltip("Light shining through wave crests when you look toward the sun.");
+        changed |= ImGui::SliderFloat("Sun glint", &s.glintStrength, 0.0f, WaterSettings::kGlintMax);
+        changed |= ImGui::SliderFloat("Glint sharpness", &s.glintSharpness, WaterSettings::kSharpnessMin,
+                                      WaterSettings::kSharpnessMax, "%.0f", ImGuiSliderFlags_Logarithmic);
     }
-    changed |= ImGui::SliderFloat("Absorption", &s.absorption, WaterSettings::kAbsorptionMin,
-                                  WaterSettings::kAbsorptionMax, "%.2f", ImGuiSliderFlags_Logarithmic);
-    ImGui::SetItemTooltip("How quickly the colour goes from shallow to deep as the water gets thicker.");
-    changed |= ImGui::SliderFloat("Shore softness", &s.fadeDistance, WaterSettings::kFadeMin,
-                                  WaterSettings::kFadeMax, "%.1f");
-    ImGui::SetItemTooltip("Depth at which the water becomes fully opaque. Smaller = sharper shoreline.");
-    changed |= ImGui::SliderFloat("Foam width", &s.foamDistance, 0.0f, WaterSettings::kFoamDistanceMax, "%.2f");
-    changed |= ImGui::SliderFloat("Foam strength", &s.foamStrength, 0.0f, 1.0f);
 
-    ImGui::SeparatorText("Waves");
-    if (ImGui::Button("Calm"))   { s.ApplyWavePreset(WavePreset::Calm);   changed = true; }
-    ImGui::SameLine();
-    if (ImGui::Button("Choppy")) { s.ApplyWavePreset(WavePreset::Choppy); changed = true; }
-    ImGui::SameLine();
-    if (ImGui::Button("Stormy")) { s.ApplyWavePreset(WavePreset::Stormy); changed = true; }
-    changed |= ImGui::SliderFloat("Amplitude", &s.waveAmplitude, 0.0f, WaterSettings::kAmplitudeMax);
-    changed |= ImGui::SliderFloat("Speed", &s.waveSpeed, 0.0f, WaterSettings::kSpeedMax);
-    changed |= ImGui::SliderFloat("Frequency", &s.waveFrequency, WaterSettings::kFrequencyMin, WaterSettings::kFrequencyMax);
-    ImGui::SetItemTooltip("Radians per world unit. Lower = longer, lazier waves.");
+    if (ImGui::CollapsingHeader("Foam")) {
+        changed |= ImGui::SliderFloat("Shore width", &s.foamDistance, 0.0f, WaterSettings::kFoamDistanceMax, "%.2f");
+        changed |= ImGui::SliderFloat("Shore strength", &s.foamStrength, 0.0f, 1.0f);
+        changed |= ImGui::SliderFloat("Crest foam", &s.crestFoam, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("White caps where a wave is squeezed to its sharpest. Needs Choppiness above 0.");
+        changed |= ImGui::SliderFloat("Crest threshold", &s.crestFoamThreshold, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("Higher = only the very sharpest crests get foam.");
+    }
 
-    ImGui::SeparatorText("Lighting");
-    changed |= ImGui::SliderFloat("Reflection strength", &s.reflectivity, 0.0f, 1.0f);
-    static const char* const kReflectionNames[] = { "Sky only (cubemap)", "Planar (half resolution)", "Planar (full resolution)" };
-    int reflectionMode = static_cast<int>(s.reflectionMode);
-    if (ImGui::Combo("Reflection", &reflectionMode, kReflectionNames, IM_ARRAYSIZE(kReflectionNames))) {
-        s.reflectionMode = static_cast<ReflectionMode>(reflectionMode);
-        changed = true;
+    if (ImGui::CollapsingHeader("Performance")) {
+        static const char* const kMeshNames[] = { "Low (128 cells)", "Medium (256 cells)", "High (512 cells)" };
+        changed |= ImGui::Combo("Mesh detail", &s.meshDetail, kMeshNames, IM_ARRAYSIZE(kMeshNames));
+        ImGui::SetItemTooltip("Grid cells across the plane at the finest level. The water is built from 8 x 8 tiles.");
+        changed |= ImGui::SliderFloat("Full detail until", &s.lodDistance, WaterSettings::kLodDistanceMin,
+                                      WaterSettings::kLodDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Tiles farther than this use fewer triangles. 4 levels, switching at 1x, 2.2x and 4.5x this distance.");
+        changed |= ImGui::Checkbox("Skip tiles off screen", &s.frustumCulling);
+        const WaterViewStats& stats = water->GetStats(ViewKind::Main);
+        ImGui::TextDisabled("Camera: %d/%d tiles  LOD %d/%d/%d/%d  %d tris", stats.tilesDrawn, stats.tilesTotal,
+                            stats.tilesPerLod[0], stats.tilesPerLod[1], stats.tilesPerLod[2], stats.tilesPerLod[3],
+                            stats.trianglesDrawn);
     }
-    ImGui::SetItemTooltip("Planar modes draw the scene a second time from below the water, so the water\nreflects the terrain and cube too. Costs roughly one extra scene draw.");
-    if (s.reflectionMode != ReflectionMode::Sky) {
-        changed |= ImGui::SliderFloat("Mirror distortion", &s.reflectionDistortion, 0.0f, WaterSettings::kDistortionMax, "%.3f");
+
+    if (ImGui::CollapsingHeader("Debug")) {
+        static const char* const kDebugNames[] = { "Off", "Normals", "Depth (shore / deep)", "Foam", "Fresnel", "Crest height" };
+        int debugView = static_cast<int>(s.debugView);
+        if (ImGui::Combo("View", &debugView, kDebugNames, IM_ARRAYSIZE(kDebugNames))) {
+            s.debugView = static_cast<WaterDebugView>(debugView);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("Shows one ingredient of the water on its own. Not saved with the scene.");
+        changed |= ImGui::Checkbox("Wireframe", &s.wireframe);
+        ImGui::SetItemTooltip("Draws the water mesh as wires so you can SEE the tiles and their detail levels.");
     }
-    changed |= ImGui::SliderFloat("Sun glint", &s.glintStrength, 0.0f, WaterSettings::kGlintMax);
-    changed |= ImGui::SliderFloat("Glint sharpness", &s.glintSharpness, WaterSettings::kSharpnessMin,
-                                  WaterSettings::kSharpnessMax, "%.0f", ImGuiSliderFlags_Logarithmic);
 
     ImGui::Separator();
-    if (ImGui::Button("Reset water look")) {     // keeps level and size, resets everything else
+    if (ImGui::Button("Reset water look")) {     // keeps level, size and the debug switches, resets everything else
         WaterSettings defaults;
         defaults.height = s.height;
         defaults.size = s.size;
+        defaults.debugView = s.debugView;
+        defaults.wireframe = s.wireframe;
         s = defaults;
         changed = true;
     }

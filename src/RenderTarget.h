@@ -21,6 +21,7 @@ public:
     DXGI_FORMAT GetFormat() const { return format_; }
     ID3D11RenderTargetView* GetRenderView() const { return renderView_; }
     ID3D11ShaderResourceView* GetShaderView() const { return shaderView_; }
+    ID3D11Texture2D* GetTexture() const { return texture_; }   // for CopyResource
 
 private:
     ID3D11Texture2D* texture_ = nullptr;
