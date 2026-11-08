@@ -57,7 +57,8 @@ public:
     SceneObject* Attach(std::unique_ptr<SceneObject> object, size_t index);    SceneObject* Duplicate(SceneObjectId id);
     SceneObject* CreateCube();
     // A new small water body (a pool). The caller places it (the editor puts it in front of the camera).
-    Water* CreateWater();
+    // `type` picks the starting size and look: a pond (default), a lake, a river or an ocean.
+    Water* CreateWater(WaterBodyType type = WaterBodyType::Pond);
     // The water body at/below a world position, for gameplay: among bodies whose outline contains (x, z), the one whose
     // surface is highest while still at or below `y` (an object floating in a pool above a lake belongs to the pool);
     // if `y` is below all of them, the one nearest above (the point is under water). Null if no body covers (x, z).

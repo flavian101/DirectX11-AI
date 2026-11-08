@@ -23,6 +23,7 @@ struct WaterMaterialCB {
 	XMFLOAT4 meshInfo;       // LOD distance, finest grid cell size, tallest possible wave, unused
 	XMFLOAT4 wind;           // xy = unit direction the waves travel toward
 	XMFLOAT4 shape;          // x = a mirror image is bound for this body this frame, y = shape (0 rect, 1 ellipse), z = ellipse edge softness
+	XMFLOAT4 flow;           // x = ripple drift multiplier (1 = wind-blown), y = sideways ripple drift (1 on, 0 river), z = body type, w = flow speed
 	XMFLOAT4 waveDirK[WaterWaves::kMaxWaves];     // xy = direction, z = k, w = amplitude
 	XMFLOAT4 waveMotion[WaterWaves::kMaxWaves];   // x = omega, y = steepness, z = phase offset
 };
@@ -131,6 +132,11 @@ void WaterSettings::Clamp()
 	size = std::clamp(size, kSizeMin, kSizeMax);
 	sizeZ = std::clamp(sizeZ, kSizeMin, kSizeMax);
 	shape = static_cast<WaterShape>(std::clamp(static_cast<int>(shape), 0, 1));
+	bodyType = static_cast<WaterBodyType>(std::clamp(static_cast<int>(bodyType), 0, 3));
+	flowSpeed = std::clamp(flowSpeed, 0.0f, kFlowSpeedMax);
+	flowAngle = std::fmod(flowAngle, 360.0f);   // an angle: wrap into (-180, 180] instead of clamping
+	if (flowAngle > 180.0f) flowAngle -= 360.0f;
+	if (flowAngle <= -180.0f) flowAngle += 360.0f;
 	color = { clamp01(color.x), clamp01(color.y), clamp01(color.z) };
 	alpha = std::clamp(alpha, 0.05f, 1.0f);
 	shallowColor = { clamp01(shallowColor.x), clamp01(shallowColor.y), clamp01(shallowColor.z) };
@@ -195,6 +201,40 @@ void WaterSettings::ApplyLook(WaterLook look)
 		color = { 0.04f, 0.20f, 0.32f }; shallowColor = { 0.45f, 0.75f, 0.85f }; alpha = 0.70f;
 		absorption = 0.30f; fadeDistance = 3.5f; foamDistance = 1.2f; foamStrength = 1.0f;
 		scatter = 0.4f; refraction = 0.04f; break;
+	}
+}
+
+void WaterSettings::ApplyBodyType(WaterBodyType type)
+{
+	bodyType = type;
+	// Every body gets a complete, consistent starting point: look, waves, ripples and foam together. Level, size, shape and
+	// the debug switches are the body's place in the world, not its kind: they stay.
+	switch (type) {
+	case WaterBodyType::Ocean:
+		ApplyLook(WaterLook::Ocean);
+		waveAmplitude = 0.45f; waveSpeed = 1.0f; waveFrequency = 0.5f; directionalSpread = 0.7f; choppiness = 0.55f; waveCount = 7;
+		detailNormal = 0.5f; detailScale = 0.8f; crestFoam = 0.5f; crestFoamThreshold = 0.25f;
+		break;
+	case WaterBodyType::Lake:
+		// Short wind chop that hardly ever breaks: wavelengths a third of the ocean's, a fraction of its height.
+		ApplyLook(WaterLook::Lake);
+		waveAmplitude = 0.12f; waveSpeed = 0.7f; waveFrequency = 0.9f; directionalSpread = 1.0f; choppiness = 0.2f; waveCount = 5;
+		detailNormal = 0.6f; detailScale = 1.2f; crestFoam = 0.1f; crestFoamThreshold = 0.4f;
+		break;
+	case WaterBodyType::River:
+		// A current, not a swell: low waves that all travel one way, fast ripples carried downstream, no white caps.
+		ApplyLook(WaterLook::Lake);
+		foamDistance = 0.5f; absorption = 0.45f;
+		waveAmplitude = 0.05f; waveSpeed = 1.0f; waveFrequency = 1.2f; directionalSpread = 0.1f; choppiness = 0.1f; waveCount = 4;
+		detailNormal = 1.2f; detailScale = 1.6f; crestFoam = 0.0f; crestFoamThreshold = 0.5f;
+		flowSpeed = 2.5f; flowAngle = 0.0f;
+		break;
+	case WaterBodyType::Pond:
+		ApplyLook(WaterLook::Lake);
+		alpha = 0.85f; foamStrength = 0.3f;
+		waveAmplitude = 0.03f; waveSpeed = 0.5f; waveFrequency = 1.4f; directionalSpread = 1.0f; choppiness = 0.05f; waveCount = 3;
+		detailNormal = 0.7f; detailScale = 1.8f; crestFoam = 0.0f; crestFoamThreshold = 0.5f;
+		break;
 	}
 }
 
@@ -286,9 +326,29 @@ void Water::RebuildMesh(const WaterMesh::TileGrid& grid)
 	tileLod_.assign(tiles_.size(), Model::kSkipMesh);   // "no level chosen yet": the first frame picks without hysteresis
 }
 
+float Water::GetTravelDegrees() const
+{
+	if (settings_.bodyType != WaterBodyType::River) return settings_.windDirection;
+	// The flow is stored in the body's OWN space: flowAngle 0 = along its +Z. The world matrix turns that direction by the
+	// yaw (rotation about Y), so a local (sin a, cos a) becomes the world direction (sin(a + yaw), cos(a + yaw)).
+	// The editor's angle runs 0 = +X, 90 = +Z, which makes that direction 90 - (a + yaw) degrees.
+	return WaterWaves::RiverTravelDegrees(settings_.flowAngle, rotation_.y);
+}
+
+WaterWaves::Params Water::CurrentWaveParams() const
+{
+	WaterWaves::Params p = settings_.WaveParams();
+	p.windDegrees = GetTravelDegrees();
+	if (settings_.bodyType == WaterBodyType::River) {
+		p.flowSpeed = settings_.flowSpeed;
+		p.spread = (std::min)(p.spread, 0.25f);   // a current has one direction: a wide spread would send waves sideways or upstream
+	}
+	return p;
+}
+
 void Water::RebuildWaves()
 {
-	waves_ = WaterWaves::Build(settings_.WaveParams());
+	waves_ = WaterWaves::Build(CurrentWaveParams());
 }
 
 void Water::UploadMaterial(bool mirrored) const
@@ -297,7 +357,8 @@ void Water::UploadMaterial(bool mirrored) const
 	// Colours are picked as sRGB, the shader wants linear.
 	const XMFLOAT3 deep = SrgbToLinear(settings_.color);
 	const XMFLOAT3 shallow = SrgbToLinear(settings_.shallowColor);
-	const float windRadians = XMConvertToRadians(settings_.windDirection);
+	const bool river = settings_.bodyType == WaterBodyType::River;
+	const float windRadians = XMConvertToRadians(GetTravelDegrees());
 	// One grid cell of the finest level, in world units (the cells are square: the tiles are).
 	const float cellsX = static_cast<float>((std::max)(builtGrid_.x, 1) * (std::max)(cellsPerTile_, 1));
 	const float cellsZ = static_cast<float>((std::max)(builtGrid_.z, 1) * (std::max)(cellsPerTile_, 1));
@@ -314,6 +375,11 @@ void Water::UploadMaterial(bool mirrored) const
 					   static_cast<float>(static_cast<int>(settings_.debugView)) };
 	block.meshInfo = { settings_.lodDistance, cellSize, waves_.heightBound, 0.0f };
 	block.wind = { std::cos(windRadians), std::sin(windRadians), 0.0f, 0.0f };
+	// The ripples drift with the wind at a fixed pace (multiplier 1: how it always looked). On a river they ride the current
+	// instead: the shader drifts layer 1 by 0.35 NOISE units per second, and one world unit is `detailScale` noise units,
+	// so asking for flowSpeed world units per second means a multiplier of flowSpeed * detailScale / 0.35.
+	block.flow = { river ? settings_.flowSpeed * settings_.detailScale / 0.35f : 1.0f, river ? 0.0f : 1.0f,
+				   static_cast<float>(static_cast<int>(settings_.bodyType)), river ? settings_.flowSpeed : 0.0f };
 	// The rim of a round body fades over about 40 cm (as a fraction of its radius; the plane's own space is -1..1).
 	block.shape = { mirrored ? 1.0f : 0.0f, settings_.shape == WaterShape::Ellipse ? 1.0f : 0.0f, 0.4f / halfSmallSide, 0.0f };
 	for (int i = 0; i < waves_.count; ++i) {
@@ -475,6 +541,7 @@ bool Water::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotatio
 	rotation_ = rotation;
 	scale_ = scale;
 	settings_.height = position_.y;   // one source of truth: otherwise the next SetSettings() snaps Y back
+	if (settings_.bodyType == WaterBodyType::River) RebuildWaves();   // a river's flow follows the way the body is turned
 	EnsureMesh();                      // scaling can change the body's proportions: a river needs a different grid than a pond
 	UpdateWorldTransform();
 	UploadMaterial(false);             // the grid cell size depends on the scale

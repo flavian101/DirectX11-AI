@@ -55,6 +55,7 @@ private:
     void DrawEnvironmentInspector();
     void DrawTerrainInspector(Terrain* terrain);
     void DrawWaterInspector(Water* water);
+    void DrawAddWaterItems();
     void DrawSkyboxInspector(Skybox* skybox);
     void DrawSurfaceInspector(SurfaceMaterial& surface);
     void DrawModelInspector(ModelObject* model);
@@ -94,7 +95,7 @@ private:
     bool viewportFocused_ = false;
     bool hierarchyFocused_ = false;
     bool addCubeRequested_ = false;
-    bool addWaterRequested_ = false;
+    int addWaterType_ = -1;           // >= 0: add a water body of this WaterBodyType at the start of the next frame
     bool duplicateRequested_ = false;
     bool deleteRequested_ = false;
 

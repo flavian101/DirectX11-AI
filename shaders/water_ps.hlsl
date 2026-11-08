@@ -25,13 +25,17 @@ float LinearizeDepth(float d)
 }
 
 // Small ripples on top of the big waves: two layers of noise slope, drifting with the wind. Returns the slope.
+// On a river the same two layers ride the current instead: `drift` speeds the downstream motion up to the flow speed and
+// `sideways` switches the sideways wander off (a current has no sideways). For every other body both are 1: unchanged.
 float2 RippleSlope(float2 xz, float time)
 {
     const float2 wind = waterWind.xy;
     const float2 side = float2(-wind.y, wind.x);
     const float scale = waterWaveInfo.z;
-    const float3 n1 = ValueNoiseD(xz * scale - wind * (time * 0.35f));
-    const float3 n2 = ValueNoiseD(xz * (scale * 2.3f) + side * (time * 0.25f) - wind * (time * 0.2f) + 7.3f);
+    const float drift = waterFlow.x;
+    const float sideways = waterFlow.y;
+    const float3 n1 = ValueNoiseD(xz * scale - wind * (time * 0.35f * drift));
+    const float3 n2 = ValueNoiseD(xz * (scale * 2.3f) + side * (time * 0.25f * sideways) - wind * (time * 0.2f * drift) + 7.3f);
     return (n1.yz * scale + n2.yz * (scale * 2.3f * 0.4f)) * 0.3f;
 }
 

@@ -15,6 +15,11 @@ enum class WavePreset { Calm, Choppy, Stormy };
 // A complete colour/optics look (not the waves, not the level or size). Pick one in the editor, then tweak.
 enum class WaterLook { Tropical, Ocean, Lake, Swamp, Arctic };
 
+// What KIND of water this is. It decides how the surface moves: an ocean rolls in swells from the wind, a lake shows
+// short wind chop, a pond barely moves, and a RIVER is a current: everything on it is carried downstream.
+// Values are saved in scene files by name: only ever ADD to the end.
+enum class WaterBodyType : int { Ocean = 0, Lake = 1, River = 2, Pond = 3 };
+
 // What the water mirrors. "Sky" is the cheap cubemap from before (reflects only the sky);
 // the planar modes draw the whole scene again from below the water (reflects terrain, cube, sky),
 // at a quarter / half / full of the screen's resolution. Values are saved in scene files: only ever ADD to the end.
@@ -30,6 +35,11 @@ enum class WaterDebugView : int { Off = 0, Normals = 1, Depth = 2, Foam = 3, Fre
 constexpr int kWaterLodCount = 4;   // level 0 = every vertex; each next level keeps fewer (the tile interior thins out, the border never does)
 
 struct WaterSettings {
+	// --- what kind of water ---
+	WaterBodyType bodyType = WaterBodyType::Ocean;
+	float flowSpeed = 2.0f;       // river: how fast the surface is carried downstream, world units per second
+	float flowAngle = 0.0f;       // river: degrees away from the body's own +Z axis (its length). 0 = flows toward +Z of the body
+
 	// --- surface ---
 	float height = 4.0f;          // world Y of the water plane (kept in sync with the editor transform)
 	float size = 180.0f;          // width: the plane's extent along X
@@ -77,6 +87,7 @@ struct WaterSettings {
 	WaterDebugView debugView = WaterDebugView::Off;
 	bool wireframe = false;       // draw the mesh as wires: shows the level-of-detail tiles
 
+	static constexpr float kFlowSpeedMax = 10.0f;
 	static constexpr float kHeightMin = -100.0f, kHeightMax = 200.0f;
 	static constexpr float kSizeMin = 2.0f, kSizeMax = 2000.0f;
 	static constexpr float kAmplitudeMax = 2.0f, kSpeedMax = 5.0f;
@@ -98,6 +109,8 @@ struct WaterSettings {
 	void Clamp();
 	void ApplyWavePreset(WavePreset preset);   // only touches the wave shape values (not wind direction)
 	void ApplyLook(WaterLook look);            // only touches colours, depth and optics (not waves, level or size)
+	// Sets the type AND the starting values that suit it (waves, ripples, foam, look). Keeps level, size, shape and debug switches.
+	void ApplyBodyType(WaterBodyType type);
 	WaterWaves::Params WaveParams() const;
 };
 
@@ -133,6 +146,9 @@ public:
 							const DirectX::XMFLOAT3& scale) override;
 	bool IsValid() const;
 	const WaterSettings& GetSettings() const { return settings_; }
+	// The direction the surface travels toward, in WORLD space, as an angle (0 = +X, 90 = +Z). For a river it follows the
+	// body's own rotation, so turning the river turns its flow; for every other type it is the wind direction.
+	float GetTravelDegrees() const;
 	void SetSettings(const WaterSettings& settings);
 	void Update(float dt) override;
 	void Render(ID3D11DeviceContext* ctx, const RenderView& view) const override;
@@ -157,6 +173,7 @@ private:
 	void CreateRenderStates(ID3D11Device* device);
 	void RebuildMesh(const WaterMesh::TileGrid& grid);
 	void RebuildWaves();
+	WaterWaves::Params CurrentWaveParams() const;   // WaterSettings::WaveParams() plus what only the body knows (its rotation)
 	void EnsureMesh();                    // rebuilds the tiles when the mesh detail or the body's proportions need a different grid
 	void UploadMaterial(bool mirrored) const;   // `mirrored`: this frame, a mirror image is bound for this body
 	void UpdateWorldTransform();

@@ -305,7 +305,10 @@ void EditorLayer::DrawMenuBar()
     }
     if (ImGui::BeginMenu("Add")) {
         if (ImGui::MenuItem("Cube")) addCubeRequested_ = true;
-        if (ImGui::MenuItem("Water body")) addWaterRequested_ = true;
+        if (ImGui::BeginMenu("Water body")) {
+            DrawAddWaterItems();
+            ImGui::EndMenu();
+        }
         if (ImGui::MenuItem("Model from file...")) importRequested_ = true;
         ImGui::EndMenu();
     }
@@ -516,9 +519,10 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
             RecordAdded(cube, "Add cube");
         }
     }
-    if (addWaterRequested_) {
-        addWaterRequested_ = false;
-        if (Water* water = ctx.scene.CreateWater()) {
+    if (addWaterType_ >= 0) {
+        const WaterBodyType type = static_cast<WaterBodyType>(addWaterType_);
+        addWaterType_ = -1;
+        if (Water* water = ctx.scene.CreateWater(type)) {
             // A pool a little way ahead of the camera, resting just above the ground there (or at the level of the existing
             // water, or just below the camera when there is neither).
             const Camera& camera = scene_->GetCamera();
@@ -687,6 +691,20 @@ void EditorLayer::HandleShortcuts()
     }
 }
 
+// The four kinds of water, as menu items (Add menu and the Hierarchy's right-click menu share them).
+void EditorLayer::DrawAddWaterItems()
+{
+    static const struct { const char* name; const char* hint; WaterBodyType type; } kTypes[] = {
+        { "Lake", "Short wind chop, round by default", WaterBodyType::Lake },
+        { "River", "A long thin current: everything on it flows one way", WaterBodyType::River },
+        { "Pond", "Small and nearly still", WaterBodyType::Pond },
+        { "Ocean", "Big swells rolling in with the wind", WaterBodyType::Ocean } };
+    for (const auto& entry : kTypes) {
+        if (ImGui::MenuItem(entry.name)) addWaterType_ = static_cast<int>(entry.type);
+        ImGui::SetItemTooltip("%s", entry.hint);
+    }
+}
+
 void EditorLayer::DrawHierarchyPanel()
 {
     hierarchyFocused_ = false;
@@ -718,7 +736,10 @@ void EditorLayer::DrawHierarchyPanel()
     // Right-click on the empty part of the panel.
     if (ImGui::BeginPopupContextWindow("HierarchyContext", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
         if (ImGui::MenuItem("Add cube")) addCubeRequested_ = true;
-        if (ImGui::MenuItem("Add water body")) addWaterRequested_ = true;
+        if (ImGui::BeginMenu("Add water body")) {
+            DrawAddWaterItems();
+            ImGui::EndMenu();
+        }
         if (ImGui::MenuItem("Add model from file...")) importRequested_ = true;
         ImGui::EndPopup();
     }
@@ -1449,6 +1470,16 @@ void EditorLayer::DrawWaterInspector(Water* water)
         if (ImGui::InputText("Name", nameBuffer, sizeof(nameBuffer))) water->SetName(nameBuffer);
     }
 
+    // The TYPE comes first: it decides how the water moves, and which of the sections below apply.
+    static const char* const kTypeNames[] = { "Ocean", "Lake", "River", "Pond" };
+    int typeIndex = static_cast<int>(s.bodyType);
+    if (ImGui::Combo("Type", &typeIndex, kTypeNames, IM_ARRAYSIZE(kTypeNames))) {
+        s.ApplyBodyType(static_cast<WaterBodyType>(typeIndex));
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Ocean: big swells rolling with the wind.\nLake: short wind chop.\nRiver: a current - waves and ripples all travel downstream.\nPond: nearly still.\n\nChanging the type loads that type's starting values (waves, ripples, foam, colours).\nLevel, size and shape stay. Ctrl+Z brings the old values back.");
+    const bool river = s.bodyType == WaterBodyType::River;
+
     // A whole look in one click: colours, depth and foam. Waves, level and size are left alone.
     ImGui::TextDisabled("Looks");
     static const struct { const char* name; WaterLook look; } kLooks[] = {
@@ -1470,7 +1501,7 @@ void EditorLayer::DrawWaterInspector(Water* water)
         }
         changed |= ImGui::SliderFloat("Width (X)", &s.size, WaterSettings::kSizeMin, WaterSettings::kSizeMax, "%.0f", ImGuiSliderFlags_Logarithmic);
         changed |= ImGui::SliderFloat("Length (Z)", &s.sizeZ, WaterSettings::kSizeMin, WaterSettings::kSizeMax, "%.0f", ImGuiSliderFlags_Logarithmic);
-        ImGui::SetItemTooltip("A river is a long thin rectangle: make it long, then turn it with the Rotation Y in the transform\nand set Wind direction to the way it flows. The mesh adapts to the shape.");
+        ImGui::SetItemTooltip("A river is a long thin rectangle: set the Type to River, make it long, then turn it with the\nRotation Y in the transform. Its current follows the way it is turned.");
         if (Terrain* terrain = scene_->GetTerrain()) {
             if (ImGui::Button("Fit size to terrain")) {
                 const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();
@@ -1494,27 +1525,40 @@ void EditorLayer::DrawWaterInspector(Water* water)
         ImGui::SetItemTooltip("Depth at which the water becomes fully opaque. Smaller = sharper shoreline.");
     }
 
+    if (river && ImGui::CollapsingHeader("Current", ImGuiTreeNodeFlags_DefaultOpen)) {
+        changed |= ImGui::SliderFloat("Flow speed", &s.flowSpeed, 0.0f, WaterSettings::kFlowSpeedMax, "%.1f units/s");
+        ImGui::SetItemTooltip("How fast the waves and ripples are carried downstream.");
+        changed |= ImGui::SliderFloat("Flow direction", &s.flowAngle, -180.0f, 180.0f, "%.0f deg");
+        ImGui::SetItemTooltip("Measured from the river's own length: 0 = toward the +Z end of the body, 180 = the other way.\nTurning the river with Rotation Y turns the current with it.");
+        ImGui::TextDisabled("Flows toward %.0f deg in the world (0 = +X, 90 = +Z)", water->GetTravelDegrees());
+    }
+
     if (ImGui::CollapsingHeader("Waves", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (ImGui::Button("Calm"))   { s.ApplyWavePreset(WavePreset::Calm);   changed = true; }
-        ImGui::SameLine();
-        if (ImGui::Button("Choppy")) { s.ApplyWavePreset(WavePreset::Choppy); changed = true; }
-        ImGui::SameLine();
-        if (ImGui::Button("Stormy")) { s.ApplyWavePreset(WavePreset::Stormy); changed = true; }
+        if (!river) {   // the three presets are open-water swells: a river's waves come from its type
+            if (ImGui::Button("Calm"))   { s.ApplyWavePreset(WavePreset::Calm);   changed = true; }
+            ImGui::SameLine();
+            if (ImGui::Button("Choppy")) { s.ApplyWavePreset(WavePreset::Choppy); changed = true; }
+            ImGui::SameLine();
+            if (ImGui::Button("Stormy")) { s.ApplyWavePreset(WavePreset::Stormy); changed = true; }
+        }
         changed |= ImGui::SliderFloat("Amplitude", &s.waveAmplitude, 0.0f, WaterSettings::kAmplitudeMax);
-        changed |= ImGui::SliderFloat("Speed", &s.waveSpeed, 0.0f, WaterSettings::kSpeedMax);
+        if (!river) changed |= ImGui::SliderFloat("Speed", &s.waveSpeed, 0.0f, WaterSettings::kSpeedMax);
         changed |= ImGui::SliderFloat("Frequency", &s.waveFrequency, WaterSettings::kFrequencyMin, WaterSettings::kFrequencyMax);
         ImGui::SetItemTooltip("Radians per world unit. Lower = longer, lazier waves.");
-        changed |= ImGui::SliderFloat("Wind direction", &s.windDirection, 0.0f, 360.0f, "%.0f deg");
-        ImGui::SetItemTooltip("The way the waves travel. 0 = toward +X, 90 = toward +Z.");
+        if (!river) {   // a river's direction is its current (above)
+            changed |= ImGui::SliderFloat("Wind direction", &s.windDirection, 0.0f, 360.0f, "%.0f deg");
+            ImGui::SetItemTooltip("The way the waves travel. 0 = toward +X, 90 = toward +Z.");
+        }
         changed |= ImGui::SliderFloat("Direction spread", &s.directionalSpread, 0.0f, 1.0f);
-        ImGui::SetItemTooltip("0 = every wave runs with the wind (a clean swell). 1 = waves cross from many directions.");
+        ImGui::SetItemTooltip(river ? "0 = every wave runs with the current. A river caps this low: nothing runs upstream."
+                                    : "0 = every wave runs with the wind (a clean swell). 1 = waves cross from many directions.");
         changed |= ImGui::SliderFloat("Choppiness", &s.choppiness, 0.0f, 1.0f);
         ImGui::SetItemTooltip("0 = rounded sine waves. 1 = sharp crests and wide troughs (Gerstner waves). Never folds over.");
         changed |= ImGui::SliderInt("Wave count", &s.waveCount, WaterSettings::kWaveCountMin, WaterSettings::kWaveCountMax);
         ImGui::SetItemTooltip("How many waves are added together. Fewer = cheaper and simpler. Each costs a little in the\nvertex AND pixel shader.");
         ImGui::SeparatorText("Ripples");
         changed |= ImGui::SliderFloat("Ripple strength", &s.detailNormal, 0.0f, WaterSettings::kDetailMax);
-        ImGui::SetItemTooltip("Small wind-blown ripples on top of the waves. 0 turns them off and skips their cost.");
+        ImGui::SetItemTooltip("Small ripples on top of the waves. 0 turns them off and skips their cost.");
         changed |= ImGui::SliderFloat("Ripple scale", &s.detailScale, WaterSettings::kDetailScaleMin, WaterSettings::kDetailScaleMax,
                                       "%.2f", ImGuiSliderFlags_Logarithmic);
         changed |= ImGui::SliderFloat("Ripple distance", &s.detailDistance, WaterSettings::kDetailDistanceMin,
@@ -1558,47 +1602,54 @@ void EditorLayer::DrawWaterInspector(Water* water)
         ImGui::SetItemTooltip("Higher = only the very sharpest crests get foam.");
     }
 
-    if (ImGui::CollapsingHeader("Performance")) {
-        static const char* const kMeshNames[] = { "Low (16 cells per tile)", "Medium (32 cells per tile)", "High (64 cells per tile)" };
-        changed |= ImGui::Combo("Mesh detail", &s.meshDetail, kMeshNames, IM_ARRAYSIZE(kMeshNames));
-        ImGui::SetItemTooltip("Grid cells along one tile edge at the finest level. The water is cut into square tiles:\n8 x 8 for a square body, long rows for a river.");
-        changed |= ImGui::SliderFloat("Full detail until", &s.lodDistance, WaterSettings::kLodDistanceMin,
-                                      WaterSettings::kLodDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
-        ImGui::SetItemTooltip("Tiles farther than this use fewer triangles. 4 levels, switching at 1x, 2.2x and 4.5x this distance.");
-        changed |= ImGui::Checkbox("Skip tiles off screen", &s.frustumCulling);
-        const WaterViewStats& stats = water->GetStats(ViewKind::Main);
-        ImGui::TextDisabled("Camera: %d/%d tiles  LOD %d/%d/%d/%d  %d tris", stats.tilesDrawn, stats.tilesTotal,
-                            stats.tilesPerLod[0], stats.tilesPerLod[1], stats.tilesPerLod[2], stats.tilesPerLod[3],
-                            stats.trianglesDrawn);
-        if (s.reflectionMode != ReflectionMode::Sky) {
-            if (stats.tilesDrawn == 0) ImGui::TextDisabled("Mirror: not on screen");
-            else if (stats.reflectionSlot >= 0) ImGui::TextDisabled("Mirror: planar image %d (bodies at this level share it)", stats.reflectionSlot + 1);
-            else ImGui::TextDisabled("Mirror: sky only (over the budget of %d planar images, or camera below)", WaterFramePlan::kMaxReflections);
+    // The things you set once and rarely touch again live together, folded away.
+    if (ImGui::CollapsingHeader("Advanced")) {
+        if (ImGui::TreeNode("Performance")) {
+            static const char* const kMeshNames[] = { "Low (16 cells per tile)", "Medium (32 cells per tile)", "High (64 cells per tile)" };
+            changed |= ImGui::Combo("Mesh detail", &s.meshDetail, kMeshNames, IM_ARRAYSIZE(kMeshNames));
+            ImGui::SetItemTooltip("Grid cells along one tile edge at the finest level. The water is cut into square tiles:\n8 x 8 for a square body, long rows for a river.");
+            changed |= ImGui::SliderFloat("Full detail until", &s.lodDistance, WaterSettings::kLodDistanceMin,
+                                          WaterSettings::kLodDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SetItemTooltip("Tiles farther than this use fewer triangles. 4 levels, switching at 1x, 2.2x and 4.5x this distance.");
+            changed |= ImGui::Checkbox("Skip tiles off screen", &s.frustumCulling);
+            const WaterViewStats& stats = water->GetStats(ViewKind::Main);
+            ImGui::TextDisabled("Camera: %d/%d tiles  LOD %d/%d/%d/%d  %d tris", stats.tilesDrawn, stats.tilesTotal,
+                                stats.tilesPerLod[0], stats.tilesPerLod[1], stats.tilesPerLod[2], stats.tilesPerLod[3],
+                                stats.trianglesDrawn);
+            if (s.reflectionMode != ReflectionMode::Sky) {
+                if (stats.tilesDrawn == 0) ImGui::TextDisabled("Mirror: not on screen");
+                else if (stats.reflectionSlot >= 0) ImGui::TextDisabled("Mirror: planar image %d (bodies at this level share it)", stats.reflectionSlot + 1);
+                else ImGui::TextDisabled("Mirror: sky only (over the budget of %d planar images, or camera below)", WaterFramePlan::kMaxReflections);
+            }
+            ImGui::TreePop();
         }
-    }
-
-    if (ImGui::CollapsingHeader("Debug")) {
-        static const char* const kDebugNames[] = { "Off", "Normals", "Depth (shore / deep)", "Foam", "Fresnel", "Crest height" };
-        int debugView = static_cast<int>(s.debugView);
-        if (ImGui::Combo("View", &debugView, kDebugNames, IM_ARRAYSIZE(kDebugNames))) {
-            s.debugView = static_cast<WaterDebugView>(debugView);
+        if (ImGui::TreeNode("Debug")) {
+            static const char* const kDebugNames[] = { "Off", "Normals", "Depth (shore / deep)", "Foam", "Fresnel", "Crest height" };
+            int debugView = static_cast<int>(s.debugView);
+            if (ImGui::Combo("View", &debugView, kDebugNames, IM_ARRAYSIZE(kDebugNames))) {
+                s.debugView = static_cast<WaterDebugView>(debugView);
+                changed = true;
+            }
+            ImGui::SetItemTooltip("Shows one ingredient of the water on its own. Not saved with the scene.");
+            changed |= ImGui::Checkbox("Wireframe", &s.wireframe);
+            ImGui::SetItemTooltip("Draws the water mesh as wires so you can SEE the tiles and their detail levels.");
+            ImGui::TreePop();
+        }
+        ImGui::Separator();
+        if (ImGui::Button("Reset to type defaults")) {   // this type's starting values; keeps level, size, shape and the debug switches
+            WaterSettings defaults;
+            defaults.height = s.height;
+            defaults.size = s.size;
+            defaults.sizeZ = s.sizeZ;
+            defaults.shape = s.shape;
+            defaults.debugView = s.debugView;
+            defaults.wireframe = s.wireframe;
+            defaults.ApplyBodyType(s.bodyType);
+            s = defaults;
             changed = true;
         }
-        ImGui::SetItemTooltip("Shows one ingredient of the water on its own. Not saved with the scene.");
-        changed |= ImGui::Checkbox("Wireframe", &s.wireframe);
-        ImGui::SetItemTooltip("Draws the water mesh as wires so you can SEE the tiles and their detail levels.");
     }
 
-    ImGui::Separator();
-    if (ImGui::Button("Reset water look")) {     // keeps level, size and the debug switches, resets everything else
-        WaterSettings defaults;
-        defaults.height = s.height;
-        defaults.size = s.size;
-        defaults.debugView = s.debugView;
-        defaults.wireframe = s.wireframe;
-        s = defaults;
-        changed = true;
-    }
     if (changed) water->SetSettings(s);
 }
 

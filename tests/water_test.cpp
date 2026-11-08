@@ -167,11 +167,50 @@ static void TestWaves()
 	}
 }
 
+// A river is a current: every wave travels the same way, at the speed of the current, and turning the body turns the flow.
+static void TestRiverFlow()
+{
+	const float pi = 3.14159265f;
+	for (float yaw : { 0.0f, 0.5f, 1.5707963f, 2.4f, -1.1f, 3.9f }) {
+		for (float flowAngle : { 0.0f, 90.0f, 180.0f, -45.0f }) {
+			// What the world matrix does to the body's own direction (sin a, cos a): XMMatrixRotationY, row-vector convention.
+			const float a = flowAngle * pi / 180.0f;
+			const float localX = std::sin(a), localZ = std::cos(a);
+			const float worldX = localX * std::cos(yaw) + localZ * std::sin(yaw);
+			const float worldZ = -localX * std::sin(yaw) + localZ * std::cos(yaw);
+
+			const float degrees = WaterWaves::RiverTravelDegrees(flowAngle, yaw);
+			CHECK(degrees >= 0.0f && degrees < 360.0f);
+			CHECK(std::fabs(std::cos(degrees * pi / 180.0f) - worldX) < 1e-4f);   // the angle IS that world direction
+			CHECK(std::fabs(std::sin(degrees * pi / 180.0f) - worldZ) < 1e-4f);
+
+			WaterWaves::Params p;
+			p.windDegrees = degrees;
+			p.spread = 0.1f;
+			p.flowSpeed = 2.5f;
+			p.count = 6;
+			const WaterWaves::Table table = WaterWaves::Build(p);
+			for (int i = 0; i < table.count; ++i) {
+				const WaterWaves::Wave& w = table.waves[i];
+				CHECK(std::fabs(w.omega / w.k - 2.5f) < 1e-4f);   // every wave rides the current at the same speed
+				// A wave sin(k * dir . x + omega * t) moves toward -dir. That must be within the (small) spread of the flow.
+				const float along = -(w.dirX * worldX + w.dirZ * worldZ);
+				CHECK(along > std::cos(0.1f * 110.0f * pi / 180.0f) - 1e-3f);   // nothing runs upstream or sideways
+			}
+		}
+	}
+	// Without a flow speed the old deep-water dispersion is untouched: long waves outrun short ones.
+	WaterWaves::Params open;
+	const WaterWaves::Table swell = WaterWaves::Build(open);
+	CHECK(swell.waves[0].omega / swell.waves[0].k > swell.waves[3].omega / swell.waves[3].k);
+}
+
 int main()
 {
 	TestTileIndices();
 	TestTileGrid();
 	TestWaves();
+	TestRiverFlow();
 	if (g_failures == 0) std::printf("water tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;
 }

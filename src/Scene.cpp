@@ -323,13 +323,18 @@ void Scene::PlanWater(WaterFramePlan& plan) const
     }
 }
 
-Water* Scene::CreateWater()
+Water* Scene::CreateWater(WaterBodyType type)
 {
     if (!device_) return nullptr;
     Water* water = Add<Water>(device_);
     WaterSettings settings = water->GetSettings();
-    settings.size = 40.0f;    // a pool, not a second sea
-    settings.sizeZ = 40.0f;
+    settings.ApplyBodyType(type);   // look, waves, ripples and foam that suit this kind of water
+    switch (type) {   // and a size that suits it: none of these is a second sea (except the ocean)
+    case WaterBodyType::Ocean: settings.size = 400.0f; settings.sizeZ = 400.0f; settings.shape = WaterShape::Rectangle; break;
+    case WaterBodyType::Lake:  settings.size = 80.0f;  settings.sizeZ = 80.0f;  settings.shape = WaterShape::Ellipse;   break;
+    case WaterBodyType::River: settings.size = 14.0f;  settings.sizeZ = 120.0f; settings.shape = WaterShape::Rectangle; break;
+    case WaterBodyType::Pond:  settings.size = 20.0f;  settings.sizeZ = 20.0f;  settings.shape = WaterShape::Ellipse;   break;
+    }
     water->SetSettings(settings);
     return water;
 }

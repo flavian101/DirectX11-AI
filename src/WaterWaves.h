@@ -26,6 +26,7 @@ struct Params {
 	float spread = 0.7f;         // 0 = every wave runs the same way, 1 = fully scattered
 	float choppiness = 0.5f;     // 0 = rounded sine waves, 1 = sharpest crests that never fold over
 	int count = 6;               // how many of the 8 waves are used
+	float flowSpeed = 0.0f;      // > 0: a RIVER. Every wave is carried along by the current at this speed (world units per second)
 };
 
 struct Wave {
@@ -66,7 +67,8 @@ inline Table Build(const Params& p)
 		w.k = p.frequency * kFreqScale[i];
 		w.amplitude = p.amplitude * kAmpScale[i];
 		// Deep-water dispersion: long waves travel faster than short ones (omega ~ sqrt(k)).
-		w.omega = p.speed * std::sqrt(w.k / kBaseFrequency);
+		// A river is different: the pattern is carried by the current, so every wave moves at the SAME speed omega / k.
+		w.omega = p.flowSpeed > 0.0f ? w.k * p.flowSpeed : p.speed * std::sqrt(w.k / kBaseFrequency);
 		w.phase0 = kPhase[i];
 		sumKA += w.k * w.amplitude;
 		t.heightBound += w.amplitude;
@@ -76,6 +78,17 @@ inline Table Build(const Params& p)
 	const float q = std::clamp(p.choppiness, 0.0f, 1.0f) * std::min(1.0f, 1.0f / std::max(sumKA, 1e-4f));
 	for (int i = 0; i < t.count; ++i) t.waves[i].steepness = q;
 	return t;
+}
+
+// Which way a river flows in the WORLD, as an angle (0 = +X, 90 = +Z), given its flow angle in the body's OWN space
+// (0 = along the body's +Z axis) and the body's yaw (rotation about Y, radians, DirectXMath's left-handed convention).
+// A local direction (sin a, cos a) in (x, z) is turned by the yaw into (sin(a + yaw), cos(a + yaw)), which is the angle
+// 90 - (a + yaw) in the editor's convention.
+inline float RiverTravelDegrees(float flowAngleDegrees, float yawRadians)
+{
+	const float degrees = 90.0f - flowAngleDegrees - yawRadians * 57.29577951f;
+	const float wrapped = std::fmod(degrees, 360.0f);
+	return wrapped < 0.0f ? wrapped + 360.0f : wrapped;
 }
 
 // Where a point that rests at (x, z) is at `time`: sideways offset (dx, dz) and height dy.
