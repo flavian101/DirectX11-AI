@@ -299,12 +299,13 @@ void EditorLayer::DrawMenuBar()
         ImGui::Separator();
         const SceneObject* selected = SelectedObject();
         if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, selected && selected->CanClone())) duplicateRequested_ = true;
-        if (ImGui::MenuItem("Delete", "Del", false, selected && selected->IsUserContent())) deleteRequested_ = true;
+        if (ImGui::MenuItem("Delete", "Del", false, selected && selected->CanDelete())) deleteRequested_ = true;
         if (ImGui::MenuItem("Frame selected", "F", false, selected != nullptr)) FrameSelected();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Add")) {
         if (ImGui::MenuItem("Cube")) addCubeRequested_ = true;
+        if (ImGui::MenuItem("Water body")) addWaterRequested_ = true;
         if (ImGui::MenuItem("Model from file...")) importRequested_ = true;
         ImGui::EndMenu();
     }
@@ -515,6 +516,30 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
             RecordAdded(cube, "Add cube");
         }
     }
+    if (addWaterRequested_) {
+        addWaterRequested_ = false;
+        if (Water* water = ctx.scene.CreateWater()) {
+            // A pool a little way ahead of the camera, resting just above the ground there (or at the level of the existing
+            // water, or just below the camera when there is neither).
+            const Camera& camera = scene_->GetCamera();
+            const XMFLOAT3 eye = camera.GetPosition(), target = camera.GetTarget();
+            XMFLOAT3 ahead = { target.x - eye.x, 0.0f, target.z - eye.z };
+            const float flat = std::sqrt(ahead.x * ahead.x + ahead.z * ahead.z);
+            ahead = flat > 1e-4f ? XMFLOAT3(ahead.x / flat, 0.0f, ahead.z / flat) : XMFLOAT3(0.0f, 0.0f, 1.0f);
+            XMFLOAT3 position = { eye.x + ahead.x * 30.0f, eye.y - 4.0f, eye.z + ahead.z * 30.0f };
+            float groundY = 0.0f;
+            if (const Terrain* terrain = scene_->GetTerrain(); terrain && terrain->GetHeightAt(position.x, position.z, groundY)) {
+                position.y = groundY + 0.4f;
+            } else if (const Water* other = scene_->GetWater(); other && other != water) {
+                position.y = other->GetSettings().height;
+            }
+            XMFLOAT3 rotation, scale, unusedPosition;
+            water->GetEditorTransform(unusedPosition, rotation, scale);
+            water->SetEditorTransform(position, rotation, scale);
+            Select(water);
+            RecordAdded(water, "Add water body");
+        }
+    }
     if (duplicateRequested_) {
         duplicateRequested_ = false;
         if (SceneObject* copy = ctx.scene.Duplicate(selectedId_)) {
@@ -525,7 +550,7 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
     if (deleteRequested_) {
         deleteRequested_ = false;
         const SceneObject* selected = SelectedObject();
-        if (selected && selected->IsUserContent()) {
+        if (selected && selected->CanDelete()) {
             // Not destroyed: the object is taken OUT of the scene and kept in the history, so that undo can put the very
             // same object back (with its GPU resources, id and name) instead of rebuilding it.
             auto holder = std::make_shared<std::unique_ptr<SceneObject>>();
@@ -683,7 +708,7 @@ void EditorLayer::DrawHierarchyPanel()
         if (ImGui::BeginPopupContextItem()) {   // right-click on a row
             Select(object);
             if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, object->CanClone())) duplicateRequested_ = true;
-            if (ImGui::MenuItem("Delete", "Del", false, object->IsUserContent())) deleteRequested_ = true;
+            if (ImGui::MenuItem("Delete", "Del", false, object->CanDelete())) deleteRequested_ = true;
             if (ImGui::MenuItem("Frame", "F")) FrameSelected();
             ImGui::EndPopup();
         }
@@ -693,6 +718,7 @@ void EditorLayer::DrawHierarchyPanel()
     // Right-click on the empty part of the panel.
     if (ImGui::BeginPopupContextWindow("HierarchyContext", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
         if (ImGui::MenuItem("Add cube")) addCubeRequested_ = true;
+        if (ImGui::MenuItem("Add water body")) addWaterRequested_ = true;
         if (ImGui::MenuItem("Add model from file...")) importRequested_ = true;
         ImGui::EndPopup();
     }
@@ -1416,6 +1442,13 @@ void EditorLayer::DrawWaterInspector(Water* water)
         }
     };
 
+    // A scene can hold several water bodies (a lake, a pool, a river): the name tells them apart in the Hierarchy.
+    {
+        char nameBuffer[64];
+        std::snprintf(nameBuffer, sizeof(nameBuffer), "%s", water->GetName().c_str());
+        if (ImGui::InputText("Name", nameBuffer, sizeof(nameBuffer))) water->SetName(nameBuffer);
+    }
+
     // A whole look in one click: colours, depth and foam. Waves, level and size are left alone.
     ImGui::TextDisabled("Looks");
     static const struct { const char* name; WaterLook look; } kLooks[] = {
@@ -1429,11 +1462,20 @@ void EditorLayer::DrawWaterInspector(Water* water)
 
     if (ImGui::CollapsingHeader("Surface", ImGuiTreeNodeFlags_DefaultOpen)) {
         changed |= ImGui::SliderFloat("Level", &s.height, WaterSettings::kHeightMin, WaterSettings::kHeightMax, "%.1f");
-        changed |= ImGui::SliderFloat("Size", &s.size, WaterSettings::kSizeMin, WaterSettings::kSizeMax, "%.0f");
+        static const char* const kShapeNames[] = { "Rectangle (lake, river, pool)", "Ellipse (round pond)" };
+        int shapeIndex = static_cast<int>(s.shape);
+        if (ImGui::Combo("Shape", &shapeIndex, kShapeNames, IM_ARRAYSIZE(kShapeNames))) {
+            s.shape = static_cast<WaterShape>(shapeIndex);
+            changed = true;
+        }
+        changed |= ImGui::SliderFloat("Width (X)", &s.size, WaterSettings::kSizeMin, WaterSettings::kSizeMax, "%.0f", ImGuiSliderFlags_Logarithmic);
+        changed |= ImGui::SliderFloat("Length (Z)", &s.sizeZ, WaterSettings::kSizeMin, WaterSettings::kSizeMax, "%.0f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("A river is a long thin rectangle: make it long, then turn it with the Rotation Y in the transform\nand set Wind direction to the way it flows. The mesh adapts to the shape.");
         if (Terrain* terrain = scene_->GetTerrain()) {
             if (ImGui::Button("Fit size to terrain")) {
                 const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();
                 s.size = (std::max)(extent.x, extent.y) * 1.2f;   // a little larger: no gap at the shore
+                s.sizeZ = s.size;
                 changed = true;
             }
             float minY = 0.0f, maxY = 0.0f;
@@ -1494,7 +1536,7 @@ void EditorLayer::DrawWaterInspector(Water* water)
             s.reflectionMode = kReflectionOrder[reflectionIndex];
             changed = true;
         }
-        ImGui::SetItemTooltip("Planar modes draw the scene a second time from below the water, so the water\nreflects the terrain and cube too. That pass is skipped while no water is on screen.\nQuarter resolution is the cheapest; the waves blur it anyway.");
+        ImGui::SetItemTooltip("Planar modes draw the scene a second time from below the water, so the water\nreflects the terrain and cube too. That pass is skipped while no water is on screen.\nBodies at the same level share one image; at most 2 planar images are drawn per frame (nearest bodies first),\nthe others use the sky. Quarter resolution is the cheapest; the waves blur it anyway.");
         if (s.reflectionMode != ReflectionMode::Sky) {
             changed |= ImGui::SliderFloat("Mirror distortion", &s.reflectionDistortion, 0.0f, WaterSettings::kDistortionMax, "%.3f");
         }
@@ -1517,9 +1559,9 @@ void EditorLayer::DrawWaterInspector(Water* water)
     }
 
     if (ImGui::CollapsingHeader("Performance")) {
-        static const char* const kMeshNames[] = { "Low (128 cells)", "Medium (256 cells)", "High (512 cells)" };
+        static const char* const kMeshNames[] = { "Low (16 cells per tile)", "Medium (32 cells per tile)", "High (64 cells per tile)" };
         changed |= ImGui::Combo("Mesh detail", &s.meshDetail, kMeshNames, IM_ARRAYSIZE(kMeshNames));
-        ImGui::SetItemTooltip("Grid cells across the plane at the finest level. The water is built from 8 x 8 tiles.");
+        ImGui::SetItemTooltip("Grid cells along one tile edge at the finest level. The water is cut into square tiles:\n8 x 8 for a square body, long rows for a river.");
         changed |= ImGui::SliderFloat("Full detail until", &s.lodDistance, WaterSettings::kLodDistanceMin,
                                       WaterSettings::kLodDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
         ImGui::SetItemTooltip("Tiles farther than this use fewer triangles. 4 levels, switching at 1x, 2.2x and 4.5x this distance.");
@@ -1528,6 +1570,11 @@ void EditorLayer::DrawWaterInspector(Water* water)
         ImGui::TextDisabled("Camera: %d/%d tiles  LOD %d/%d/%d/%d  %d tris", stats.tilesDrawn, stats.tilesTotal,
                             stats.tilesPerLod[0], stats.tilesPerLod[1], stats.tilesPerLod[2], stats.tilesPerLod[3],
                             stats.trianglesDrawn);
+        if (s.reflectionMode != ReflectionMode::Sky) {
+            if (stats.tilesDrawn == 0) ImGui::TextDisabled("Mirror: not on screen");
+            else if (stats.reflectionSlot >= 0) ImGui::TextDisabled("Mirror: planar image %d (bodies at this level share it)", stats.reflectionSlot + 1);
+            else ImGui::TextDisabled("Mirror: sky only (over the budget of %d planar images, or camera below)", WaterFramePlan::kMaxReflections);
+        }
     }
 
     if (ImGui::CollapsingHeader("Debug")) {

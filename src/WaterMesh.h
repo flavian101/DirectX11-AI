@@ -7,10 +7,41 @@
 // terrain needs skirts for that; the water, which is see-through, could not hide them). Only the INTERIOR gets
 // coarser: it is built from big cells of `stride` x `stride` small cells, and the big cells that touch the border
 // are fanned out from their centre vertex to the border's full-resolution vertices.
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
 namespace WaterMesh {
+
+// How many tiles the water is cut into along each side. A square lake is 8 x 8. A long river is cut into a few long
+// rows instead (16 x 2, say), so the tiles stay square and the grid cells stay square: no vertices wasted on
+// a thin strip, none missing along its length.
+struct TileGrid {
+	int x = 8, z = 8;
+	int shapeClass = 0;   // 0..4: how stretched the water is (ratio 1, 2, 4, 8, 16). Used for hysteresis
+	bool operator==(const TileGrid& o) const { return x == o.x && z == o.z; }
+	bool operator!=(const TileGrid& o) const { return !(*this == o); }
+};
+
+// `previousClass`: the class of the grid that is built now (-1 = none). The class only changes once the shape has clearly
+// moved past a boundary, so dragging a size slider near a boundary does not rebuild the mesh every frame.
+inline TileGrid ChooseTileGrid(float extentX, float extentZ, int previousClass = -1)
+{
+	static const int kLong[5]  = { 8, 12, 16, 16, 16 };
+	static const int kShort[5] = { 8, 6, 4, 2, 1 };
+	const float longSide = (std::max)((std::max)(extentX, extentZ), 1e-3f);
+	const float shortSide = (std::max)((std::min)(extentX, extentZ), 1e-3f);
+	const float ideal = std::log2(longSide / shortSide);   // 0 = square, 1 = twice as long as wide, ...
+	int shapeClass = std::clamp(static_cast<int>(std::lround(ideal)), 0, 4);
+	if (previousClass >= 0 && previousClass <= 4 && std::fabs(ideal - static_cast<float>(previousClass)) < 0.75f) shapeClass = previousClass;
+	TileGrid grid;
+	grid.shapeClass = shapeClass;
+	const bool alongX = extentX >= extentZ;
+	grid.x = alongX ? kLong[shapeClass] : kShort[shapeClass];
+	grid.z = alongX ? kShort[shapeClass] : kLong[shapeClass];
+	return grid;
+}
 
 inline std::vector<uint32_t> BuildTileIndices(int cells, int stride)
 {

@@ -38,6 +38,7 @@ public:
     Camera& GetCamera() { return camera_; }
     Terrain* GetTerrain() { return FindFirst<Terrain>(); }
     const Terrain* GetTerrain() const { return FindFirst<Terrain>(); }
+    // The FIRST water body (scenes can have several: loop over GetObjects(), or use FindWaterAt for a position).
     Water* GetWater() { return FindFirst<Water>(); }
     const Water* GetWater() const { return FindFirst<Water>(); }
     Skybox* GetSkybox() { return FindFirst<Skybox>(); }
@@ -55,6 +56,12 @@ public:
     std::unique_ptr<SceneObject> Detach(SceneObjectId id, size_t* index = nullptr);
     SceneObject* Attach(std::unique_ptr<SceneObject> object, size_t index);    SceneObject* Duplicate(SceneObjectId id);
     SceneObject* CreateCube();
+    // A new small water body (a pool). The caller places it (the editor puts it in front of the camera).
+    Water* CreateWater();
+    // The water body at/below a world position, for gameplay: among bodies whose outline contains (x, z), the one whose
+    // surface is highest while still at or below `y` (an object floating in a pool above a lake belongs to the pool);
+    // if `y` is below all of them, the one nearest above (the point is under water). Null if no body covers (x, z).
+    const Water* FindWaterAt(float x, float y, float z) const;
     // Removes every object (and the baked sky lighting that belonged to the old sky). Lights, camera and settings stay.
     void ClearObjects();
 
@@ -100,12 +107,10 @@ public:
     void BeginFrame(ID3D11DeviceContext* ctx) const;
     void SetMainView(ID3D11DeviceContext* ctx, UINT viewportWidth, UINT viewportHeight,
                      bool reflectionAvailable, bool refractionAvailable = false) const;
-    // Does the water want a planar reflection this frame? (A water plane exists, the mode is
-    // not "Sky", and the camera is above it.) Gives the plane height and a resolution scale.
-    // (It also says no when no part of the water is on screen: the mirror image would never be seen.)
-    bool GetPlanarReflection(float& planeHeight, float& resolutionScale) const;
-    // Does the water want a copy of the opaque scene this frame, to bend the view of the bottom? (Same visibility rules.)
-    bool WantsRefraction() const;
+    // Decides, for every water body, what it needs this frame: a mirror image (shared between bodies at the same level,
+    // at most WaterFramePlan::kMaxReflections of them, nearest first) and whether the opaque scene must be copied for
+    // refraction. Bodies that are off screen, or that the camera is under, need nothing. Call once per frame, before drawing.
+    void PlanWater(WaterFramePlan& plan) const;
     // The scene clock, in seconds: the same time the shaders animate with. Pass it to Water::SampleHeight.
     float GetTime() const { return time_; }
     void RenderReflection(ID3D11DeviceContext* ctx, float planeHeight, UINT targetWidth, UINT targetHeight) const;

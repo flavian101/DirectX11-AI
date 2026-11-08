@@ -160,8 +160,10 @@ void Direct3D11Renderer::ReleaseViewResources()
     m_hdrScene.Release();
     m_sceneDepth.Release();
     m_sceneColorCopy.Release();    // view-sized too
-    m_reflectionColor.Release();   // view-sized too; rebuilt on demand at the new size
-    m_reflectionDepth.Release();
+    for (int i = 0; i < WaterFramePlan::kMaxReflections; ++i) {   // view-sized too; rebuilt on demand at the new size
+        m_reflectionColor[i].Release();
+        m_reflectionDepth[i].Release();
+    }
 }
 
 void Direct3D11Renderer::ReleaseBackBufferView()
@@ -261,18 +263,19 @@ bool Direct3D11Renderer::EnsureSceneColorCopy()
     return false;
 }
 
-bool Direct3D11Renderer::RenderReflectionPass(const Scene& scene, float planeHeight, float resolutionScale,
+bool Direct3D11Renderer::RenderReflectionPass(const Scene& scene, int slot, float planeHeight, float resolutionScale,
                                               const float clearColor[4])
 {
+    RenderTarget& color = m_reflectionColor[slot];
+    DepthTarget& depth = m_reflectionDepth[slot];
     const UINT width = (std::max)(1u, static_cast<UINT>(static_cast<float>(m_viewWidth) * resolutionScale));
     const UINT height = (std::max)(1u, static_cast<UINT>(static_cast<float>(m_viewHeight) * resolutionScale));
 
     // Create (or re-create after a resize / quality change) the reflection image + its own depth.
-    if (!m_reflectionColor.IsValid() || m_reflectionColor.GetWidth() != width || m_reflectionColor.GetHeight() != height) {
-        if (!m_reflectionColor.Create(m_device, width, height, DXGI_FORMAT_R16G16B16A16_FLOAT) ||
-            !m_reflectionDepth.Create(m_device, width, height)) {
-            m_reflectionColor.Release();
-            m_reflectionDepth.Release();
+    if (!color.IsValid() || color.GetWidth() != width || color.GetHeight() != height) {
+        if (!color.Create(m_device, width, height, DXGI_FORMAT_R16G16B16A16_FLOAT) || !depth.Create(m_device, width, height)) {
+            color.Release();
+            depth.Release();
             return false;
         }
     }
@@ -281,15 +284,15 @@ bool Direct3D11Renderer::RenderReflectionPass(const Scene& scene, float planeHei
     ID3D11ShaderResourceView* none = nullptr;
     m_context->PSSetShaderResources(Slots::kSrvReflection, 1, &none);
 
-    ID3D11RenderTargetView* target = m_reflectionColor.GetRenderView();
-    m_context->OMSetRenderTargets(1, &target, m_reflectionDepth.GetDepthView());
+    ID3D11RenderTargetView* target = color.GetRenderView();
+    m_context->OMSetRenderTargets(1, &target, depth.GetDepthView());
     D3D11_VIEWPORT viewport{};
     viewport.Width = static_cast<float>(width);
     viewport.Height = static_cast<float>(height);
     viewport.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &viewport);
-    m_reflectionColor.Clear(m_context, clearColor);
-    m_reflectionDepth.Clear(m_context);
+    color.Clear(m_context, clearColor);
+    depth.Clear(m_context);
 
     scene.RenderReflection(m_context, planeHeight, width, height);
     return true;
@@ -313,20 +316,28 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
     // Resources shared by every view below (shadow map, environment map, baked sky lighting).
     scene.BeginFrame(m_context);
 
-    // PASS 2 - the scene seen in the water: drawn from a camera mirrored below the surface.
-    float planeHeight = 0.0f, resolutionScale = 1.0f;
+    // What every water body on screen needs this frame (mirror images, a refraction copy). Decided once, here.
+    WaterFramePlan waterPlan;
+    scene.PlanWater(waterPlan);
+
+    // PASS 2 - the scene seen in the water: drawn from a camera mirrored below each water LEVEL that wants one.
+    // Bodies at the same level share an image; a budget caps how many are drawn (see Scene::PlanWater).
     bool reflectionReady = false;
-    if (scene.GetPlanarReflection(planeHeight, resolutionScale)) {
-        reflectionReady = RenderReflectionPass(scene, planeHeight, resolutionScale, clearColor);
-    } else {
-        m_reflectionColor.Release();   // not needed: give the memory back
-        m_reflectionDepth.Release();
+    for (int i = 0; i < WaterFramePlan::kMaxReflections; ++i) {
+        if (i < waterPlan.reflectionCount &&
+            RenderReflectionPass(scene, i, waterPlan.reflections[i].planeHeight, waterPlan.reflections[i].resolutionScale, clearColor)) {
+            waterPlan.reflections[i].image = m_reflectionColor[i].GetShaderView();
+            reflectionReady = true;
+        } else {
+            m_reflectionColor[i].Release();   // not needed: give the memory back
+            m_reflectionDepth[i].Release();
+        }
     }
 
     // Refraction needs a copy of the opaque picture to read while the water is drawn over that same picture.
-    // Only made when the water is on screen and asks for it (refraction > 0): otherwise it costs nothing.
+    // Only made when some water on screen asks for it (refraction > 0): otherwise it costs nothing.
     bool refractionReady = false;
-    if (scene.WantsRefraction()) {
+    if (waterPlan.refraction) {
         refractionReady = EnsureSceneColorCopy();
     } else {
         m_sceneColorCopy.Release();   // not needed: give the memory back
@@ -338,7 +349,8 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
     m_hdrScene.Clear(m_context, clearColor);
     m_sceneDepth.Clear(m_context);
     scene.SetMainView(m_context, m_viewWidth, m_viewHeight, reflectionReady, refractionReady);
-    const RenderView mainView = scene.GetMainView();   // the camera's frustum, for culling
+    RenderView mainView = scene.GetMainView();   // the camera's frustum, for culling
+    mainView.waterPlan = &waterPlan;             // each water body picks its own mirror image from this
     scene.RenderPhase(m_context, ScenePhase::Opaque, mainView);
     if (refractionReady) m_context->CopyResource(m_sceneColorCopy.GetTexture(), m_hdrScene.GetTexture());
 
@@ -346,9 +358,8 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
     // the shaders as a texture, together with the reflection image.
     BindSceneTarget(true);
     ID3D11ShaderResourceView* sceneDepth = m_sceneDepth.GetShaderView();
-    ID3D11ShaderResourceView* reflection = reflectionReady ? m_reflectionColor.GetShaderView() : nullptr;
     m_context->PSSetShaderResources(Slots::kSrvSceneDepth, 1, &sceneDepth);
-    m_context->PSSetShaderResources(Slots::kSrvReflection, 1, &reflection);
+    // (The mirror image, t3, is bound by each water body just before it draws: they do not all use the same one.)
     ID3D11ShaderResourceView* sceneColor = refractionReady ? m_sceneColorCopy.GetShaderView() : nullptr;
     m_context->PSSetShaderResources(Slots::kSrvSceneColor, 1, &sceneColor);
     scene.RenderPhase(m_context, ScenePhase::Transparent, mainView);

@@ -60,6 +60,7 @@ bool BuildDemoScene(Scene& scene, ID3D11Device* device)
     WaterSettings waterSettings = water->GetSettings();
     const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();
     waterSettings.size = (std::max)(extent.x, extent.y) * 1.2f;
+    waterSettings.sizeZ = waterSettings.size;
     water->SetSettings(waterSettings);
     return true;
 }

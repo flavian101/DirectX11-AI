@@ -5,6 +5,7 @@ struct VS_OUT {
     float4 position : SV_POSITION;
     float3 worldPos : TEXCOORD0;   // where the surface point ended up
     float3 rest     : TEXCOORD1;   // xy = where it rests (waves are parameterised by this), z = wave height / tallest wave (-1..1)
+    float2 local    : TEXCOORD2;   // position on the plane itself, -1..1 in both directions (for round bodies)
 };
 
 VS_OUT main(VS_IN input)
@@ -31,5 +32,6 @@ VS_OUT main(VS_IN input)
     output.position = mul(mul(float4(worldPos, 1.0f), view), proj);
     output.worldPos = worldPos;
     output.rest = float3(restPos.xz, d.y / max(waterMeshInfo.z, 1e-4f));
+    output.local = input.position.xz;
     return output;
 }

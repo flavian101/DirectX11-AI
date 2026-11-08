@@ -70,6 +70,8 @@ public:
     // Content a user creates and manages (cubes, imported models), as opposed to the scene's fixtures (terrain,
     // water, sky), which the editor will not delete or duplicate.
     virtual bool IsUserContent() const { return false; }
+    // Can the editor delete it? Content can; so can things the scene may have several of (water bodies). The terrain and sky cannot.
+    virtual bool CanDelete() const { return IsUserContent(); }
 
     // --- shadow casting (opt-in: most objects, like water and the sky, cast none) ---
     virtual bool CastsShadow() const { return false; }

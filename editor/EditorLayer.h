@@ -94,6 +94,7 @@ private:
     bool viewportFocused_ = false;
     bool hierarchyFocused_ = false;
     bool addCubeRequested_ = false;
+    bool addWaterRequested_ = false;
     bool duplicateRequested_ = false;
     bool deleteRequested_ = false;
 

@@ -2,6 +2,7 @@
 #include "Color.h"
 #include "Logger.h"
 #include "Mesh.h"
+#include "ShaderSlots.h"
 #include "WaterMesh.h"
 #include <DirectXMath.h>
 #include <algorithm>
@@ -21,16 +22,17 @@ struct WaterMaterialCB {
 	XMFLOAT4 foamInfo;       // crest foam strength, crest foam threshold, scatter strength, debug view
 	XMFLOAT4 meshInfo;       // LOD distance, finest grid cell size, tallest possible wave, unused
 	XMFLOAT4 wind;           // xy = unit direction the waves travel toward
+	XMFLOAT4 shape;          // x = a mirror image is bound for this body this frame, y = shape (0 rect, 1 ellipse), z = ellipse edge softness
 	XMFLOAT4 waveDirK[WaterWaves::kMaxWaves];     // xy = direction, z = k, w = amplitude
 	XMFLOAT4 waveMotion[WaterWaves::kMaxWaves];   // x = omega, y = steepness, z = phase offset
 };
 static_assert(sizeof(WaterMaterialCB) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
-// The water is a grid of kTiles x kTiles TILES. Each tile is its own mesh, so it can be skipped when the camera
-// cannot see it and drawn with fewer triangles when it is far away (see ChooseTiles). The grid is finest right
-// under the camera and coarse at the horizon, instead of one uniform grid that is too coarse up close and wasteful far away.
-constexpr int kTiles = 8;
-constexpr int kCellsPerTile[3] = { 16, 32, 64 };   // by WaterSettings::meshDetail: 128, 256, 512 cells across
+// The water is a grid of TILES (8 x 8 for a square body; fewer, longer rows for a river: see WaterMesh::ChooseTileGrid).
+// Each tile is its own mesh, so it can be skipped when the camera cannot see it and drawn with fewer triangles when it is
+// far away (see ChooseTiles). The grid is finest right under the camera and coarse at the horizon, instead of one uniform
+// grid that is too coarse up close and wasteful far away.
+constexpr int kCellsPerTile[3] = { 16, 32, 64 };   // by WaterSettings::meshDetail: cells along one tile edge
 constexpr int kLodStride[kWaterLodCount] = { 1, 2, 4, 8 };   // level n keeps every stride-th vertex of the tile's interior
 
 // World-space box that contains a local-space box after a transform (which may scale, rotate and move it).
@@ -62,6 +64,21 @@ Water::Water(ID3D11Device* device) : device_(device), material_(device), wireMat
 {
 	CreateRenderStates(device);
 	SetSettings(settings_);   // builds the mesh, the wave table and the shader constants
+}
+
+std::unique_ptr<SceneObject> Water::Clone(ID3D11Device* device) const
+{
+	auto copy = std::make_unique<Water>(device);
+	copy->SetSettings(settings_);
+	copy->SetEditorTransform(position_, rotation_, scale_);
+	return copy;
+}
+
+bool Water::GetBoundingSphere(XMFLOAT3& center, float& radius) const
+{
+	center = position_;
+	radius = 0.5f * std::sqrt(ExtentX() * ExtentX() + ExtentZ() * ExtentZ()) + waves_.heightBound;
+	return true;
 }
 
 Water::~Water()
@@ -112,6 +129,8 @@ void WaterSettings::Clamp()
 	auto clamp01 = [](float v) { return std::clamp(v, 0.0f, 1.0f); };
 	height = std::clamp(height, kHeightMin, kHeightMax);
 	size = std::clamp(size, kSizeMin, kSizeMax);
+	sizeZ = std::clamp(sizeZ, kSizeMin, kSizeMax);
+	shape = static_cast<WaterShape>(std::clamp(static_cast<int>(shape), 0, 1));
 	color = { clamp01(color.x), clamp01(color.y), clamp01(color.z) };
 	alpha = std::clamp(alpha, 0.05f, 1.0f);
 	shallowColor = { clamp01(shallowColor.x), clamp01(shallowColor.y), clamp01(shallowColor.z) };
@@ -197,17 +216,27 @@ void Water::SetSettings(const WaterSettings& settings)
 	settings_ = settings;
 	settings_.Clamp();
 	position_.y = settings_.height;
-	if (settings_.meshDetail != builtMeshDetail_) RebuildMesh();
+	EnsureMesh();
 	RebuildWaves();
 	UpdateWorldTransform();
-	UploadMaterial();
+	UploadMaterial(false);
 }
 
-void Water::RebuildMesh()
+// The grid depends on the body's proportions (a river needs long rows of tiles, a pond square ones) and on the mesh detail
+// setting. Both change rarely: only then is the mesh rebuilt.
+void Water::EnsureMesh()
+{
+	const WaterMesh::TileGrid grid = WaterMesh::ChooseTileGrid(ExtentX(), ExtentZ(), gridBuilt_ ? builtGrid_.shapeClass : -1);
+	if (gridBuilt_ && grid == builtGrid_ && settings_.meshDetail == builtMeshDetail_ && renderable_) return;
+	RebuildMesh(grid);
+}
+
+void Water::RebuildMesh(const WaterMesh::TileGrid& grid)
 {
 	if (!device_) return;
 	const int cells = kCellsPerTile[std::clamp(settings_.meshDetail, 0, 2)];
-	const int total = kTiles * cells;
+	const int totalX = grid.x * cells;
+	const int totalZ = grid.z * cells;
 	const int row = cells + 1;
 
 	// The same triangle lists serve every tile (a tile is just a patch of the same grid), one per level of detail.
@@ -220,15 +249,15 @@ void Water::RebuildMesh()
 
 	std::vector<Mesh*> meshes;
 	std::vector<Tile> tiles;
-	meshes.reserve(static_cast<size_t>(kTiles) * kTiles);
-	for (int tz = 0; tz < kTiles; ++tz) {
-		for (int tx = 0; tx < kTiles; ++tx) {
+	meshes.reserve(static_cast<size_t>(grid.x) * grid.z);
+	for (int tz = 0; tz < grid.z; ++tz) {
+		for (int tx = 0; tx < grid.x; ++tx) {
 			std::vector<Vertex> vertices;
 			vertices.reserve(static_cast<size_t>(row) * row);
 			for (int z = 0; z < row; ++z) {
-				const float v = static_cast<float>(tz * cells + z) / total;
+				const float v = static_cast<float>(tz * cells + z) / totalZ;
 				for (int x = 0; x < row; ++x) {
-					const float u = static_cast<float>(tx * cells + x) / total;
+					const float u = static_cast<float>(tx * cells + x) / totalX;
 					// Local space is [-1, 1]; Water::UpdateWorldTransform scales it to settings_.size.
 					vertices.emplace_back(XMFLOAT3(u * 2.0f - 1.0f, 0.0f, v * 2.0f - 1.0f),
 										  XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT2(u, v));
@@ -236,8 +265,8 @@ void Water::RebuildMesh()
 			}
 			meshes.push_back(new Mesh(device_, vertices, levels));
 			Tile tile;
-			tile.localMin = { 2.0f * tx / kTiles - 1.0f, 0.0f, 2.0f * tz / kTiles - 1.0f };
-			tile.localMax = { 2.0f * (tx + 1) / kTiles - 1.0f, 0.0f, 2.0f * (tz + 1) / kTiles - 1.0f };
+			tile.localMin = { 2.0f * tx / grid.x - 1.0f, 0.0f, 2.0f * tz / grid.z - 1.0f };
+			tile.localMax = { 2.0f * (tx + 1) / grid.x - 1.0f, 0.0f, 2.0f * (tz + 1) / grid.z - 1.0f };
 			tiles.push_back(tile);
 		}
 	}
@@ -250,6 +279,8 @@ void Water::RebuildMesh()
 	renderable_ = std::move(replacement);
 	tiles_ = std::move(tiles);
 	cellsPerTile_ = cells;
+	builtGrid_ = grid;
+	gridBuilt_ = true;
 	builtMeshDetail_ = settings_.meshDetail;
 	for (int lod = 0; lod < kWaterLodCount; ++lod) trianglesPerLod_[lod] = triangles[lod];
 	tileLod_.assign(tiles_.size(), Model::kSkipMesh);   // "no level chosen yet": the first frame picks without hysteresis
@@ -260,15 +291,18 @@ void Water::RebuildWaves()
 	waves_ = WaterWaves::Build(settings_.WaveParams());
 }
 
-void Water::UploadMaterial()
+void Water::UploadMaterial(bool mirrored) const
 {
 	if (!renderable_) return;
 	// Colours are picked as sRGB, the shader wants linear.
 	const XMFLOAT3 deep = SrgbToLinear(settings_.color);
 	const XMFLOAT3 shallow = SrgbToLinear(settings_.shallowColor);
 	const float windRadians = XMConvertToRadians(settings_.windDirection);
-	const float totalCells = static_cast<float>(kTiles * (std::max)(cellsPerTile_, 1));
-	const float cellSize = settings_.size * (std::max)(scale_.x, scale_.z) / totalCells;
+	// One grid cell of the finest level, in world units (the cells are square: the tiles are).
+	const float cellsX = static_cast<float>((std::max)(builtGrid_.x, 1) * (std::max)(cellsPerTile_, 1));
+	const float cellsZ = static_cast<float>((std::max)(builtGrid_.z, 1) * (std::max)(cellsPerTile_, 1));
+	const float cellSize = (std::max)(ExtentX() / cellsX, ExtentZ() / cellsZ);
+	const float halfSmallSide = 0.5f * (std::max)((std::min)(ExtentX(), ExtentZ()), 0.01f);
 
 	WaterMaterialCB block{};
 	block.deepColor = { deep.x, deep.y, deep.z, settings_.alpha };
@@ -280,6 +314,8 @@ void Water::UploadMaterial()
 					   static_cast<float>(static_cast<int>(settings_.debugView)) };
 	block.meshInfo = { settings_.lodDistance, cellSize, waves_.heightBound, 0.0f };
 	block.wind = { std::cos(windRadians), std::sin(windRadians), 0.0f, 0.0f };
+	// The rim of a round body fades over about 40 cm (as a fraction of its radius; the plane's own space is -1..1).
+	block.shape = { mirrored ? 1.0f : 0.0f, settings_.shape == WaterShape::Ellipse ? 1.0f : 0.0f, 0.4f / halfSmallSide, 0.0f };
 	for (int i = 0; i < waves_.count; ++i) {
 		const WaterWaves::Wave& w = waves_.waves[i];
 		block.waveDirK[i] = { w.dirX, w.dirZ, w.k, w.amplitude };
@@ -304,6 +340,7 @@ void Water::ChooseTiles(const RenderView& view) const
 	// The waves lift and push the surface by up to heightBound in every direction: the boxes must include that, or
 	// a tile whose wave crest is still on screen could be skipped.
 	const float margin = waves_.heightBound + 0.25f;
+	const bool round = settings_.shape == WaterShape::Ellipse;
 
 	// To CHANGE level a tile must pass the threshold by 10%, so a tile on a boundary does not flicker as the camera jitters.
 	const float thresholds[kWaterLodCount - 1] = { settings_.lodDistance, settings_.lodDistance * 2.2f, settings_.lodDistance * 4.5f };
@@ -317,6 +354,15 @@ void Water::ChooseTiles(const RenderView& view) const
 		worldMax = { worldMax.x + margin, worldMax.y + margin, worldMax.z + margin };
 
 		if (settings_.frustumCulling && !view.frustum.IntersectsAABB(worldMin, worldMax)) continue;
+
+		// A round body only fills the middle of its square: tiles in the corners lie wholly outside the ellipse.
+		if (round) {
+			const XMFLOAT3& lo = tiles_[i].localMin;
+			const XMFLOAT3& hi = tiles_[i].localMax;
+			const float nearestX = (lo.x <= 0.0f && hi.x >= 0.0f) ? 0.0f : (std::min)(std::abs(lo.x), std::abs(hi.x));
+			const float nearestZ = (lo.z <= 0.0f && hi.z >= 0.0f) ? 0.0f : (std::min)(std::abs(lo.z), std::abs(hi.z));
+			if (nearestX * nearestX + nearestZ * nearestZ > 1.0f) continue;
+		}
 
 		// Distance is measured from the REAL camera even for the mirror view, so every view draws the same level.
 		const float distance = DistanceToBox(view.lodOrigin, worldMin, worldMax);
@@ -341,6 +387,17 @@ void Water::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 {
 	if (!IsValid() || !ctx) return;
 	ChooseTiles(view);
+	WaterViewStats& stats = stats_[static_cast<int>(view.kind)];
+	if (stats.tilesDrawn == 0) return;   // nothing of this body is on screen: no state changes, no draw
+
+	// Which mirror image does the scene's plan give THIS body? (Several bodies can share one, or have none.)
+	ID3D11ShaderResourceView* mirror = nullptr;
+	int slot = -1;
+	if (view.waterPlan) mirror = view.waterPlan->ImageFor(this, &slot);
+	stats.reflectionSlot = mirror ? slot : -1;
+	UploadMaterial(mirror != nullptr);
+	ctx->PSSetShaderResources(Slots::kSrvReflection, 1, &mirror);
+
 	if (settings_.wireframe && wireMaterial_.HasRasterizerState()) {
 		wireMaterial_.Apply(ctx);
 		renderable_->Render(ctx, &drawList_);
@@ -366,9 +423,25 @@ bool Water::IsVisible(const Frustum& frustum) const
 
 bool Water::IsOverWater(float x, float z) const
 {
-	const float halfX = std::abs(scale_.x) * settings_.size * 0.5f;
-	const float halfZ = std::abs(scale_.z) * settings_.size * 0.5f;
-	return std::abs(x - position_.x) <= halfX && std::abs(z - position_.z) <= halfZ;
+	if (!renderable_ || !renderable_->GetModel()) return false;
+	// Into the plane's own space (-1..1 across), where both outlines are trivial: this takes rotation and scale into account.
+	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
+	XMVECTOR determinant;
+	const XMMATRIX inverse = XMMatrixInverse(&determinant, world);
+	if (std::abs(XMVectorGetX(determinant)) < 1e-12f) return false;
+	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), inverse);
+	const float lx = XMVectorGetX(local), lz = XMVectorGetZ(local);
+	if (settings_.shape == WaterShape::Ellipse) return lx * lx + lz * lz <= 1.0f;
+	return std::abs(lx) <= 1.0f && std::abs(lz) <= 1.0f;
+}
+
+float Water::DistanceTo(const XMFLOAT3& point) const
+{
+	if (!renderable_ || !renderable_->GetModel()) return 0.0f;
+	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
+	XMFLOAT3 worldMin, worldMax;
+	TransformBounds(world, { -1.0f, 0.0f, -1.0f }, { 1.0f, 0.0f, 1.0f }, worldMin, worldMax);
+	return DistanceToBox(point, worldMin, worldMax);
 }
 
 float Water::SampleHeight(float x, float z, float time) const
@@ -402,15 +475,16 @@ bool Water::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotatio
 	rotation_ = rotation;
 	scale_ = scale;
 	settings_.height = position_.y;   // one source of truth: otherwise the next SetSettings() snaps Y back
+	EnsureMesh();                      // scaling can change the body's proportions: a river needs a different grid than a pond
 	UpdateWorldTransform();
-	UploadMaterial();   // the grid cell size depends on the scale
+	UploadMaterial(false);             // the grid cell size depends on the scale
 	return true;
 }
 
 void Water::UpdateWorldTransform()
 {
 	const XMMATRIX transform = XMMatrixScaling(scale_.x * settings_.size * 0.5f,
-											   scale_.y, scale_.z * settings_.size * 0.5f) *
+											   scale_.y, scale_.z * settings_.sizeZ * 0.5f) *
 		XMMatrixRotationX(rotation_.x) * XMMatrixRotationY(rotation_.y) *
 		XMMatrixRotationZ(rotation_.z) *
 		XMMatrixTranslation(position_.x, position_.y, position_.z);

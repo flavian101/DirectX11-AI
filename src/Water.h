@@ -3,7 +3,10 @@
 #include "SceneObject.h"
 #include "Material.h"
 #include "RenderView.h"
+#include "WaterMesh.h"
+#include "WaterPlan.h"
 #include "WaterWaves.h"
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -17,6 +20,10 @@ enum class WaterLook { Tropical, Ocean, Lake, Swamp, Arctic };
 // at a quarter / half / full of the screen's resolution. Values are saved in scene files: only ever ADD to the end.
 enum class ReflectionMode : int { Sky = 0, PlanarHalf = 1, PlanarFull = 2, PlanarQuarter = 3 };
 
+// The outline of a water body, seen from above. Values are saved in scene files: only ever ADD to the end.
+// A round pond is the square plane cut to its inscribed ellipse; a river is a long thin rectangle.
+enum class WaterShape : int { Rectangle = 0, Ellipse = 1 };
+
 // Shows one ingredient of the water on its own, to tune it. Never saved with the scene.
 enum class WaterDebugView : int { Off = 0, Normals = 1, Depth = 2, Foam = 3, Fresnel = 4, CrestHeight = 5 };
 
@@ -25,7 +32,9 @@ constexpr int kWaterLodCount = 4;   // level 0 = every vertex; each next level k
 struct WaterSettings {
 	// --- surface ---
 	float height = 4.0f;          // world Y of the water plane (kept in sync with the editor transform)
-	float size = 180.0f;          // side length of the square plane
+	float size = 180.0f;          // width: the plane's extent along X
+	float sizeZ = 180.0f;         // length: the plane's extent along Z (a river is a long, thin rectangle)
+	WaterShape shape = WaterShape::Rectangle;
 	DirectX::XMFLOAT3 color = { 0.05f, 0.25f, 0.45f };   // DEEP water colour
 	float alpha = 0.68f;                                 // opacity of deep water
 
@@ -69,7 +78,7 @@ struct WaterSettings {
 	bool wireframe = false;       // draw the mesh as wires: shows the level-of-detail tiles
 
 	static constexpr float kHeightMin = -100.0f, kHeightMax = 200.0f;
-	static constexpr float kSizeMin = 10.0f, kSizeMax = 2000.0f;
+	static constexpr float kSizeMin = 2.0f, kSizeMax = 2000.0f;
 	static constexpr float kAmplitudeMax = 2.0f, kSpeedMax = 5.0f;
 	static constexpr float kFrequencyMin = 0.05f, kFrequencyMax = 2.0f;
 	static constexpr int kWaveCountMin = 2, kWaveCountMax = WaterWaves::kMaxWaves;
@@ -98,6 +107,7 @@ struct WaterViewStats {
 	int tilesDrawn = 0;
 	int tilesPerLod[kWaterLodCount] = {};
 	int trianglesDrawn = 0;
+	int reflectionSlot = -1;   // which planar reflection image this body read (-1 = the sky cubemap)
 };
 
 class Water final : public SceneObject {
@@ -105,7 +115,14 @@ public:
 	explicit Water(ID3D11Device* device);
 	~Water();
 
-	const char* GetEditorName() const override { return "Water"; }
+	// Several water bodies can exist, so each shows its own name (Scene::Adopt gives "Water 7" and so on).
+	const char* GetEditorName() const override { return GetName().empty() ? "Water" : GetName().c_str(); }
+	const char* GetTypeName() const override { return "Water"; }
+	bool CanClone() const noexcept override { return true; }
+	std::unique_ptr<SceneObject> Clone(ID3D11Device* device) const override;
+	bool CanDelete() const override { return true; }
+	// A sphere around the whole body, so the editor's Frame command works. (Water casts no shadow: the sun ignores it.)
+	bool GetBoundingSphere(DirectX::XMFLOAT3& center, float& radius) const override;
 	RenderCategory GetRenderCategory() const override { return RenderCategory::Transparent; }
 	DirectX::XMFLOAT3 GetSortPosition() const override { return position_; }
 	bool GetEditorTransform(DirectX::XMFLOAT3& position,
@@ -126,8 +143,10 @@ public:
 	float SampleHeight(float x, float z, float time) const;
 	// Unit surface normal at (x, z), from the same waves.
 	DirectX::XMFLOAT3 SampleNormal(float x, float z, float time) const;
-	// Is (x, z) inside the water plane's footprint? (Ignores tilt: the water is meant to lie flat.)
+	// Is (x, z) inside this body's outline (rectangle or ellipse, turned and scaled like the object)?
 	bool IsOverWater(float x, float z) const;
+	// Distance from a point to the nearest part of this body's box (0 inside it). Used to decide which bodies get mirrors.
+	float DistanceTo(const DirectX::XMFLOAT3& point) const;
 
 	// --- for the scene and the renderer ---
 	// True if any part of the water (including its tallest waves) can be inside this frustum.
@@ -136,10 +155,13 @@ public:
 
 private:
 	void CreateRenderStates(ID3D11Device* device);
-	void RebuildMesh();
+	void RebuildMesh(const WaterMesh::TileGrid& grid);
 	void RebuildWaves();
-	void UploadMaterial();
+	void EnsureMesh();                    // rebuilds the tiles when the mesh detail or the body's proportions need a different grid
+	void UploadMaterial(bool mirrored) const;   // `mirrored`: this frame, a mirror image is bound for this body
 	void UpdateWorldTransform();
+	float ExtentX() const { return settings_.size * std::abs(scale_.x); }   // world size along X
+	float ExtentZ() const { return settings_.sizeZ * std::abs(scale_.z); }
 	void ChooseTiles(const RenderView& view) const;
 
 	struct Tile {
@@ -157,6 +179,8 @@ private:
 	WaterWaves::Table waves_;
 	std::vector<Tile> tiles_;
 	int builtMeshDetail_ = -1;
+	WaterMesh::TileGrid builtGrid_;
+	bool gridBuilt_ = false;
 	int cellsPerTile_ = 0;
 	int trianglesPerLod_[kWaterLodCount] = {};
 	mutable std::vector<unsigned char> drawList_;    // per tile: level of detail, or Model::kSkipMesh

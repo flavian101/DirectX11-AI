@@ -91,6 +91,7 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
         if (!maps.empty()) entry["maps"] = maps;
     } else if (const auto* water = dynamic_cast<const Water*>(&object)) {
         entry["type"] = "Water";
+        entry["name"] = water->GetName();   // a scene can hold several bodies ("Lake", "Pool"): they keep their names
         entry["settings"] = water->GetSettings();
     } else if (const auto* sky = dynamic_cast<const Skybox*>(&object)) {
         entry["type"] = "Skybox";
@@ -168,7 +169,10 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
             warnings.push_back("The terrain mesh could not be rebuilt with the saved settings.");
         }
     } else if (auto* water = dynamic_cast<Water*>(&object)) {
+        if (entry.contains("name") && entry["name"].is_string()) water->SetName(entry["name"].get<std::string>());
         WaterSettings loaded = entry.value("settings", WaterSettings{});
+        // Scenes saved before water had a separate length were square: the missing length is the width.
+        if (entry.contains("settings") && entry["settings"].is_object() && !entry["settings"].contains("sizeZ")) loaded.sizeZ = loaded.size;
         loaded.debugView = water->GetSettings().debugView;   // debug switches are not part of a scene: undo and load must not flip them
         loaded.wireframe = water->GetSettings().wireframe;
         water->SetSettings(loaded);

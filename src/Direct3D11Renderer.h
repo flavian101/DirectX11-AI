@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include "WaterPlan.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -46,7 +47,8 @@ private:
     bool CreateViewResources(UINT width, UINT height);   // HDR buffer + depth (+ view texture when offscreen)
     void ReleaseViewResources();
     void ReleaseBackBufferView();
-    bool RenderReflectionPass(const Scene& scene, float planeHeight, float resolutionScale, const float clearColor[4]);
+    // Draws the mirror image number `slot` of the frame's water plan. Returns false if its images could not be created.
+    bool RenderReflectionPass(const Scene& scene, int slot, float planeHeight, float resolutionScale, const float clearColor[4]);
     bool EnsureSceneColorCopy();   // (re)creates the refraction copy at the view's size
     void BindBackBuffer();   // window's render target + depth + viewport for the current size
     // The HDR scene buffer + depth + viewport: where the 3D world is drawn. With readOnlyDepth the
@@ -68,9 +70,9 @@ private:
     ID3D11DepthStencilState* m_depthState = nullptr;
     ID3D11SamplerState* m_linearSampler = nullptr;   // bound to PS slot s0 for every material
     RenderTarget m_hdrScene;     // the 3D world is drawn here (16-bit float), then resolved to the window
-    RenderTarget m_reflectionColor;   // the scene as seen in the water (created on demand)
+    RenderTarget m_reflectionColor[WaterFramePlan::kMaxReflections];   // the scene as seen in the water: one per water level (created on demand)
     RenderTarget m_sceneColorCopy;    // the opaque scene, copied for the water to refract (created on demand)
-    DepthTarget m_reflectionDepth;
+    DepthTarget m_reflectionDepth[WaterFramePlan::kMaxReflections];
     ID3D11SamplerState* m_clampSampler = nullptr;   // bound to s2: linear filtering, edges clamp
     PostProcess m_post;          // full-screen passes: HDR buffer -> back buffer
 };

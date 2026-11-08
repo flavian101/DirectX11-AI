@@ -15,6 +15,7 @@ cbuffer WaterMaterial : register(b4) {
     float4 waterFoamInfo;       // x = crest foam strength, y = crest foam threshold, z = scatter strength, w = debug view
     float4 waterMeshInfo;       // x = LOD distance, y = size of one grid cell at the finest level, z = tallest possible wave
     float4 waterWind;           // xy = unit direction the waves travel toward (XZ)
+    float4 waterShape;          // x = 1 when this body has a mirror image bound to t3 this frame, y = shape (0 rectangle, 1 ellipse), z = ellipse edge softness
     float4 waterWaveDirK[WATER_MAX_WAVES];     // xy = unit direction, z = k (radians per unit), w = amplitude
     float4 waterWaveMotion[WATER_MAX_WAVES];   // x = omega (radians per second), y = steepness Q, z = phase offset
 };

@@ -2,7 +2,7 @@
 #include "noise.hlsli"
 
 TextureCube  environmentMap : register(t1);   // the skybox cubemap, bound once per frame by Scene
-Texture2D<float4> planarReflection : register(t3);   // the scene seen from below the water (when reflectionParams.x = 1)
+Texture2D<float4> planarReflection : register(t3);   // the scene seen from below the water (when waterShape.x = 1: set per water body)
 Texture2D<float> sceneDepth : register(t4);   // the camera's depth buffer, bound for the water pass only
 Texture2D<float4> sceneColor : register(t14); // a copy of the opaque scene, for refraction (when reflectionParams.y = 1)
 SamplerState linearSampler  : register(s0);
@@ -12,6 +12,7 @@ struct PS_IN {
     float4 position : SV_POSITION;
     float3 worldPos : TEXCOORD0;
     float3 rest     : TEXCOORD1;   // xy = rest position of this surface point, z = wave height / tallest wave
+    float2 local    : TEXCOORD2;   // position on the plane itself, -1..1 (the plane is square in its own space)
 };
 
 // Hardware depth (0..1, spread non-linearly) -> distance in front of the camera, in world units.
@@ -50,6 +51,16 @@ float4 main(PS_IN input) : SV_Target
     const float absorption    = waterDepthParams.w;
     const float time          = frameParams.x;
     const int   debugView     = (int)waterFoamInfo.w;
+
+    // A round body is the square plane cut to its inscribed ellipse: throw away what lies outside it, and fade the
+    // last few centimetres so the rim is not a hard stair-stepped line.
+    float shapeFade = 1.0f;
+    [branch]
+    if (waterShape.y > 0.5f) {
+        const float inside = 1.0f - length(input.local);
+        clip(inside);
+        shapeFade = saturate(inside / max(waterShape.z, 1e-4f));
+    }
 
     const float3 toEye = cameraPos.xyz - input.worldPos;
     const float distanceToEye = length(toEye);
@@ -115,7 +126,7 @@ float4 main(PS_IN input) : SV_Target
     const float skyBlur = saturate(distanceToEye / (2.0f * waterWaveInfo.w)) * 4.0f;
     float3 reflected = environmentMap.SampleLevel(linearSampler, R, skyBlur).rgb;
     [branch]
-    if (reflectionParams.x > 0.5f) {
+    if (waterShape.x > 0.5f) {   // THIS body has a mirror image (other bodies in the same frame may not)
         // Where on screen is this pixel? The reflection image was drawn with the same projection,
         // so the same screen position shows the mirror image of what lies behind the surface.
         float2 mirrorUV = screenUV + N.xz * mirrorWobble;       // wave normals wobble the mirror
@@ -144,7 +155,7 @@ float4 main(PS_IN input) : SV_Target
     // Opacity. Shallow water is more see-through; right at the shoreline it fades to nothing so there is
     // no hard line where the plane cuts through the ground. The glint also adds opacity so it never looks washed out.
     const float alphaBody = baseAlpha * lerp(0.35f, 1.0f, depthFade);
-    const float edgeFade = saturate(thickness / (0.35f * fadeDistance));
+    const float edgeFade = saturate(thickness / (0.35f * fadeDistance)) * shapeFade;
     const float waterAlpha = saturate(lerp(alphaBody, 1.0f, fresnel) + dot(glint, float3(0.333f, 0.333f, 0.333f)));
 
     // ---- Foam: where the water is shallow (the shore) and on the steepest crests ----
@@ -187,6 +198,7 @@ float4 main(PS_IN input) : SV_Target
         rgb = waterColor * alpha;
     }
     // Foam goes over everything and stays solid even where the water itself is almost invisible.
+    foam *= shapeFade;
     rgb = foamColor * foam + rgb * (1.0f - foam);
     alpha = foam + alpha * (1.0f - foam);
     return float4(rgb, alpha);

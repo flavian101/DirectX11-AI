@@ -278,33 +278,80 @@ RenderView Scene::GetMainView() const
     return view;
 }
 
-bool Scene::GetPlanarReflection(float& planeHeight, float& resolutionScale) const
+void Scene::PlanWater(WaterFramePlan& plan) const
 {
-    const Water* water = GetWater();
-    if (!water) return false;
-    const WaterSettings& settings = water->GetSettings();
-    if (settings.reflectionMode == ReflectionMode::Sky) return false;
-    planeHeight = settings.height;
-    // Under the surface the water is culled and there is nothing to reflect.
-    if (camera_.GetPosition().y <= planeHeight + 0.01f) return false;
-    // Looking at the sky or away from the lake: the whole mirrored scene would be drawn for nothing.
-    if (!water->IsVisible(GetMainView().frustum)) return false;
-    switch (settings.reflectionMode) {
-    case ReflectionMode::PlanarQuarter: resolutionScale = 0.25f; break;
-    case ReflectionMode::PlanarHalf:    resolutionScale = 0.5f;  break;
-    default:                            resolutionScale = 1.0f;  break;
+    plan = WaterFramePlan{};
+    const DirectX::XMFLOAT3 eye = camera_.GetPosition();
+    const Frustum frustum = GetMainView().frustum;
+
+    struct Wanting { size_t entry; float height; float resolutionScale; float distance; };
+    std::vector<Wanting> wanting;
+    for (const auto& object : objects_) {
+        const Water* water = dynamic_cast<const Water*>(object.get());
+        if (!water || !water->IsVisible(frustum)) continue;   // off screen: its mirror would never be seen
+        const WaterSettings& settings = water->GetSettings();
+        plan.entries.push_back({ water, -1 });
+        // From below the surface the water is culled: nothing to mirror or to bend.
+        if (eye.y <= settings.height + 0.01f) continue;
+        if (settings.refraction > 0.001f) plan.refraction = true;
+        if (settings.reflectionMode == ReflectionMode::Sky) continue;
+        float resolutionScale = 1.0f;
+        switch (settings.reflectionMode) {
+        case ReflectionMode::PlanarQuarter: resolutionScale = 0.25f; break;
+        case ReflectionMode::PlanarHalf:    resolutionScale = 0.5f;  break;
+        default:                            resolutionScale = 1.0f;  break;
+        }
+        wanting.push_back({ plan.entries.size() - 1, settings.height, resolutionScale, water->DistanceTo(eye) });
     }
-    return true;
+
+    // Each mirror image is a whole extra scene draw, so there is a budget. The nearest bodies get one first;
+    // bodies at the same level share it (the image is the same), the rest keep the cheap sky reflection.
+    std::sort(wanting.begin(), wanting.end(), [](const Wanting& a, const Wanting& b) { return a.distance < b.distance; });
+    for (const Wanting& want : wanting) {
+        int slot = -1;
+        for (int i = 0; i < plan.reflectionCount; ++i) {
+            if (std::fabs(plan.reflections[i].planeHeight - want.height) < 0.05f) { slot = i; break; }
+        }
+        if (slot < 0 && plan.reflectionCount < WaterFramePlan::kMaxReflections) {
+            slot = plan.reflectionCount++;
+            plan.reflections[slot].planeHeight = want.height;
+            plan.reflections[slot].resolutionScale = want.resolutionScale;
+        }
+        if (slot < 0) continue;
+        plan.reflections[slot].resolutionScale = (std::max)(plan.reflections[slot].resolutionScale, want.resolutionScale);
+        plan.entries[want.entry].reflection = slot;
+    }
 }
 
-bool Scene::WantsRefraction() const
+Water* Scene::CreateWater()
 {
-    const Water* water = GetWater();
-    if (!water) return false;
-    const WaterSettings& settings = water->GetSettings();
-    if (settings.refraction <= 0.001f) return false;
-    if (camera_.GetPosition().y <= settings.height + 0.01f) return false;   // under the surface the water is culled
-    return water->IsVisible(GetMainView().frustum);
+    if (!device_) return nullptr;
+    Water* water = Add<Water>(device_);
+    WaterSettings settings = water->GetSettings();
+    settings.size = 40.0f;    // a pool, not a second sea
+    settings.sizeZ = 40.0f;
+    water->SetSettings(settings);
+    return water;
+}
+
+const Water* Scene::FindWaterAt(float x, float y, float z) const
+{
+    const Water* below = nullptr;   // highest surface at or under y
+    float belowSurface = 0.0f;
+    const Water* above = nullptr;   // lowest surface over y (the point is under water)
+    float aboveSurface = 0.0f;
+    for (const auto& object : objects_) {
+        const Water* water = dynamic_cast<const Water*>(object.get());
+        if (!water || !water->IsOverWater(x, z)) continue;
+        const float surface = water->SampleHeight(x, z, time_);
+        if (surface <= y) {
+            if (!below || surface > belowSurface) { below = water; belowSurface = surface; }
+        } else if (!above || surface < aboveSurface) {
+            above = water;
+            aboveSurface = surface;
+        }
+    }
+    return below ? below : above;
 }
 
 void Scene::RenderReflection(ID3D11DeviceContext* ctx, float planeHeight,

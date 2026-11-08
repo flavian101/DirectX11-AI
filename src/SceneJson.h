@@ -27,6 +27,7 @@ inline void from_json(const json& j, XMFLOAT4& v) { v = XMFLOAT4(j.at(0).get<flo
 // means. (An unknown name falls back to the FIRST entry.)
 NLOHMANN_JSON_SERIALIZE_ENUM(ToneMapper, { { ToneMapper::Clamp, "clamp" }, { ToneMapper::Reinhard, "reinhard" },
                                            { ToneMapper::ACES, "aces" }, { ToneMapper::Filmic, "filmic" } })
+NLOHMANN_JSON_SERIALIZE_ENUM(WaterShape, { { WaterShape::Rectangle, "rectangle" }, { WaterShape::Ellipse, "ellipse" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, { ReflectionMode::PlanarHalf, "planar_half" },
                                                { ReflectionMode::PlanarFull, "planar_full" }, { ReflectionMode::PlanarQuarter, "planar_quarter" } })
 
@@ -42,7 +43,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SurfaceSettings, baseColor, alph
                                                 roughnessScale, metallicScale, fallbackRoughness, fallbackMetallic, aoStrength,
                                                 emissiveIntensity)
 // (WaterSettings::debugView and ::wireframe are debug-only and deliberately not listed.)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, height, size, color, alpha, shallowColor, absorption, fadeDistance,
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, height, size, sizeZ, shape, color, alpha, shallowColor, absorption, fadeDistance,
                                                 foamDistance, foamStrength, waveAmplitude, waveSpeed, waveFrequency, windDirection,
                                                 directionalSpread, choppiness, waveCount, detailNormal, detailScale, detailDistance,
                                                 reflectivity, reflectionMode, reflectionDistortion, refraction, scatter,
