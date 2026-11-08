@@ -736,6 +736,8 @@ bool Terrain::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotat
 
 void Terrain::UpdateWorldTransform()
 {
+	static unsigned nextRevision = 0;   // one counter for every terrain: a revision is never reused
+	revision_ = ++nextRevision;
 	const XMMATRIX transform = XMMatrixScaling(scale_.x, scale_.y, scale_.z) *
 		XMMatrixRotationX(rotation_.x) * XMMatrixRotationY(rotation_.y) *
 		XMMatrixRotationZ(rotation_.z) *

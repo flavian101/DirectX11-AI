@@ -145,6 +145,9 @@ public:
 	// First hit of `ray` (unit direction) with the ground, coming from above. `distance` is in world units.
 	bool Raycast(const Ray& ray, float& distance, DirectX::XMFLOAT3* point = nullptr) const;
 	const Heightfield& GetHeightfield() const { return heightfield_; }
+	// A number that changes whenever the ground changes: its heights (a rebuild) or its place or size. Never repeats, even
+	// across terrains. Things that measured the ground (the water's depth map) compare it to know when to measure again.
+	unsigned GetRevision() const { return revision_; }
 
 	// For tools that need to fit things to the terrain (e.g. the water plane).
 	DirectX::XMFLOAT2 GetWorldExtent() const;               // x/z size in world units
@@ -183,6 +186,7 @@ private:
 	std::string colorMapPath_;
 	std::string layerMapPaths_[kTerrainLayerCount][3];   // [layer][albedo / normal / orm]
 	float depth_ = 0.0f;       // world-space size along Z of the current mesh
+	unsigned revision_ = 0;    // see GetRevision()
 	std::vector<TerrainChunk> chunks_;                    // one per mesh in the model, same order
 	mutable std::vector<unsigned char> drawList_;         // scratch: per chunk, the LOD to draw or Model::kSkipMesh
 	mutable std::vector<unsigned char> chunkLod_;         // each chunk's CURRENT level (kept for hysteresis)

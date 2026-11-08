@@ -5,7 +5,9 @@
 //  - the wave table: the height-at-a-position inversion, no folding at full choppiness, and the exact normal/Jacobian the
 //    pixel shader uses against a finite-difference normal of the real displaced surface
 #include "WaterMesh.h"
+#include "WaterShore.h"
 #include "WaterWaves.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -205,12 +207,110 @@ static void TestRiverFlow()
 	CHECK(swell.waves[0].omega / swell.waves[0].k > swell.waves[3].omega / swell.waves[3].k);
 }
 
+// Waves near a shore: they grow in shallow water, never exceed a fraction of the depth, and are untouched when off.
+static void TestShoaling()
+{
+	const float k = 0.6f, a = 0.35f;
+	CHECK(WaterWaves::ShoalAmplitude(a, k, 0.3f, 0.0f) == a);                       // strength 0: the open-water wave, exactly
+	CHECK(std::fabs(WaterWaves::ShoalAmplitude(a, k, 60.0f, 1.0f) - a) < 0.01f * a);  // deep water: practically untouched
+	CHECK(WaterWaves::ShoalAmplitude(a, k, 3.0f, 1.0f) > a * 1.1f);                  // reaching shallows: taller
+	CHECK(WaterWaves::ShoalAmplitude(a, k, 0.0f, 1.0f) == 0.0f);                     // at the waterline: nothing left
+	CHECK(WaterWaves::ShoalAmplitude(a, k, -2.0f, 1.0f) == 0.0f);                    // over dry land: nothing
+	float previous = 0.0f;
+	int rises = 0, falls = 0;
+	for (float depth = 0.0f; depth <= 40.0f; depth += 0.05f) {
+		const float shoaled = WaterWaves::ShoalAmplitude(a, k, depth, 1.0f);
+		CHECK(shoaled >= 0.0f);
+		CHECK(shoaled <= WaterWaves::kBreakRatio * depth + 1e-5f);                   // a wave is never taller than the water allows
+		CHECK(std::fabs(shoaled - previous) < 0.05f);                                // no jumps: smooth in depth
+		if (shoaled > previous + 1e-6f) ++rises; else if (shoaled < previous - 1e-6f) ++falls;
+		previous = shoaled;
+	}
+	CHECK(rises > 0 && falls > 0);   // it rises coming in from deep water, peaks, then falls toward the shore
+	// The strength knob is continuous: a hair above 0 is a hair away from the open-water wave, and no strength can exceed
+	// the growth cap or go negative.
+	for (float depth : { 0.4f, 1.0f, 3.0f, 12.0f }) {
+		CHECK(std::fabs(WaterWaves::ShoalAmplitude(a, k, depth, 0.001f) - a) < 0.01f);
+		for (float strength = 0.0f; strength <= 1.0f; strength += 0.1f) {
+			const float value = WaterWaves::ShoalAmplitude(a, k, depth, strength);
+			CHECK(value >= 0.0f && value <= a * (1.0f + WaterWaves::kShoalGrowth) + 1e-5f);
+		}
+	}
+
+	// The whole surface: over a slope that rises to a beach, the displaced surface is never far below the ground.
+	WaterWaves::Params p;
+	p.shoreWaves = 1.0f;
+	const WaterWaves::Table table = WaterWaves::Build(p);
+	CHECK(table.heightBound > WaterWaves::Build(WaterWaves::Params{}).heightBound);   // room for waves that grow
+	std::uint32_t state = 7u;
+	for (int i = 0; i < 2000; ++i) {
+		const float rx = Random01(state) * 40.0f - 5.0f;       // rest position along the slope
+		const float depth = std::max(0.0f, 0.1f * (30.0f - rx));   // a beach: 3 units deep at x = 0, dry at x = 30
+		float dx, dy, dz;
+		WaterWaves::Displacement(table, rx, 0.0f, Random01(state) * 50.0f, dx, dy, dz, depth, 1.0f);
+		CHECK(std::fabs(dy) <= table.count * WaterWaves::kBreakRatio * depth + 1e-4f);
+	}
+	// With depths that are deep everywhere, the shore-aware height is the open-water height to within a couple of percent.
+	float worst = 0.0f;
+	for (int i = 0; i < 200; ++i) {
+		const float x = Random01(state) * 100.0f, z = Random01(state) * 100.0f, t = Random01(state) * 30.0f;
+		const float open = WaterWaves::HeightAt(table, x, z, t);
+		const float near = WaterWaves::HeightAtShore(table, x, z, t, 1.0f, [](float, float) { return 80.0f; });
+		worst = std::max(worst, std::fabs(open - near));
+	}
+	CHECK(worst < 0.03f * table.heightBound);
+}
+
+// The depth map: bilinear reads, the bake, and how big it is for a pond and for a river.
+static void TestShoreMap()
+{
+	// A beach along world X: the ground rises 0.1 per unit; the water is level 0; the body spans x in -50..50.
+	const int width = 40, height = 8;
+	const WaterShore::DepthField field = WaterShore::Bake(width, height, 0.0f,
+		[](float lx, float lz, float& wx, float& wz) { wx = lx * 50.0f; wz = lz * 5.0f; },
+		[](float wx, float, float& y) { y = 0.1f * wx; return true; });
+	CHECK(field.Width() == width && field.Height() == height);
+	for (float lx : { -0.9f, -0.4f, 0.0f, 0.3f, 0.8f }) {
+		const float expected = std::min(-0.1f * (lx * 50.0f), WaterShore::kDeepWater);   // depth = level - ground
+		CHECK(std::fabs(field.Sample(lx, 0.0f) - expected) < 0.1f);   // bilinear reproduces a linear slope (to within a texel)
+	}
+	CHECK(field.Sample(5.0f, 0.0f) == field.Sample(1.0f, 0.0f));      // outside the body: clamped to the edge, never garbage
+	CHECK(field.Sample(-5.0f, -5.0f) == field.Sample(-1.0f, -1.0f));
+	CHECK(WaterShore::DepthField().Sample(0.0f, 0.0f) == WaterShore::kDeepWater);   // no map: deep
+
+	// Where there is no ground at all, the water is deep.
+	const WaterShore::DepthField none = WaterShore::Bake(4, 4, 2.0f,
+		[](float lx, float lz, float& wx, float& wz) { wx = lx; wz = lz; },
+		[](float, float, float&) { return false; });
+	CHECK(none.Sample(0.0f, 0.0f) == WaterShore::kDeepWater);
+
+	WaterShore::DepthField bad;
+	CHECK(!bad.Reset(3, 3, std::vector<float>(5, 0.0f)));   // wrong sample count: refused, nothing changes
+	CHECK(bad.IsEmpty());
+
+	// Resolution: bounded, roughly square texels, finer for a thin river than for a huge lake.
+	for (auto extent : { std::make_pair(20.0f, 20.0f), std::make_pair(14.0f, 120.0f), std::make_pair(2000.0f, 2000.0f),
+						 std::make_pair(2.0f, 2000.0f), std::make_pair(400.0f, 400.0f) }) {
+		int w = 0, h = 0;
+		WaterShore::ChooseResolution(extent.first, extent.second, w, h);
+		CHECK(w >= WaterShore::kMinTexels && h >= WaterShore::kMinTexels);
+		CHECK(w <= WaterShore::kMaxTexelsPerSide && h <= WaterShore::kMaxTexelsPerSide);
+		CHECK(w * h <= WaterShore::kMaxTexelsTotal + 2 * WaterShore::kMaxTexelsPerSide);   // ceil() may add one row and column
+	}
+	int pondW = 0, pondH = 0, lakeW = 0, lakeH = 0;
+	WaterShore::ChooseResolution(20.0f, 20.0f, pondW, pondH);
+	WaterShore::ChooseResolution(2000.0f, 2000.0f, lakeW, lakeH);
+	CHECK(20.0f / pondW < 2000.0f / lakeW);   // a pond's texels are finer than a lake's
+}
+
 int main()
 {
 	TestTileIndices();
 	TestTileGrid();
 	TestWaves();
 	TestRiverFlow();
+	TestShoaling();
+	TestShoreMap();
 	if (g_failures == 0) std::printf("water tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;
 }

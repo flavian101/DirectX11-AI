@@ -76,7 +76,8 @@ float4 main(PS_IN input) : SV_Target
     const float pixelsPerUnit = (0.5f / screenParams.y) * proj._22 / max(distanceToEye, 0.01f);
     float3 N;
     float jacobian;
-    EvaluateWaveShading(input.rest.xy, time, pixelsPerUnit, N, jacobian);
+    const float mapDepth = WaterDepthAt(input.local);   // vertical depth under this pixel (1000 when the body has no map)
+    EvaluateWaveShading(input.rest.xy, time, pixelsPerUnit, mapDepth, N, jacobian);
 
     const float detailStrength = waterWaveInfo.y;
     const float detailFade = 1.0f - smoothstep(0.35f * waterWaveInfo.w, waterWaveInfo.w, distanceToEye);
@@ -95,13 +96,32 @@ float4 main(PS_IN input) : SV_Target
     const float thickness = max(groundZ - waterZ, 0.0f);
     const float2 screenUV = input.position.xy * screenParams.xy;
 
+    // ---- How deep is the water HERE, measured straight down? ----
+    // `thickness` above is the difference of two eye-space depths: it depends on where the camera looks, so a shore
+    // band built from it changes width as you tilt the camera. When the body has a depth map, the vertical depth
+    // from the terrain is used instead; `thickness` still counts where something other than the terrain (a rock, a
+    // hull) touches the water, because the smaller of the two wins.
+    // The waterline also slides with the waves: the surface itself is `waveHeight` higher or lower here, and near the
+    // shore, where the waves are squeezed to nothing, `swashLift` stands in for the run-up of the first wave.
+    float shoreDepth = thickness;
+    float breaking = 0.0f;
+    [branch]
+    if (waterShore.x > 0.5f) {
+        const float waveHeight = input.rest.z * waterMeshInfo.z;
+        const float phase0 = waterWaveDirK[0].z * dot(waterWaveDirK[0].xy, input.rest.xy) + waterWaveMotion[0].x * time + waterWaveMotion[0].z;
+        const float swashLift = waterShore.z * waterWaveDirK[0].w * sin(phase0);
+        shoreDepth = max(min(mapDepth, thickness) + waveHeight + swashLift, 0.0f);
+        // A crest that is tall for the water under it is about to break: wave height / depth, up to ~0.4 where it is limited.
+        breaking = saturate((waveHeight / max(mapDepth, 0.05f) - 0.18f) * 8.0f) * step(0.0f, mapDepth);
+    }
+
     // ---- Refraction: what you see THROUGH the water is bent by the waves ----
     float3 behind = float3(0.0f, 0.0f, 0.0f);
     float seenThickness = thickness;   // how much water the (bent) line of sight crosses
     const bool refractionOn = reflectionParams.y > 0.5f && refraction > 0.001f;
     [branch]
     if (refractionOn) {
-        const float shoreFade = saturate(thickness / fadeDistance);   // no bending at the shoreline: no seam
+        const float shoreFade = saturate(shoreDepth / fadeDistance);   // no bending at the shoreline: no seam
         const float2 offset = N.xz * (refraction * shoreFade / (1.0f + waterZ * 0.03f));
         const int2 size = int2(1.0f / screenParams.x + 0.5f, 1.0f / screenParams.y + 0.5f);
         int2 bentPixel = clamp(int2((screenUV + offset) / screenParams.xy), int2(0, 0), size - 1);
@@ -159,21 +179,23 @@ float4 main(PS_IN input) : SV_Target
     // Opacity. Shallow water is more see-through; right at the shoreline it fades to nothing so there is
     // no hard line where the plane cuts through the ground. The glint also adds opacity so it never looks washed out.
     const float alphaBody = baseAlpha * lerp(0.35f, 1.0f, depthFade);
-    const float edgeFade = saturate(thickness / (0.35f * fadeDistance)) * shapeFade;
+    const float edgeFade = saturate(shoreDepth / (0.35f * fadeDistance)) * shapeFade;
     const float waterAlpha = saturate(lerp(alphaBody, 1.0f, fresnel) + dot(glint, float3(0.333f, 0.333f, 0.333f)));
 
     // ---- Foam: where the water is shallow (the shore) and on the steepest crests ----
-    const float foamBand = (1.0f - saturate(thickness / max(foamDistance, 0.001f))) * foamStrength;
+    const float foamBand = (1.0f - saturate(shoreDepth / max(foamDistance, 0.001f))) * foamStrength;
+    const float breakFoam = breaking * foamStrength * waterShore.y;   // surf: waves tripping over the bottom
     // Jacobian < 1 means the surface is being squeezed together: that is where real waves break.
     const float crestFoam = saturate(((1.0f - jacobian) - waterFoamInfo.y) * 5.0f) * waterFoamInfo.x;
     float foam = 0.0f;
     [branch]
-    if (foamBand > 0.001f || crestFoam > 0.001f) {   // open water without crests skips all the noise
+    if (foamBand > 0.001f || crestFoam > 0.001f || breakFoam > 0.001f) {   // open water without crests skips all the noise
         const float2 foamUV = input.worldPos.xz * 0.9f + float2(time * 0.25f, -time * 0.18f);
         const float noise = ValueNoise(foamUV) * 0.65f + ValueNoise(foamUV * 2.7f + 17.0f) * 0.35f;
         const float crestNoise = ValueNoise(input.rest.xy * 1.6f - waterWind.xy * (time * 0.4f) + 31.0f);
         foam = saturate(foamBand * smoothstep(0.25f, 0.7f, noise + foamBand * 0.35f) +
-                        crestFoam * smoothstep(0.35f, 0.75f, crestNoise * 0.6f + noise * 0.4f));
+                        crestFoam * smoothstep(0.35f, 0.75f, crestNoise * 0.6f + noise * 0.4f) +
+                        breakFoam * smoothstep(0.3f, 0.7f, crestNoise * 0.5f + noise * 0.5f));
     }
     const float3 foamColor = float3(0.9f, 0.95f, 1.0f) * lightColor;
 
@@ -186,6 +208,8 @@ float4 main(PS_IN input) : SV_Target
         else if (debugView == 3) debugColor = float3(foam, foamBand, crestFoam);
         else if (debugView == 4) debugColor = fresnel.xxx;
         else if (debugView == 5) debugColor = crestHeight.xxx;
+        else if (debugView == 6) debugColor = waterShore.x > 0.5f ? float3(step(mapDepth, 0.0f), saturate(mapDepth / 8.0f), breaking)
+                                                                  : float3(1.0f, 0.0f, 1.0f);   // magenta = this body has no depth map
         return float4(debugColor, 1.0f);
     }
 

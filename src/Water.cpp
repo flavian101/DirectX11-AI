@@ -3,6 +3,7 @@
 #include "Logger.h"
 #include "Mesh.h"
 #include "ShaderSlots.h"
+#include "Terrain.h"
 #include "WaterMesh.h"
 #include <DirectXMath.h>
 #include <algorithm>
@@ -24,6 +25,7 @@ struct WaterMaterialCB {
 	XMFLOAT4 wind;           // xy = unit direction the waves travel toward
 	XMFLOAT4 shape;          // x = a mirror image is bound for this body this frame, y = shape (0 rect, 1 ellipse), z = ellipse edge softness
 	XMFLOAT4 flow;           // x = ripple drift multiplier (1 = wind-blown), y = sideways ripple drift (1 on, 0 river), z = body type, w = flow speed
+	XMFLOAT4 shore;          // x = a depth map is bound (t15), y = shore wave strength, z = swash, w = unused
 	XMFLOAT4 waveDirK[WaterWaves::kMaxWaves];     // xy = direction, z = k, w = amplitude
 	XMFLOAT4 waveMotion[WaterWaves::kMaxWaves];   // x = omega, y = steepness, z = phase offset
 };
@@ -84,6 +86,14 @@ bool Water::GetBoundingSphere(XMFLOAT3& center, float& radius) const
 
 Water::~Water()
 {
+	ReleaseShoreMap();
+}
+
+void Water::ReleaseShoreMap()
+{
+	if (depthView_) { depthView_->Release(); depthView_ = nullptr; }
+	if (depthTexture_) { depthTexture_->Release(); depthTexture_ = nullptr; }
+	depthField_.Clear();
 }
 
 void Water::CreateRenderStates(ID3D11Device* device)
@@ -134,6 +144,8 @@ void WaterSettings::Clamp()
 	shape = static_cast<WaterShape>(std::clamp(static_cast<int>(shape), 0, 1));
 	bodyType = static_cast<WaterBodyType>(std::clamp(static_cast<int>(bodyType), 0, 3));
 	flowSpeed = std::clamp(flowSpeed, 0.0f, kFlowSpeedMax);
+	shoreWaves = clamp01(shoreWaves);
+	swash = std::clamp(swash, 0.0f, kSwashMax);
 	flowAngle = std::fmod(flowAngle, 360.0f);   // an angle: wrap into (-180, 180] instead of clamping
 	if (flowAngle > 180.0f) flowAngle -= 360.0f;
 	if (flowAngle <= -180.0f) flowAngle += 360.0f;
@@ -166,7 +178,7 @@ void WaterSettings::Clamp()
 	crestFoamThreshold = clamp01(crestFoamThreshold);
 	meshDetail = std::clamp(meshDetail, 0, kMeshDetailMax);
 	lodDistance = std::clamp(lodDistance, kLodDistanceMin, kLodDistanceMax);
-	debugView = static_cast<WaterDebugView>(std::clamp(static_cast<int>(debugView), 0, 5));
+	debugView = static_cast<WaterDebugView>(std::clamp(static_cast<int>(debugView), 0, 6));
 }
 
 void WaterSettings::ApplyWavePreset(WavePreset preset)
@@ -214,12 +226,14 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 		ApplyLook(WaterLook::Ocean);
 		waveAmplitude = 0.45f; waveSpeed = 1.0f; waveFrequency = 0.5f; directionalSpread = 0.7f; choppiness = 0.55f; waveCount = 7;
 		detailNormal = 0.5f; detailScale = 0.8f; crestFoam = 0.5f; crestFoamThreshold = 0.25f;
+		shoreWaves = 1.0f; swash = 0.6f;   // swells shoal, break and wash up the beach
 		break;
 	case WaterBodyType::Lake:
 		// Short wind chop that hardly ever breaks: wavelengths a third of the ocean's, a fraction of its height.
 		ApplyLook(WaterLook::Lake);
 		waveAmplitude = 0.12f; waveSpeed = 0.7f; waveFrequency = 0.9f; directionalSpread = 1.0f; choppiness = 0.2f; waveCount = 5;
 		detailNormal = 0.6f; detailScale = 1.2f; crestFoam = 0.1f; crestFoamThreshold = 0.4f;
+		shoreWaves = 0.8f; swash = 0.3f;
 		break;
 	case WaterBodyType::River:
 		// A current, not a swell: low waves that all travel one way, fast ripples carried downstream, no white caps.
@@ -228,12 +242,14 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 		waveAmplitude = 0.05f; waveSpeed = 1.0f; waveFrequency = 1.2f; directionalSpread = 0.1f; choppiness = 0.1f; waveCount = 4;
 		detailNormal = 1.2f; detailScale = 1.6f; crestFoam = 0.0f; crestFoamThreshold = 0.5f;
 		flowSpeed = 2.5f; flowAngle = 0.0f;
+		shoreWaves = 0.5f; swash = 0.1f;   // a current laps at its banks; it does not surf
 		break;
 	case WaterBodyType::Pond:
 		ApplyLook(WaterLook::Lake);
 		alpha = 0.85f; foamStrength = 0.3f;
 		waveAmplitude = 0.03f; waveSpeed = 0.5f; waveFrequency = 1.4f; directionalSpread = 1.0f; choppiness = 0.05f; waveCount = 3;
 		detailNormal = 0.7f; detailScale = 1.8f; crestFoam = 0.0f; crestFoamThreshold = 0.5f;
+		shoreWaves = 0.5f; swash = 0.15f;
 		break;
 	}
 }
@@ -339,6 +355,7 @@ WaterWaves::Params Water::CurrentWaveParams() const
 {
 	WaterWaves::Params p = settings_.WaveParams();
 	p.windDegrees = GetTravelDegrees();
+	p.shoreWaves = settings_.shoreWaves;   // waves can grow near a shore: the table's height bound must have room for that
 	if (settings_.bodyType == WaterBodyType::River) {
 		p.flowSpeed = settings_.flowSpeed;
 		p.spread = (std::min)(p.spread, 0.25f);   // a current has one direction: a wide spread would send waves sideways or upstream
@@ -378,6 +395,7 @@ void Water::UploadMaterial(bool mirrored) const
 	// The ripples drift with the wind at a fixed pace (multiplier 1: how it always looked). On a river they ride the current
 	// instead: the shader drifts layer 1 by 0.35 NOISE units per second, and one world unit is `detailScale` noise units,
 	// so asking for flowSpeed world units per second means a multiplier of flowSpeed * detailScale / 0.35.
+	block.shore = { depthView_ ? 1.0f : 0.0f, settings_.shoreWaves, settings_.swash, 0.0f };
 	block.flow = { river ? settings_.flowSpeed * settings_.detailScale / 0.35f : 1.0f, river ? 0.0f : 1.0f,
 				   static_cast<float>(static_cast<int>(settings_.bodyType)), river ? settings_.flowSpeed : 0.0f };
 	// The rim of a round body fades over about 40 cm (as a fraction of its radius; the plane's own space is -1..1).
@@ -463,6 +481,11 @@ void Water::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 	stats.reflectionSlot = mirror ? slot : -1;
 	UploadMaterial(mirror != nullptr);
 	ctx->PSSetShaderResources(Slots::kSrvReflection, 1, &mirror);
+	// The measured ground under this body (null when there is no terrain under it). The vertex shader reads it too: that
+	// is where waves grow and die.
+	ID3D11ShaderResourceView* depthMap = depthView_;
+	ctx->VSSetShaderResources(Slots::kSrvWaterDepth, 1, &depthMap);
+	ctx->PSSetShaderResources(Slots::kSrvWaterDepth, 1, &depthMap);
 
 	if (settings_.wireframe && wireMaterial_.HasRasterizerState()) {
 		wireMaterial_.Apply(ctx);
@@ -513,6 +536,10 @@ float Water::DistanceTo(const XMFLOAT3& point) const
 float Water::SampleHeight(float x, float z, float time) const
 {
 	if (!IsOverWater(x, z)) return position_.y;
+	if (settings_.shoreWaves > 0.0f && !depthField_.IsEmpty()) {   // the same shoaled waves the shader draws
+		return position_.y + WaterWaves::HeightAtShore(waves_, x, z, time, settings_.shoreWaves,
+													   [this](float restX, float restZ) { return DepthAtWorld(restX, restZ); });
+	}
 	return position_.y + WaterWaves::HeightAt(waves_, x, z, time);
 }
 
@@ -558,4 +585,78 @@ void Water::UpdateWorldTransform()
 	XMFLOAT4X4 world;
 	XMStoreFloat4x4(&world, transform);
 	if (renderable_) renderable_->SetWorld(world);
+	// The CPU reads the depth map through this: a world position -> the body's own space.
+	XMVECTOR determinant;
+	const XMMATRIX inverse = XMMatrixInverse(&determinant, transform);
+	worldToLocalValid_ = std::abs(XMVectorGetX(determinant)) > 1e-12f;
+	if (worldToLocalValid_) XMStoreFloat4x4(&worldToLocal_, inverse);
+}
+
+float Water::DepthAtWorld(float x, float z) const
+{
+	if (depthField_.IsEmpty() || !worldToLocalValid_) return WaterShore::kDeepWater;
+	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), XMLoadFloat4x4(&worldToLocal_));
+	return depthField_.Sample(XMVectorGetX(local), XMVectorGetZ(local));
+}
+
+void Water::RefreshShoreDepth(const Terrain* terrain)
+{
+	if (!device_ || !renderable_ || !renderable_->GetModel()) return;
+	if (!terrain || !terrain->IsValid()) {
+		if (depthView_ || shoreKeyValid_) { ReleaseShoreMap(); shoreKeyValid_ = false; }
+		return;
+	}
+
+	// Measure again only when something that decides the numbers changed. (The terrain's revision moves whenever its
+	// heights or its placement do.)
+	const std::array<float, 12> key = { position_.x, position_.y, position_.z, rotation_.x, rotation_.y, rotation_.z,
+										scale_.x, scale_.y, scale_.z, settings_.size, settings_.sizeZ, settings_.height };
+	if (shoreKeyValid_ && key == shoreKey_ && terrain == shoreTerrain_ && terrain->GetRevision() == shoreTerrainRevision_) return;
+	shoreKey_ = key;
+	shoreTerrain_ = terrain;
+	shoreTerrainRevision_ = terrain->GetRevision();
+	shoreKeyValid_ = true;
+
+	int width = 0, height = 0;
+	WaterShore::ChooseResolution(ExtentX(), ExtentZ(), width, height);
+	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
+	WaterShore::DepthField field = WaterShore::Bake(width, height, settings_.height,
+		[&world](float localX, float localZ, float& worldX, float& worldZ) {
+			const XMVECTOR p = XMVector3Transform(XMVectorSet(localX, 0.0f, localZ, 1.0f), world);
+			worldX = XMVectorGetX(p);
+			worldZ = XMVectorGetZ(p);
+		},
+		[terrain](float worldX, float worldZ, float& groundY) { return terrain->GetHeightAt(worldX, worldZ, groundY); });
+
+	D3D11_TEXTURE2D_DESC desc{};
+	desc.Width = static_cast<UINT>(width);
+	desc.Height = static_cast<UINT>(height);
+	desc.MipLevels = 1;
+	desc.ArraySize = 1;
+	desc.Format = DXGI_FORMAT_R32_FLOAT;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_IMMUTABLE;   // a new map is made whenever the numbers change: it is never edited in place
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+	D3D11_SUBRESOURCE_DATA data{};
+	data.pSysMem = field.Data().data();
+	data.SysMemPitch = static_cast<UINT>(width * sizeof(float));
+	ID3D11Texture2D* texture = nullptr;
+	HRESULT hr = device_->CreateTexture2D(&desc, &data, &texture);
+	if (FAILED(hr)) {
+		LOG_HR(hr, "Water depth map creation failed: this body has no shore effects");
+		ReleaseShoreMap();
+		return;
+	}
+	ID3D11ShaderResourceView* view = nullptr;
+	hr = device_->CreateShaderResourceView(texture, nullptr, &view);
+	if (FAILED(hr)) {
+		LOG_HR(hr, "Water depth map view creation failed: this body has no shore effects");
+		texture->Release();
+		ReleaseShoreMap();
+		return;
+	}
+	ReleaseShoreMap();   // only now: if anything above failed we kept nothing half-built
+	depthTexture_ = texture;
+	depthView_ = view;
+	depthField_ = std::move(field);
 }

@@ -5,11 +5,14 @@
 #include "RenderView.h"
 #include "WaterMesh.h"
 #include "WaterPlan.h"
+#include "WaterShore.h"
 #include "WaterWaves.h"
+#include <array>
 #include <cmath>
 #include <memory>
 #include <vector>
 
+class Terrain;
 enum class WavePreset { Calm, Choppy, Stormy };
 
 // A complete colour/optics look (not the waves, not the level or size). Pick one in the editor, then tweak.
@@ -30,7 +33,7 @@ enum class ReflectionMode : int { Sky = 0, PlanarHalf = 1, PlanarFull = 2, Plana
 enum class WaterShape : int { Rectangle = 0, Ellipse = 1 };
 
 // Shows one ingredient of the water on its own, to tune it. Never saved with the scene.
-enum class WaterDebugView : int { Off = 0, Normals = 1, Depth = 2, Foam = 3, Fresnel = 4, CrestHeight = 5 };
+enum class WaterDebugView : int { Off = 0, Normals = 1, Depth = 2, Foam = 3, Fresnel = 4, CrestHeight = 5, ShoreDepth = 6 };
 
 constexpr int kWaterLodCount = 4;   // level 0 = every vertex; each next level keeps fewer (the tile interior thins out, the border never does)
 
@@ -39,6 +42,10 @@ struct WaterSettings {
 	WaterBodyType bodyType = WaterBodyType::Ocean;
 	float flowSpeed = 2.0f;       // river: how fast the surface is carried downstream, world units per second
 	float flowAngle = 0.0f;       // river: degrees away from the body's own +Z axis (its length). 0 = flows toward +Z of the body
+
+	// --- the shore: how the water reacts to the ground under it (needs a terrain) ---
+	float shoreWaves = 1.0f;      // 0 = waves identical everywhere (the old look); 1 = they grow in shallow water, then break and die at the shore
+	float swash = 0.6f;           // how far the waterline (foam and the see-through edge) slides up and down the beach with each wave
 
 	// --- surface ---
 	float height = 4.0f;          // world Y of the water plane (kept in sync with the editor transform)
@@ -88,6 +95,7 @@ struct WaterSettings {
 	bool wireframe = false;       // draw the mesh as wires: shows the level-of-detail tiles
 
 	static constexpr float kFlowSpeedMax = 10.0f;
+	static constexpr float kSwashMax = 1.5f;
 	static constexpr float kHeightMin = -100.0f, kHeightMax = 200.0f;
 	static constexpr float kSizeMin = 2.0f, kSizeMax = 2000.0f;
 	static constexpr float kAmplitudeMax = 2.0f, kSpeedMax = 5.0f;
@@ -167,6 +175,14 @@ public:
 	// --- for the scene and the renderer ---
 	// True if any part of the water (including its tallest waves) can be inside this frustum.
 	bool IsVisible(const Frustum& frustum) const;
+
+	// --- the ground under the water (src/WaterShore.h) ---
+	// The scene calls this every frame. It measures the terrain under this body (depth = level - ground height) into a
+	// small map that the shaders and SampleHeight read, and only measures AGAIN when the terrain, the body's place or size,
+	// or its level changed. Null = no terrain: the body then has no shore effects at all.
+	void RefreshShoreDepth(const Terrain* terrain);
+	bool HasShoreDepth() const { return depthView_ != nullptr; }
+	void GetShoreMapSize(int& width, int& height) const { width = depthField_.Width(); height = depthField_.Height(); }
 	const WaterViewStats& GetStats(ViewKind kind) const { return stats_[static_cast<int>(kind)]; }
 
 private:
@@ -177,6 +193,8 @@ private:
 	void EnsureMesh();                    // rebuilds the tiles when the mesh detail or the body's proportions need a different grid
 	void UploadMaterial(bool mirrored) const;   // `mirrored`: this frame, a mirror image is bound for this body
 	void UpdateWorldTransform();
+	void ReleaseShoreMap();
+	float DepthAtWorld(float x, float z) const;   // water depth under a world position, from the CPU copy of the map
 	float ExtentX() const { return settings_.size * std::abs(scale_.x); }   // world size along X
 	float ExtentZ() const { return settings_.sizeZ * std::abs(scale_.z); }
 	void ChooseTiles(const RenderView& view) const;
@@ -194,6 +212,16 @@ private:
 	Material material_;       // alpha blending, no depth writes
 	Material wireMaterial_;   // the same, drawn as wires (debug)
 	WaterWaves::Table waves_;
+	// The measured ground under the body. Three copies of one thing: the CPU map (for SampleHeight), the texture and its view.
+	WaterShore::DepthField depthField_;
+	ID3D11Texture2D* depthTexture_ = nullptr;
+	ID3D11ShaderResourceView* depthView_ = nullptr;
+	DirectX::XMFLOAT4X4 worldToLocal_{};
+	bool worldToLocalValid_ = false;
+	std::array<float, 12> shoreKey_{};     // body place, turn, scale, size and level when the map was last measured...
+	unsigned shoreTerrainRevision_ = 0;    // ...and which version of which terrain
+	const Terrain* shoreTerrain_ = nullptr;
+	bool shoreKeyValid_ = false;
 	std::vector<Tile> tiles_;
 	int builtMeshDetail_ = -1;
 	WaterMesh::TileGrid builtGrid_;

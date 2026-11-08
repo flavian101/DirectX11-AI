@@ -1602,6 +1602,17 @@ void EditorLayer::DrawWaterInspector(Water* water)
         ImGui::SetItemTooltip("Higher = only the very sharpest crests get foam.");
     }
 
+    if (ImGui::CollapsingHeader("Shore")) {
+        changed |= ImGui::SliderFloat("Shore waves", &s.shoreWaves, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("How much the waves react to the ground under them. In shallow water they grow taller,\nthen cannot be taller than the water is deep, so they break and die at the waterline.\n0 = identical everywhere (the old look).");
+        changed |= ImGui::SliderFloat("Swash", &s.swash, 0.0f, WaterSettings::kSwashMax, "%.2f");
+        ImGui::SetItemTooltip("How far the waterline (foam and the see-through edge) slides up and down the beach with each wave.");
+        int mapWidth = 0, mapHeight = 0;
+        water->GetShoreMapSize(mapWidth, mapHeight);
+        if (water->HasShoreDepth()) ImGui::TextDisabled("Depth map: %d x %d texels. See Advanced > Debug > Shore depth.", mapWidth, mapHeight);
+        else ImGui::TextDisabled("No terrain under this body: the shore effects are off.");
+    }
+
     // The things you set once and rarely touch again live together, folded away.
     if (ImGui::CollapsingHeader("Advanced")) {
         if (ImGui::TreeNode("Performance")) {
@@ -1624,7 +1635,7 @@ void EditorLayer::DrawWaterInspector(Water* water)
             ImGui::TreePop();
         }
         if (ImGui::TreeNode("Debug")) {
-            static const char* const kDebugNames[] = { "Off", "Normals", "Depth (shore / deep)", "Foam", "Fresnel", "Crest height" };
+            static const char* const kDebugNames[] = { "Off", "Normals", "Depth (shore / deep)", "Foam", "Fresnel", "Crest height", "Shore depth (red land, green depth, blue surf)" };
             int debugView = static_cast<int>(s.debugView);
             if (ImGui::Combo("View", &debugView, kDebugNames, IM_ARRAYSIZE(kDebugNames))) {
                 s.debugView = static_cast<WaterDebugView>(debugView);

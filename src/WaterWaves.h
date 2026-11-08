@@ -18,6 +18,32 @@ namespace WaterWaves {
 constexpr int kMaxWaves = 8;
 constexpr float kBaseFrequency = 0.6f;   // radians per world unit of the first wave; matches WaterSettings' default
 
+// --- Waves near a shore (the same numbers are in shaders/waves.hlsli) ---------------------------------------------
+// A wave that reaches shallow water first GROWS taller (the same energy is squeezed into less water), then cannot grow
+// any more: it is limited to a fraction of the depth under it, and so it dies away to nothing at the water's edge.
+constexpr float kShoalGrowth = 0.5f;   // a wave can become up to 50% taller in shallow water (at full strength)
+constexpr float kBreakRatio = 0.4f;    // a wave's AMPLITUDE never exceeds this fraction of the depth (breaking: wave height ~ 0.8 x depth)
+constexpr float kDeepWater = 1000.0f;  // "no depth information": deep enough that nothing changes
+
+// The amplitude a wave of nominal `amplitude` and wave number `k` has where the water is `depth` deep.
+// `strength` 0 = off (the open-water amplitude, always), 1 = full effect.
+inline float ShoalAmplitude(float amplitude, float k, float depth, float strength)
+{
+	if (strength <= 0.0f) return amplitude;
+	depth = std::max(depth, 0.0f);
+	// Shallow = the depth is small compared with the wavelength: k * depth below ~pi (depth < half a wavelength).
+	// Smoothly 1 in very shallow water and 0 in deep water.
+	const float kd = k * depth;
+	const float t = std::clamp((kd - 0.5f) / (3.14159265f - 0.5f), 0.0f, 1.0f);
+	const float shallow = 1.0f - t * t * (3.0f - 2.0f * t);
+	const float grown = amplitude * (1.0f + kShoalGrowth * shallow * strength);
+	const float limit = kBreakRatio * depth;
+	if (limit < 1e-5f) return 0.0f;
+	// tanh: equal to `grown` while it is far below the limit, and never above the limit. Smooth, so no kink.
+	const float limited = limit * std::tanh(grown / limit);
+	return amplitude + (limited - amplitude) * std::min(strength, 1.0f);
+}
+
 struct Params {
 	float amplitude = 0.35f;     // height of the biggest wave, world units
 	float speed = 1.0f;          // 1 = default pace
@@ -26,6 +52,7 @@ struct Params {
 	float spread = 0.7f;         // 0 = every wave runs the same way, 1 = fully scattered
 	float choppiness = 0.5f;     // 0 = rounded sine waves, 1 = sharpest crests that never fold over
 	int count = 6;               // how many of the 8 waves are used
+	float shoreWaves = 0.0f;     // 0 = waves are the same everywhere; 1 = they grow, then break and die as the water gets shallow
 	float flowSpeed = 0.0f;      // > 0: a RIVER. Every wave is carried along by the current at this speed (world units per second)
 };
 
@@ -71,7 +98,8 @@ inline Table Build(const Params& p)
 		w.omega = p.flowSpeed > 0.0f ? w.k * p.flowSpeed : p.speed * std::sqrt(w.k / kBaseFrequency);
 		w.phase0 = kPhase[i];
 		sumKA += w.k * w.amplitude;
-		t.heightBound += w.amplitude;
+		// Waves can grow in shallow water: the bound (used to cull and to normalise the shader's crest height) must hold them.
+		t.heightBound += w.amplitude * (1.0f + kShoalGrowth * std::clamp(p.shoreWaves, 0.0f, 1.0f));
 	}
 	// Crests fold over (the surface cuts through itself) once the sum of Q*k*a passes 1. Scale Q so the sum never
 	// exceeds `choppiness` (<= 1), but never above 1 per wave: small waves must not be stretched sideways.
@@ -92,16 +120,22 @@ inline float RiverTravelDegrees(float flowAngleDegrees, float yawRadians)
 }
 
 // Where a point that rests at (x, z) is at `time`: sideways offset (dx, dz) and height dy.
-inline void Displacement(const Table& t, float x, float z, float time, float& dx, float& dy, float& dz)
+// `depth` and `shoreWaves` are the shore effect: how deep the water is under the REST position, and how strongly the waves
+// react to it (0 = not at all). The height follows the shoaled amplitude, but the sideways pull never exceeds what the
+// open-water wave had, so a wave that grows in shallow water can never fold over.
+inline void Displacement(const Table& t, float x, float z, float time, float& dx, float& dy, float& dz,
+						 float depth = kDeepWater, float shoreWaves = 0.0f)
 {
 	dx = dy = dz = 0.0f;
 	for (int i = 0; i < t.count; ++i) {
 		const Wave& w = t.waves[i];
+		const float a = ShoalAmplitude(w.amplitude, w.k, depth, shoreWaves);
+		const float aSide = std::min(a, w.amplitude);
 		const float phase = w.k * (w.dirX * x + w.dirZ * z) + w.omega * time + w.phase0;
 		const float s = std::sin(phase), c = std::cos(phase);
-		dx += w.steepness * w.amplitude * c * w.dirX;
-		dz += w.steepness * w.amplitude * c * w.dirZ;
-		dy += w.amplitude * s;
+		dx += w.steepness * aSide * c * w.dirX;
+		dz += w.steepness * aSide * c * w.dirZ;
+		dy += a * s;
 	}
 }
 
@@ -117,6 +151,21 @@ inline float HeightAt(const Table& t, float x, float z, float time)
 		rz = z - dz;
 	}
 	Displacement(t, rx, rz, time, dx, dy, dz);
+	return dy;
+}
+
+// The same, near a shore: `depthAt(restX, restZ)` says how deep the water is under a REST position (world space).
+template <class DepthFn>
+inline float HeightAtShore(const Table& t, float x, float z, float time, float shoreWaves, DepthFn&& depthAt)
+{
+	float rx = x, rz = z;
+	float dx, dy, dz;
+	for (int i = 0; i < 4; ++i) {
+		Displacement(t, rx, rz, time, dx, dy, dz, depthAt(rx, rz), shoreWaves);
+		rx = x - dx;
+		rz = z - dz;
+	}
+	Displacement(t, rx, rz, time, dx, dy, dz, depthAt(rx, rz), shoreWaves);
 	return dy;
 }
 

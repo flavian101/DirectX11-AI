@@ -148,6 +148,9 @@ void Scene::Update(float dt)
 {
     time_ += dt;
     for (auto& obj : objects_) if (obj) obj->Update(dt);
+    // Every water body measures the terrain under it (only when something changed: this is a cheap comparison otherwise).
+    const Terrain* terrain = GetTerrain();
+    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) water->RefreshShoreDepth(terrain);
 }
 
 // Smallest sphere containing both input spheres.
