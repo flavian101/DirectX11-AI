@@ -401,7 +401,8 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
         }
 
         XMFLOAT3 position, rotation, scale;
-        if (selected->GetEditorTransform(position, rotation, scale)) {
+        if (selected->GetEditorTransform(position, rotation, scale) &&
+            (gizmoTool_ != GizmoTool::Rotate || selected->SupportsRotation())) {
             XMFLOAT4X4 matrix = ComposeTransform(position, rotation, scale);
             const ImGuizmo::OPERATION operation = gizmoTool_ == GizmoTool::Translate ? ImGuizmo::TRANSLATE
                                                 : gizmoTool_ == GizmoTool::Rotate    ? ImGuizmo::ROTATE
@@ -428,6 +429,23 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
         const SceneObjectId hit = PickObject(MakePickRay(view, projection, ndcX, ndcY));
         if (hit != 0) { selectionKind_ = SelectionKind::Object; selectedId_ = hit; }
         else selectedId_ = 0;
+    }
+
+    // Where is the ground under the mouse? The terrain answers from its kept height grid (lesson 25). This is also
+    // the first thing the sculpt brushes will need: a point on the ground to work around.
+    if (viewportHovered_ && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
+        if (const Terrain* terrain = ctx.scene.GetTerrain()) {
+            const ImVec2 mouse = ImGui::GetMousePos();
+            const float ndcX = ((mouse.x - x) / width) * 2.0f - 1.0f;
+            const float ndcY = 1.0f - ((mouse.y - y) / height) * 2.0f;
+            float distance = 0.0f;
+            XMFLOAT3 point;
+            if (terrain->Raycast(MakePickRay(view, projection, ndcX, ndcY), distance, &point)) {
+                char text[96];
+                std::snprintf(text, sizeof(text), "Ground: %.1f, %.1f, %.1f", point.x, point.y, point.z);
+                ImGui::GetWindowDrawList()->AddText(ImVec2(x + 8.0f, y + height - 40.0f), IM_COL32(255, 255, 255, 200), text);
+            }
+        }
     }
 }
 
@@ -994,6 +1012,38 @@ void EditorLayer::DrawSurfaceInspector(SurfaceMaterial& surface)
     }
 }
 
+// Moves `object` straight up or down until the bottom of its box rests on the terrain. The ground is looked up under
+// every corner of the box and under its centre, and the HIGHEST ground wins: on a slope the uphill side would
+// otherwise sink into the hill. Does nothing if the object is not over the terrain at all.
+static void SnapToTerrain(SceneObject& object, const Terrain& terrain)
+{
+    XMFLOAT4X4 worldFloats;
+    XMFLOAT3 boundsMin, boundsMax;
+    XMFLOAT3 position, rotation, scale;
+    if (!object.GetOrientedBounds(worldFloats, boundsMin, boundsMax)) return;
+    if (!object.GetEditorTransform(position, rotation, scale)) return;
+    const XMMATRIX world = XMLoadFloat4x4(&worldFloats);
+
+    float lowestY = FLT_MAX;     // the lowest point of the box, in world space
+    float groundY = -FLT_MAX;    // the highest ground under it
+    bool overTerrain = false;
+    auto consider = [&](const XMFLOAT3& localPoint) {
+        XMFLOAT3 p;
+        XMStoreFloat3(&p, XMVector3Transform(XMLoadFloat3(&localPoint), world));
+        lowestY = (std::min)(lowestY, p.y);
+        float ground = 0.0f;
+        if (terrain.GetHeightAt(p.x, p.z, ground)) { groundY = (std::max)(groundY, ground); overTerrain = true; }
+    };
+    for (int i = 0; i < 8; ++i) {
+        consider({ (i & 1) ? boundsMax.x : boundsMin.x, (i & 2) ? boundsMax.y : boundsMin.y, (i & 4) ? boundsMax.z : boundsMin.z });
+    }
+    consider({ (boundsMin.x + boundsMax.x) * 0.5f, (boundsMin.y + boundsMax.y) * 0.5f, (boundsMin.z + boundsMax.z) * 0.5f });
+    if (!overTerrain) return;
+
+    position.y += groundY - lowestY;
+    object.SetEditorTransform(position, rotation, scale);
+}
+
 void EditorLayer::DrawTransformEditor(SceneObject* object)
 {
     XMFLOAT3 position;
@@ -1015,7 +1065,7 @@ void EditorLayer::DrawTransformEditor(SceneObject* object)
         XMConvertToDegrees(rotation.x), XMConvertToDegrees(rotation.y), XMConvertToDegrees(rotation.z)
     };
     float rotationValues[3] = { rotationDegrees.x, rotationDegrees.y, rotationDegrees.z };
-    if (ImGui::DragFloat3("Rotation", rotationValues, 1.0f)) {
+    if (object->SupportsRotation() && ImGui::DragFloat3("Rotation", rotationValues, 1.0f)) {
         rotation = { XMConvertToRadians(rotationValues[0]), XMConvertToRadians(rotationValues[1]),
                      XMConvertToRadians(rotationValues[2]) };
         changed = true;
@@ -1027,6 +1077,13 @@ void EditorLayer::DrawTransformEditor(SceneObject* object)
         changed = true;
     }
     if (changed) object->SetEditorTransform(position, rotation, scale);
+
+    // Cubes and models can be dropped onto the ground. (Terrain, water and sky are fixtures, not content.)
+    const Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;
+    if (terrain && object->IsUserContent()) {
+        if (ImGui::Button("Snap to terrain")) SnapToTerrain(*object, *terrain);
+        ImGui::SetItemTooltip("Moves the object straight up or down until the bottom of its box rests on the ground.\nOn a slope it rests on the highest ground under it, so it never sinks in.");
+    }
 }
 
 void EditorLayer::DrawCameraInspector()

@@ -1,4 +1,6 @@
 #pragma once
+#include "Heightfield.h"
+#include "RayPicking.h"
 #include "Renderable.h"
 #include "SceneObject.h"
 #include "Texture.h"
@@ -109,6 +111,7 @@ public:
 		const DirectX::XMFLOAT3& rotation,
 		const DirectX::XMFLOAT3& scale) override;
 	bool IsValid() const;
+	bool SupportsRotation() const override { return false; }   // moved and scaled only: see lesson 25
 
 	// Clamps the settings, then rebuilds the mesh only if the shape changed
 	// (a tiling change just updates a shader constant). Returns false if the rebuild failed;
@@ -132,6 +135,16 @@ public:
 	bool SetHeightmap(const std::string& path);   // 8-bit or 16-bit greyscale image; 16-bit gives much smoother slopes
 	const std::string& GetColorMapPath() const { return colorMapPath_; }
 	bool SetColorMap(const std::string& path);
+
+	// --- Asking the terrain about its own surface (lesson 25) ---
+	// All in WORLD space, and all answered from the kept height grid, not from the GPU.
+	// Height of the ground at (worldX, worldZ), exactly as the full-detail mesh draws it. False outside the terrain.
+	bool GetHeightAt(float worldX, float worldZ, float& worldY) const;
+	// Unit surface normal there. False outside the terrain.
+	bool GetNormalAt(float worldX, float worldZ, DirectX::XMFLOAT3& normal) const;
+	// First hit of `ray` (unit direction) with the ground, coming from above. `distance` is in world units.
+	bool Raycast(const Ray& ray, float& distance, DirectX::XMFLOAT3* point = nullptr) const;
+	const Heightfield& GetHeightfield() const { return heightfield_; }
 
 	// For tools that need to fit things to the terrain (e.g. the water plane).
 	DirectX::XMFLOAT2 GetWorldExtent() const;               // x/z size in world units
@@ -165,6 +178,7 @@ private:
 	std::unique_ptr<TextureArray> layerNormal_;
 	std::unique_ptr<TextureArray> layerOrm_;
 	Heightmap heightmap_;      // decoded ONCE; every rebuild reuses it instead of re-reading the PNG
+	Heightfield heightfield_;  // the FINAL grid the mesh was built from (heightmap + noise, at mesh resolution)
 	std::string heightmapPath_;
 	std::string colorMapPath_;
 	std::string layerMapPaths_[kTerrainLayerCount][3];   // [layer][albedo / normal / orm]

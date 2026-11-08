@@ -52,6 +52,10 @@ public:
         return false;
     }
 
+    // False for objects that can only be moved and scaled (the terrain: its height queries assume it is never tilted).
+    // The editor hides the Rotation row and the rotate gizmo for them.
+    virtual bool SupportsRotation() const { return true; }
+
     // --- editor interaction ---
     // The object's box in its OWN space, plus the matrix that places it in the world. The editor uses it to pick
     // the object by clicking and to outline it when selected. False = cannot be picked by clicking.

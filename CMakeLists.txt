@@ -79,6 +79,7 @@ add_library(Engine STATIC
 	src/PostProcess.cpp
 	src/DemoScene.cpp
 	src/Terrain.cpp
+	src/Heightfield.cpp
 	src/Water.cpp
 	src/Skybox.cpp
 	src/EnvironmentLighting.cpp
@@ -117,6 +118,17 @@ function(sync_runtime_files target)
 endfunction()
 
 sync_runtime_files(D3D11Example)
+
+# ---------------------------------------------------------------------------------------------
+# Unit tests for the pure-logic pieces (no Direct3D, no window): build, then run `ctest` or the exe directly.
+# ---------------------------------------------------------------------------------------------
+option(BUILD_TESTS "Build the unit tests" ON)
+if(BUILD_TESTS)
+    enable_testing()
+    add_executable(HeightfieldTests tests/heightfield_test.cpp src/Heightfield.cpp)
+    target_include_directories(HeightfieldTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME Heightfield COMMAND HeightfieldTests)
+endif()
 
 if(BUILD_EDITOR)
     if(EXISTS ${CMAKE_SOURCE_DIR}/extern/imgui/imgui.cpp)

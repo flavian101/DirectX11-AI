@@ -131,7 +131,8 @@ constexpr int kChunkCells = 32;   // grid cells per tile side: 32x32 quads = 204
 
 Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, int mapWidth, int mapHeight,
 						 const TerrainSettings& settings, float& outDepth, std::vector<TerrainChunk>& outChunks,
-						 int& outChunksX, int& outChunksZ)
+						 int& outChunksX, int& outChunksZ,
+						 std::vector<float>& outSamples, int& outCellsX, int& outCellsZ)
 {
 	if (!device || map.empty()) return nullptr;
 
@@ -315,6 +316,10 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 		}
 	}
 
+	// Keep the grid. It used to die here; now the terrain keeps it so it can answer height and ray queries (lesson 25).
+	outSamples = std::move(heights);
+	outCellsX = cellsX;
+	outCellsZ = cellsZ;
 	return new Model(meshes);
 }
 }
@@ -502,13 +507,18 @@ bool Terrain::Rebuild(const TerrainSettings& settings)
 	float depth = 0.0f;
 	std::vector<TerrainChunk> chunks;
 	int chunksX = 0, chunksZ = 0;
+	std::vector<float> samples;
+	int cellsX = 0, cellsZ = 0;
 	Model* model = BuildTerrainModel(device_, heightmap_.values, heightmap_.width, heightmap_.height,
-									 settings, depth, chunks, chunksX, chunksZ);
+									 settings, depth, chunks, chunksX, chunksZ, samples, cellsX, cellsZ);
 	if (!model) return false;
 	auto replacement = std::make_unique<Renderable>(device_, model, L"shaders/vs.hlsl", L"shaders/terrain_ps.hlsl");
 	if (!replacement->IsValid()) return false;
 
 	renderable_ = std::move(replacement);
+	if (!heightfield_.Reset({ cellsX, cellsZ, settings.width, depth, settings.heightScale }, std::move(samples))) {
+		LOG_ERROR("Terrain height grid could not be kept: height queries will not work");   // cannot happen: sizes come from the same numbers
+	}
 	settings_ = settings;
 	depth_ = depth;
 	chunks_ = std::move(chunks);
@@ -657,6 +667,43 @@ void Terrain::UpdateMaterial()
 	renderable_->SetMaterialBlock(&block, sizeof(block));
 }
 
+// The terrain is only ever moved and scaled (SetEditorTransform drops any rotation), so going from world space to the
+// heightfield's local space is "subtract the position, divide by the scale" and back is the reverse. Rotation would
+// turn a straight-down query into a slanted line through the field, which is why it is not allowed.
+bool Terrain::GetHeightAt(float worldX, float worldZ, float& worldY) const
+{
+	if (heightfield_.IsEmpty() || std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return false;
+	float localY = 0.0f;
+	if (!heightfield_.HeightAt((worldX - position_.x) / scale_.x, (worldZ - position_.z) / scale_.z, localY)) return false;
+	worldY = position_.y + localY * scale_.y;
+	return true;
+}
+
+bool Terrain::GetNormalAt(float worldX, float worldZ, XMFLOAT3& normal) const
+{
+	if (heightfield_.IsEmpty() || std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.y) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return false;
+	HfVec3 local;
+	if (!heightfield_.NormalAt((worldX - position_.x) / scale_.x, (worldZ - position_.z) / scale_.z, local)) return false;
+	// A normal is not a direction along the surface, so a stretched terrain divides it by the scale (not multiplies).
+	const XMVECTOR scaled = XMVectorSet(local.x / scale_.x, local.y / scale_.y, local.z / scale_.z, 0.0f);
+	XMStoreFloat3(&normal, XMVector3Normalize(scaled));
+	return true;
+}
+
+bool Terrain::Raycast(const Ray& ray, float& distance, XMFLOAT3* point) const
+{
+	if (heightfield_.IsEmpty() || std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.y) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return false;
+	// Carry the ray into the heightfield's space. The direction is NOT renormalised: the point at distance t of the
+	// local ray is the local version of the point at distance t of the world ray, so t needs no conversion.
+	const HfVec3 origin{ (ray.origin.x - position_.x) / scale_.x, (ray.origin.y - position_.y) / scale_.y, (ray.origin.z - position_.z) / scale_.z };
+	const HfVec3 direction{ ray.direction.x / scale_.x, ray.direction.y / scale_.y, ray.direction.z / scale_.z };
+	float t = 0.0f;
+	if (!heightfield_.Raycast(origin, direction, t)) return false;
+	distance = t;
+	if (point) *point = { ray.origin.x + ray.direction.x * t, ray.origin.y + ray.direction.y * t, ray.origin.z + ray.direction.z * t };
+	return true;
+}
+
 XMFLOAT2 Terrain::GetWorldExtent() const
 {
 	return { settings_.width * scale_.x, depth_ * scale_.z };
@@ -679,8 +726,9 @@ bool Terrain::GetEditorTransform(XMFLOAT3& position, XMFLOAT3& rotation, XMFLOAT
 bool Terrain::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotation,
 	const XMFLOAT3& scale)
 {
+	(void)rotation;   // the terrain is never tilted (SupportsRotation() is false): its height queries rely on it
 	position_ = position;
-	rotation_ = rotation;
+	rotation_ = { 0.0f, 0.0f, 0.0f };
 	scale_ = scale;
 	UpdateWorldTransform();
 	return true;
