@@ -88,6 +88,8 @@ add_library(Engine STATIC
 # PUBLIC: everything that links Engine can write #include "Scene.h".
 target_include_directories(Engine PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
+target_compile_definitions(Engine PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+
 # Link against the Windows SDK libraries for DirectX 11
 # The d3d11 and dxgi libraries are part of the SDK and are available on Windows
 # dxguid supplies the interface IDs (e.g. for D3DReflect in Shader.cpp); MSVC can hide the need, MinGW cannot.
