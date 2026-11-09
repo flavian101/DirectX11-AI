@@ -252,7 +252,9 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
     root["version"] = kSceneFileVersion;
     root["camera"] = { { "position", scene.GetCamera().GetPosition() }, { "target", scene.GetCamera().GetTarget() } };
 
-    for (auto& [key, value] : DescribeGlobals(scene).items()) root[key] = value;
+    // A named local lives to the end of the function, so it outlives the loop.
+    const json globals = DescribeGlobals(scene);
+    for (const auto& [key, value] : globals.items()) root[key] = value;
 
     json objects = json::array();
     for (const auto& owned : scene.GetObjects()) {
