@@ -65,6 +65,7 @@ add_library(Engine STATIC
 	src/ModelObject.cpp
 	src/RayPicking.cpp
 	src/SceneSerializer.cpp
+	src/Project.cpp
 	src/Renderable.cpp
 	src/Material.cpp
 	src/SurfaceMaterial.cpp
@@ -131,6 +132,10 @@ if(BUILD_TESTS)
     add_executable(WaterTests tests/water_test.cpp)
     target_include_directories(WaterTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME Water COMMAND WaterTests)
+    add_executable(ProjectTests tests/project_test.cpp src/Project.cpp)
+    target_include_directories(ProjectTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(ProjectTests PRIVATE nlohmann_json::nlohmann_json)
+    add_test(NAME Project COMMAND ProjectTests)
 endif()
 
 if(BUILD_EDITOR)
@@ -148,6 +153,10 @@ if(BUILD_EDITOR)
         add_executable(D3D11Editor
             editor/main_editor.cpp
             editor/EditorLayer.cpp
+            editor/EditorTheme.cpp
+            editor/ConsolePanel.cpp
+            editor/AssetBrowserPanel.cpp
+            editor/ScenesPanel.cpp
             extern/imgui/imgui.cpp
             extern/imgui/imgui_demo.cpp
             extern/imgui/imgui_draw.cpp
@@ -163,7 +172,7 @@ if(BUILD_EDITOR)
             ${CMAKE_SOURCE_DIR}/extern/imgui/backends
             ${imguizmo_SOURCE_DIR}/src
         )
-        target_link_libraries(D3D11Editor PRIVATE Engine comdlg32)   # comdlg32: the Open File dialog
+        target_link_libraries(D3D11Editor PRIVATE Engine comdlg32 shell32)   # comdlg32: the Open File dialog; shell32: "Show in Explorer"
         sync_runtime_files(D3D11Editor)
     else()
         message(WARNING "extern/imgui is empty - skipping the editor. Run: git submodule update --init")

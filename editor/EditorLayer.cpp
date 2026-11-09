@@ -1,8 +1,10 @@
 #include "EditorLayer.h"
+#include "EditorTheme.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include "Cube.h"
@@ -139,6 +141,7 @@ bool EditorLayer::OnAttach(HWND hwnd, Direct3D11Renderer& renderer)
     // Without this, pressing the left button on the Viewport image would DRAG THE WINDOW out of its dock.
     io.ConfigWindowsMoveFromTitleBarOnly = true;
     ImGui::StyleColorsDark();
+    ApplyEditorTheme();   // our colours, rounding and spacing on top of the dark base
 
     if (!ImGui_ImplWin32_Init(hwnd) || !ImGui_ImplDX11_Init(renderer.GetDevice(), renderer.GetContext())) {
         LOG_ERROR("Failed to initialize Dear ImGui");
@@ -149,6 +152,7 @@ bool EditorLayer::OnAttach(HWND hwnd, Direct3D11Renderer& renderer)
     }
     hwnd_ = hwnd;
     attached_ = true;
+    LoadRecentProjects();
     return true;
 }
 
@@ -187,6 +191,15 @@ void EditorLayer::OnFrame(LayerContext& ctx)
         importRequested_ = false;
         ImportModelWithDialog(ctx);
     }
+    if (!pendingImportPath_.empty()) {   // a model double-clicked in the Assets panel
+        const std::string path = pendingImportPath_;
+        pendingImportPath_.clear();
+        ImportModelFromFile(ctx, path);
+    }
+    if (newProjectRequested_) {
+        newProjectRequested_ = false;
+        NewProject(ctx);
+    }
     HandleSceneFileRequests(ctx);   // File > Open / Save, also before the UI frame starts
     HandleTerrainFileRequest(ctx);  // Terrain > Texture files
     ProcessPendingActions(ctx);     // add / duplicate / delete asked for by the previous frame's UI
@@ -210,6 +223,7 @@ void EditorLayer::OnFrame(LayerContext& ctx)
     DrawHierarchyPanel();
     DrawInspectorPanel();
     DrawHistoryPanel();
+    DrawProjectPanels();   // Scenes, Assets, Console
     HandleShortcuts();
 
     if (showMessage_) {
@@ -223,6 +237,7 @@ void EditorLayer::OnFrame(LayerContext& ctx)
         if (ImGui::Button("OK")) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
+    DrawUnsavedPrompt();
 
     ImGui::Render();
 }
@@ -270,9 +285,14 @@ void EditorLayer::BuildDefaultLayout(unsigned int dockSpaceId, float width, floa
 
     // Carve the space: a slice off the left, a slice off the right, the rest is the middle.
     ImGuiID middle = dockSpaceId;
-    const ImGuiID left = ImGui::DockBuilderSplitNode(middle, ImGuiDir_Left, 0.20f, nullptr, &middle);
+    ImGuiID left = ImGui::DockBuilderSplitNode(middle, ImGuiDir_Left, 0.20f, nullptr, &middle);
     const ImGuiID right = ImGui::DockBuilderSplitNode(middle, ImGuiDir_Right, 0.28f, nullptr, &middle);
+    const ImGuiID bottom = ImGui::DockBuilderSplitNode(middle, ImGuiDir_Down, 0.27f, nullptr, &middle);
+    const ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.35f, nullptr, &left);
     ImGui::DockBuilderDockWindow("Hierarchy", left);
+    ImGui::DockBuilderDockWindow("Scenes", leftBottom);
+    ImGui::DockBuilderDockWindow("Assets", bottom);
+    ImGui::DockBuilderDockWindow("Console", bottom);   // a tab next to Assets
     ImGui::DockBuilderDockWindow("Viewport", middle);
     ImGui::DockBuilderDockWindow("Inspector", right);
     ImGui::DockBuilderFinish(dockSpaceId);
@@ -282,7 +302,19 @@ void EditorLayer::DrawMenuBar()
 {
     if (!ImGui::BeginMenuBar()) return;
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Open Scene...")) openSceneRequested_ = true;
+        if (ImGui::MenuItem("New Project...")) newProjectRequested_ = true;
+        ImGui::SetItemTooltip("Makes a project folder and turns the scene you are editing into its first scene.");
+        if (ImGui::MenuItem("Open Project...")) RequestNavigation(NavKind::OpenProject);
+        if (ImGui::BeginMenu("Recent Projects", !recentProjects_.empty())) {
+            for (const std::string& recent : recentProjects_) {
+                if (ImGui::MenuItem(std::filesystem::path(recent).stem().string().c_str())) RequestNavigation(NavKind::OpenProject, recent);
+                ImGui::SetItemTooltip("%s", recent.c_str());
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("New Scene")) RequestNavigation(NavKind::NewScene);
+        if (ImGui::MenuItem("Open Scene...")) RequestNavigation(NavKind::OpenScene);
         if (ImGui::MenuItem("Save Scene", "Ctrl+S")) saveSceneRequested_ = true;
         if (ImGui::MenuItem("Save Scene As...")) saveSceneAsRequested_ = true;
         ImGui::Separator();
@@ -317,13 +349,17 @@ void EditorLayer::DrawMenuBar()
         ImGui::MenuItem("Viewport", nullptr, &showViewport_);
         ImGui::MenuItem("Inspector", nullptr, &showInspector_);
         ImGui::MenuItem("History", nullptr, &showHistory_);
+        ImGui::MenuItem("Scenes", nullptr, &showScenes_);
+        ImGui::MenuItem("Assets", nullptr, &showAssets_);
+        ImGui::MenuItem("Console", nullptr, &showConsole_);
         ImGui::Separator();
         if (ImGui::MenuItem("Reset layout")) resetLayout_ = true;
         ImGui::EndMenu();
     }
-    // Which scene is open, and a short confirmation after a save.
+    // Which project and scene are open, a star when there are unsaved changes, and a short confirmation after a save.
     const std::string name = currentScenePath_.empty() ? "unsaved scene" : std::filesystem::path(currentScenePath_).filename().string();
-    ImGui::TextDisabled("  |  %s", name.c_str());
+    if (project_.IsOpen()) ImGui::TextDisabled("  |  %s  /  %s%s", project_.name.c_str(), name.c_str(), IsDirty() ? " *" : "");
+    else ImGui::TextDisabled("  |  %s%s", name.c_str(), IsDirty() ? " *" : "");
     if (ImGui::GetTime() - lastSavedTime_ < 2.0) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.5f, 1.0f), "Saved");
@@ -826,10 +862,10 @@ std::string PickImageFile(HWND owner)
 }
 
 // Is the file inside the "assets" folder, the folder that is shipped with the game?
-bool IsInsideAssets(const std::string& path)
+bool IsInsideAssets(const std::string& path, const std::string& assetsRoot)
 {
     std::error_code error;
-    const std::filesystem::path relative = std::filesystem::weakly_canonical(path, error).lexically_relative(std::filesystem::weakly_canonical("assets", error));
+    const std::filesystem::path relative = std::filesystem::weakly_canonical(path, error).lexically_relative(std::filesystem::weakly_canonical(assetsRoot, error));
     return !relative.empty() && *relative.begin() != "..";
 }
 }
@@ -852,7 +888,7 @@ void EditorLayer::HandleTerrainFileRequest(LayerContext& ctx)
 
     if (!ok) {
         ShowMessage("Could not use that image", "The image could not be read (or the terrain could not be rebuilt with it):\n" + path);
-    } else if (!IsInsideAssets(path)) {
+    } else if (!IsInsideAssets(path, AssetsRootText())) {
         ShowMessage("Image applied, with a warning", "That image is outside the assets folder, so it will not be shipped with the game.\nCopy it into assets/ (for example assets/Terrain/<Layer>/) and choose it again from there.");
     }
 }
@@ -860,10 +896,10 @@ void EditorLayer::HandleTerrainFileRequest(LayerContext& ctx)
 namespace {
 // Open / Save dialog for scene files. Returns UTF-8, empty if cancelled. For saving, makes sure the name ends in
 // ".scene.json" so the Open dialog's filter finds it again.
-std::string PickSceneFile(HWND owner, bool save)
+std::string PickSceneFile(HWND owner, bool save, const std::filesystem::path& startFolder)
 {
     std::error_code error;
-    std::filesystem::create_directories("assets/scenes", error);   // the dialog starts here
+    std::filesystem::create_directories(startFolder, error);   // the dialog starts here
     wchar_t file[MAX_PATH] = L"";
     OPENFILENAMEW dialog{};
     dialog.lStructSize = sizeof(dialog);
@@ -871,7 +907,8 @@ std::string PickSceneFile(HWND owner, bool save)
     dialog.lpstrFilter = L"Scene files (*.scene.json)\0*.scene.json\0All files (*.*)\0*.*\0";
     dialog.lpstrFile = file;
     dialog.nMaxFile = MAX_PATH;
-    dialog.lpstrInitialDir = L"assets\\scenes";
+    const std::wstring startDirectory = std::filesystem::absolute(startFolder).wstring();   // native (wide) text: no conversion
+    dialog.lpstrInitialDir = startDirectory.c_str();
     dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
     if (!(save ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog))) return {};
     const int bytes = WideCharToMultiByte(CP_UTF8, 0, file, -1, nullptr, 0, nullptr, nullptr);
@@ -885,6 +922,29 @@ std::string PickSceneFile(HWND owner, bool save)
             path += ".scene.json";
         }
     }
+    return path;
+}
+
+// Open / New dialog for a project file (*.d3dproj). Returns UTF-8, empty if cancelled. For a new project the file does
+// not exist yet, so this is the Save dialog: its name becomes the project's name, and its folder the project folder.
+std::string PickProjectFile(HWND owner, bool create)
+{
+    wchar_t file[MAX_PATH] = L"";
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = owner;
+    dialog.lpstrFilter = L"Projects (*.d3dproj)\0*.d3dproj\0All files (*.*)\0*.*\0";
+    dialog.lpstrFile = file;
+    dialog.nMaxFile = MAX_PATH;
+    dialog.lpstrTitle = create ? L"New project: choose a folder and a name" : L"Open project";
+    dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | (create ? 0 : OFN_FILEMUSTEXIST);   // a project is never overwritten: CreateProject refuses
+    if (!(create ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog))) return {};
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, file, -1, nullptr, 0, nullptr, nullptr);
+    if (bytes <= 1) return {};
+    std::string path(static_cast<size_t>(bytes - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, file, -1, path.data(), bytes, nullptr, nullptr);
+    const std::string extension = kProjectExtension;
+    if (path.size() < extension.size() || path.compare(path.size() - extension.size(), extension.size(), extension) != 0) path += extension;
     return path;
 }
 
@@ -903,51 +963,254 @@ void EditorLayer::ShowMessage(const std::string& title, const std::string& text)
     showMessage_ = true;
 }
 
-void EditorLayer::HandleSceneFileRequests(LayerContext& ctx)
+std::string EditorLayer::AssetsRootText() const
 {
-    if (openSceneRequested_) {
-        openSceneRequested_ = false;
-        const std::string path = PickSceneFile(hwnd_, false);
-        if (!path.empty()) {
-            std::vector<std::string> warnings;
-            std::string error;
-            if (LoadScene(ctx.scene, ctx.renderer.GetDevice(), path, warnings, error)) {
-                history_.Clear();                      // every id in the history now refers to an object that is gone
-                objectDetector_.Reset();
-                globalDetector_.Reset();
-                currentScenePath_ = path;
-                selectedId_ = 0;                       // the old objects are gone, and so are their ids
-                selectionKind_ = SelectionKind::Object;
-                if (!warnings.empty()) ShowMessage("Scene opened, with warnings", JoinLines(warnings));
-            } else {
-                ShowMessage("Could not open the scene", error);
-            }
-        }
+    return project_.IsOpen() ? project_.AssetsRoot().string() : std::string("assets");
+}
+
+std::filesystem::path EditorLayer::SceneStartFolder() const
+{
+    return project_.IsOpen() ? project_.ScenesFolder() : std::filesystem::path("assets/scenes");
+}
+
+void EditorLayer::RequestNavigation(NavKind kind, const std::string& path)
+{
+    nav_ = Navigation{};
+    nav_.kind = kind;
+    nav_.path = path;
+}
+
+// Saves the scene and keeps everything that depends on it in step: the file name, the "unsaved" star, and the project's list.
+bool EditorLayer::SaveSceneTo(LayerContext& ctx, const std::string& path)
+{
+    std::vector<std::string> warnings;
+    std::string error;
+    if (!SaveScene(ctx.scene, path, warnings, error, AssetsRootText())) {
+        ShowMessage("Could not save the scene", error);
+        return false;
+    }
+    currentScenePath_ = path;
+    lastSavedTime_ = ImGui::GetTime();
+    savedRevision_ = history_.Revision();
+    RegisterSceneInProject(path);
+    if (!warnings.empty()) ShowMessage("Scene saved, with warnings", JoinLines(warnings));
+    return true;
+}
+
+void EditorLayer::RegisterSceneInProject(const std::string& path)
+{
+    if (!project_.IsOpen()) return;
+    const std::string relative = project_.RelativeToRoot(path);
+    if (!relative.empty() && project_.AddScene(relative)) SaveProjectFile();
+}
+
+void EditorLayer::SaveProjectFile()
+{
+    std::vector<std::string> warnings;
+    std::string error;
+    if (!SaveProject(project_, error, &warnings)) ShowMessage("Could not save the project", error);
+    else if (!warnings.empty()) ShowMessage("Project saved, with warnings", JoinLines(warnings));
+}
+
+void EditorLayer::LoadRecentProjects()
+{
+    recentProjects_.clear();
+    std::ifstream in("editor_recent.txt");
+    std::string line;
+    while (std::getline(in, line) && recentProjects_.size() < 8) {
+        std::error_code error;
+        if (!line.empty() && std::filesystem::exists(line, error)) recentProjects_.push_back(line);   // a project that was moved or deleted drops out
+    }
+}
+
+void EditorLayer::RememberProject(const std::string& file)
+{
+    recentProjects_.erase(std::remove(recentProjects_.begin(), recentProjects_.end(), file), recentProjects_.end());
+    recentProjects_.insert(recentProjects_.begin(), file);
+    if (recentProjects_.size() > 8) recentProjects_.resize(8);
+    std::ofstream out("editor_recent.txt", std::ios::trunc);
+    for (const std::string& recent : recentProjects_) out << recent << '\n';
+}
+
+void EditorLayer::OpenSceneFile(LayerContext& ctx, const std::string& path)
+{
+    std::vector<std::string> warnings;
+    std::string error;
+    if (!LoadScene(ctx.scene, ctx.renderer.GetDevice(), path, warnings, error)) {
+        ShowMessage("Could not open the scene", error);
+        return;
+    }
+    history_.Clear();                      // every id in the history now refers to an object that is gone
+    objectDetector_.Reset();
+    globalDetector_.Reset();
+    currentScenePath_ = path;
+    savedRevision_ = history_.Revision();  // what was just loaded is, by definition, what is saved
+    selectedId_ = 0;                       // the old objects are gone, and so are their ids
+    selectionKind_ = SelectionKind::Object;
+    RegisterSceneInProject(path);          // a scene opened from inside the project joins its list
+    if (!warnings.empty()) ShowMessage("Scene opened, with warnings", JoinLines(warnings));
+}
+
+void EditorLayer::OpenProjectFile(LayerContext& ctx, const std::string& path)
+{
+    Project loaded;
+    std::string error;
+    if (!LoadProject(path, loaded, error)) {
+        ShowMessage("Could not open the project", error);
+        return;
+    }
+    project_ = std::move(loaded);
+    RememberProject(project_.file.string());
+    // Start where the game starts. A project with no scenes yet keeps what is on screen: it is the first scene to be.
+    if (!project_.startScene.empty()) {
+        const std::filesystem::path start = project_.Resolve(project_.startScene);
+        std::error_code exists;
+        if (std::filesystem::exists(start, exists)) OpenSceneFile(ctx, start.string());
+        else ShowMessage("The start scene is missing", "The project opened, but its start scene was not found:\n" + start.string());
+    }
+}
+
+void EditorLayer::NewProject(LayerContext& ctx)
+{
+    const std::string file = PickProjectFile(hwnd_, true);
+    if (file.empty()) return;
+    Project created;
+    std::string error;
+    if (!CreateProject(file, created, error)) {
+        ShowMessage("Could not create the project", error);
+        return;
+    }
+    project_ = std::move(created);
+    RememberProject(project_.file.string());
+    // The scene on screen becomes the project's first scene (and so its start scene): nothing is thrown away.
+    SaveSceneTo(ctx, (project_.ScenesFolder() / "main.scene.json").string());
+}
+
+void EditorLayer::NewScene(LayerContext& ctx)
+{
+    ctx.scene.ClearObjects();
+    ctx.scene.Add<Skybox>(ctx.renderer.GetDevice());   // an empty scene still needs a sky, or the background is black
+    history_.Clear();
+    objectDetector_.Reset();
+    globalDetector_.Reset();
+    currentScenePath_.clear();
+    savedRevision_ = history_.Revision();
+    selectedId_ = 0;
+    selectionKind_ = SelectionKind::Object;
+}
+
+// Opening another scene or project replaces what is on screen. If there are unsaved changes the user decides first;
+// the request waits in nav_ meanwhile (nothing else changes while the prompt is up).
+void EditorLayer::HandleNavigation(LayerContext& ctx)
+{
+    if (nav_.kind == NavKind::None) return;
+    if (nav_.waitingForSave) {
+        nav_.waitingForSave = false;
+        if (IsDirty()) { nav_ = Navigation{}; return; }   // the save was cancelled or failed: stay where we are
+        nav_.confirmed = true;
+    }
+    if (!nav_.confirmed && IsDirty()) {
+        unsavedPromptRequested_ = true;   // DrawUnsavedPrompt shows it; its buttons set `confirmed`, start a save, or cancel
+        return;
     }
 
+    const Navigation nav = nav_;
+    nav_ = Navigation{};
+    switch (nav.kind) {
+    case NavKind::OpenScene: {
+        const std::string path = nav.path.empty() ? PickSceneFile(hwnd_, false, SceneStartFolder()) : nav.path;
+        if (!path.empty()) OpenSceneFile(ctx, path);
+        break;
+    }
+    case NavKind::OpenProject: {
+        const std::string path = nav.path.empty() ? PickProjectFile(hwnd_, false) : nav.path;
+        if (!path.empty()) OpenProjectFile(ctx, path);
+        break;
+    }
+    case NavKind::NewScene:
+        NewScene(ctx);
+        break;
+    case NavKind::None:
+        break;
+    }
+}
+
+void EditorLayer::HandleSceneFileRequests(LayerContext& ctx)
+{
     if (saveSceneRequested_ || saveSceneAsRequested_) {
         const bool askForName = saveSceneAsRequested_ || currentScenePath_.empty();
         saveSceneRequested_ = false;
         saveSceneAsRequested_ = false;
-        const std::string path = askForName ? PickSceneFile(hwnd_, true) : currentScenePath_;
-        if (!path.empty()) {
-            std::vector<std::string> warnings;
-            std::string error;
-            if (SaveScene(ctx.scene, path, warnings, error)) {
-                currentScenePath_ = path;
-                lastSavedTime_ = ImGui::GetTime();
-                if (!warnings.empty()) ShowMessage("Scene saved, with warnings", JoinLines(warnings));
-            } else {
-                ShowMessage("Could not save the scene", error);
-            }
-        }
+        const std::string path = askForName ? PickSceneFile(hwnd_, true, SceneStartFolder()) : currentScenePath_;
+        if (!path.empty()) SaveSceneTo(ctx, path);
     }
+    HandleNavigation(ctx);   // after the save, so "Save" in the unsaved-changes prompt is seen as done
+}
+
+void EditorLayer::DrawUnsavedPrompt()
+{
+    if (unsavedPromptRequested_) {
+        ImGui::OpenPopup("Unsaved changes");
+        unsavedPromptRequested_ = false;
+    }
+    if (!ImGui::BeginPopupModal("Unsaved changes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    const std::string name = currentScenePath_.empty() ? "the open scene" : std::filesystem::path(currentScenePath_).filename().string();
+    ImGui::Text("%s has changes that are not saved.", name.c_str());
+    ImGui::TextDisabled("Opening something else would lose them.");
+    ImGui::Spacing();
+    if (ImGui::Button("Save")) {
+        saveSceneRequested_ = true;       // carried out at the start of the next frame, then the navigation continues
+        nav_.waitingForSave = true;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Discard changes")) {
+        nav_.confirmed = true;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+        nav_ = Navigation{};
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void EditorLayer::DrawProjectPanels()
+{
+    // Scenes: the project's list. It only reports; what it asked for is carried out here, right away, because nothing
+    // below this point is walking a list (the file dialogs and scene replacement are deferred by RequestNavigation).
+    ScenesState state;
+    state.currentScene = project_.RelativeToRoot(currentScenePath_);
+    state.dirty = IsDirty();
+    state.canAddCurrent = project_.IsOpen() && !state.currentScene.empty() && !project_.HasScene(state.currentScene);
+    const ScenesAction scenesAction = scenesPanel_.Draw(&showScenes_, project_, state);
+    switch (scenesAction.kind) {
+    case ScenesAction::Kind::Open:       RequestNavigation(NavKind::OpenScene, project_.Resolve(scenesAction.scene).string()); break;
+    case ScenesAction::Kind::SetStart:   if (project_.SetStartScene(scenesAction.scene)) SaveProjectFile(); break;
+    case ScenesAction::Kind::Remove:     if (project_.RemoveScene(scenesAction.scene)) SaveProjectFile(); break;
+    case ScenesAction::Kind::AddCurrent: RegisterSceneInProject(currentScenePath_); break;
+    case ScenesAction::Kind::NewScene:   RequestNavigation(NavKind::NewScene); break;
+    case ScenesAction::Kind::None:       break;
+    }
+
+    // Assets: a double-clicked scene opens, a double-clicked model is imported (both at the start of the next frame).
+    const AssetAction assetAction = assetBrowser_.Draw(&showAssets_, project_.IsOpen() ? project_.AssetsRoot() : std::filesystem::path("assets"));
+    if (assetAction.kind == AssetAction::Kind::OpenScene) RequestNavigation(NavKind::OpenScene, assetAction.path);
+    else if (assetAction.kind == AssetAction::Kind::ImportModel) pendingImportPath_ = assetAction.path;
+
+    console_.Draw(&showConsole_);
 }
 
 void EditorLayer::ImportModelWithDialog(LayerContext& ctx)
 {
     const std::string path = PickModelFile(hwnd_);
     if (path.empty()) return;
+    ImportModelFromFile(ctx, path);
+}
+
+void EditorLayer::ImportModelFromFile(LayerContext& ctx, const std::string& path)
+{
 
     // Reading and uploading happens right here, on this thread, so a big model freezes the editor for a
     // moment. (Loading in the background is a later improvement.)

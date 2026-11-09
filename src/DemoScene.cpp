@@ -1,6 +1,7 @@
 #include "DemoScene.h"
 #include "Cube.h"
 #include "Logger.h"
+#include "Project.h"
 #include "SceneSerializer.h"
 #include <filesystem>
 #include "Skybox.h"
@@ -67,17 +68,22 @@ bool BuildDemoScene(Scene& scene, ID3D11Device* device)
 
 std::unique_ptr<Scene> BuildStartScene(ID3D11Device* device)
 {
+    // A project writes assets/startup.json naming its start scene: that is how a shipped game knows where to begin.
+    // Without one (or when the scene it names is gone) the old fixed file is used, exactly as before projects existed.
     std::error_code error;
-    if (std::filesystem::exists(kStartSceneFile, error)) {
+    std::string startFile = kStartSceneFile;
+    const std::string startup = ReadStartupScene("assets");
+    if (!startup.empty() && std::filesystem::exists("assets/" + startup, error)) startFile = "assets/" + startup;
+    if (std::filesystem::exists(startFile, error)) {
         auto scene = std::make_unique<Scene>();
         if (scene->Initialize(device)) {
             std::vector<std::string> warnings;
             std::string message;
-            if (LoadScene(*scene, device, kStartSceneFile, warnings, message)) {
+            if (LoadScene(*scene, device, startFile, warnings, message)) {
                 for (const std::string& warning : warnings) LOG_WARNING(warning);
                 return scene;
             }
-            LOG_ERROR(std::string("Could not load ") + kStartSceneFile + ": " + message + " (showing the demo scene instead)");
+            LOG_ERROR(std::string("Could not load ") + startFile + ": " + message + " (showing the demo scene instead)");
         }
         // `scene` is dropped here: a half-loaded scene is in an unknown state, so the demo gets a fresh one.
     }

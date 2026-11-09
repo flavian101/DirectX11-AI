@@ -25,6 +25,7 @@ public:
     // after you undo and then do something new, the old future no longer makes sense.
     void Push(std::unique_ptr<UndoCommand> command)
     {
+        ++revision_;
         commands_.resize(position_);                 // forget the redo branch
         commands_.push_back(std::move(command));
         position_ = commands_.size();
@@ -36,8 +37,8 @@ public:
 
     bool CanUndo() const { return position_ > 0; }
     bool CanRedo() const { return position_ < commands_.size(); }
-    void Undo() { if (CanUndo()) commands_[--position_]->Undo(); }
-    void Redo() { if (CanRedo()) commands_[position_++]->Redo(); }
+    void Undo() { if (CanUndo()) { ++revision_; commands_[--position_]->Undo(); } }
+    void Redo() { if (CanRedo()) { ++revision_; commands_[position_++]->Redo(); } }
 
     // Undo or redo as many steps as it takes to stand at `position` (0 = before everything).
     void JumpTo(size_t position)
@@ -47,7 +48,10 @@ public:
         while (position_ < position) Redo();
     }
 
-    void Clear() { commands_.clear(); position_ = 0; }
+    void Clear() { ++revision_; commands_.clear(); position_ = 0; }
+    // Changes with EVERY push, undo, redo and clear, and never repeats. "Has anything changed since the last save?" is then
+    // `Revision() != revisionAtSave`. (Undo followed by redo counts as a change: safe, the worst case is one extra prompt.)
+    unsigned Revision() const { return revision_; }
     size_t Size() const { return commands_.size(); }
     size_t Position() const { return position_; }   // commands [0, Position) are "done"; the rest can be redone
     const UndoCommand& At(size_t index) const { return *commands_[index]; }
@@ -57,6 +61,7 @@ public:
 private:
     size_t limit_;
     size_t position_ = 0;
+    unsigned revision_ = 0;
     std::vector<std::unique_ptr<UndoCommand>> commands_;
 };
 

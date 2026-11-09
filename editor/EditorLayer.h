@@ -1,7 +1,11 @@
 #pragma once
+#include "AssetBrowserPanel.h"
+#include "ConsolePanel.h"
 #include "Layer.h"
 #include "ModelObject.h"
+#include "Project.h"
 #include "RayPicking.h"
+#include "ScenesPanel.h"
 #include "SceneObject.h"
 #include "UndoHistory.h"
 #include <string>
@@ -60,6 +64,26 @@ private:
     void DrawSurfaceInspector(SurfaceMaterial& surface);
     void DrawModelInspector(ModelObject* model);
     void ImportModelWithDialog(LayerContext& ctx);
+    void ImportModelFromFile(LayerContext& ctx, const std::string& path);
+
+    // --- projects and scenes ---
+    enum class NavKind { None, OpenScene, OpenProject, NewScene };
+    void RequestNavigation(NavKind kind, const std::string& path = std::string());
+    void HandleNavigation(LayerContext& ctx);      // opens / replaces what is open, after asking about unsaved changes
+    void OpenSceneFile(LayerContext& ctx, const std::string& path);
+    void OpenProjectFile(LayerContext& ctx, const std::string& path);
+    void NewProject(LayerContext& ctx);            // File > New Project: the open scene becomes its first scene
+    void NewScene(LayerContext& ctx);
+    bool SaveSceneTo(LayerContext& ctx, const std::string& path);
+    void RegisterSceneInProject(const std::string& path);   // lists a scene saved inside the project, once
+    void SaveProjectFile();                        // writes the project file, and tells the user what could not be done
+    void RememberProject(const std::string& file);
+    void LoadRecentProjects();
+    void DrawProjectPanels();
+    void DrawUnsavedPrompt();
+    bool IsDirty() const { return history_.Revision() != savedRevision_; }
+    std::string AssetsRootText() const;            // the folder that ships: the project's assets/, or "assets"
+    std::filesystem::path SceneStartFolder() const;
 
     // --- undo / redo ---
     void TrackEdits(LayerContext& ctx);                 // notices finished edits and records them
@@ -102,10 +126,30 @@ private:
     // File > Import Model: the request is noted by the menu and carried out at the start of the next frame.
     bool importRequested_ = false;
     // Scene files: File > Open / Save. Like the import, the dialogs run at the start of the next frame.
-    bool openSceneRequested_ = false;
     bool saveSceneRequested_ = false;
     bool saveSceneAsRequested_ = false;
     std::string currentScenePath_;    // empty = not saved yet
+    unsigned savedRevision_ = 0;      // history_.Revision() at the last save or load: different now = unsaved changes
+
+    // The project (if one is open) and the panels around it.
+    Project project_;
+    std::vector<std::string> recentProjects_;
+    ConsolePanel console_;
+    AssetBrowserPanel assetBrowser_;
+    ScenesPanel scenesPanel_;
+    bool showAssets_ = true;
+    bool showConsole_ = true;
+    bool showScenes_ = true;
+    bool newProjectRequested_ = false;
+    std::string pendingImportPath_;   // an asset double-clicked in the Assets panel
+    // Opening another scene or project replaces what is open, so it first asks about unsaved changes.
+    struct Navigation {
+        NavKind kind = NavKind::None;
+        std::string path;             // "" = ask with a file dialog
+        bool confirmed = false;       // the user said "discard" (or there was nothing to lose)
+        bool waitingForSave = false;  // "save" was chosen: the save runs first, then this continues
+    } nav_;
+    bool unsavedPromptRequested_ = false;
     double lastSavedTime_ = -100.0;   // ImGui time of the last successful save, for the little "Saved" flash
 
     // Terrain > Texture files: which image the user asked to replace (the file dialog opens at the start of the next frame).

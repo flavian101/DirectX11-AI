@@ -49,15 +49,33 @@ const char* Logger::LevelName(LogLevel level)
 
 void Logger::Write(LogLevel level, const std::string& message)
 {
+    const std::string now = GetCurrentTime();
     std::ostringstream line;
-    line << '[' << GetCurrentTime() << "] [" << LevelName(level) << "] " << message;
+    line << '[' << now << "] [" << LevelName(level) << "] " << message;
     const std::string formatted = line.str();
+
+    // Kept for the Console panel. (Callers hold m_mutex: see Log().)
+    constexpr size_t kKeptLines = 1000;
+    Entry entry;
+    entry.index = ++m_counter;
+    entry.level = level;
+    entry.time = now.size() >= 19 ? now.substr(11, 8) : now;   // "YYYY-MM-DD HH:MM:SS" -> "HH:MM:SS"
+    entry.text = message;
+    m_recent.push_back(std::move(entry));
+    while (m_recent.size() > kKeptLines) m_recent.pop_front();
 
     std::cerr << formatted << std::endl;
     OutputDebugStringA((formatted + "\n").c_str());
     if (m_fileStream.is_open()) {
         m_fileStream << formatted << std::endl;
     }
+}
+
+unsigned long long Logger::CopyNewerThan(unsigned long long lastSeen, std::vector<Entry>& out)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const Entry& entry : m_recent) if (entry.index > lastSeen) out.push_back(entry);
+    return m_counter;
 }
 
 void Logger::Log(LogLevel level, const std::string& message)

@@ -13,7 +13,9 @@ constexpr int kSceneFileVersion = 1;
 
 // Writes `scene` to `path` (JSON). `warnings` receives things worth telling the user that did not stop the
 // save (for example a model that lives outside the scene's folder and will not travel with it).
-bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::string>& warnings, std::string& error);
+// `assetsRoot` is the folder that ships with the game (a project's assets/ folder; "assets" next to the program otherwise).
+bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::string>& warnings, std::string& error,
+               const std::string& assetsRoot = "assets");
 
 // Replaces the CONTENTS of an already-initialised scene (Scene::Initialize) with what the file describes.
 // A file that cannot be read or parsed fails BEFORE anything is changed. A single bad object (a model whose

@@ -52,7 +52,8 @@ std::string MakeStoredPath(const fs::path& target, const fs::path& sceneFolder, 
 // scene file; with `folder == nullptr` (snapshot mode) they are kept exactly as they are, so comparing two
 // snapshots is a plain text comparison.
 // ------------------------------------------------------------------------------------------------------------
-json DescribeObject(const SceneObject& object, const fs::path* folder, std::vector<std::string>* warnings)
+// `assetsRoot`: the folder that gets shipped. A file outside it is saved anyway but reported (file mode only).
+json DescribeObject(const SceneObject& object, const fs::path* folder, std::vector<std::string>* warnings, const fs::path& assetsRoot)
 {
     const bool snapshot = (folder == nullptr);
     auto warn = [&](const std::string& text) { if (warnings) warnings->push_back(text); };
@@ -61,7 +62,7 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
         if (current == standard) return nullptr;
         if (snapshot) return current;
         bool outside = false;
-        const std::string text = MakeStoredPath(fs::path(current), *folder, "assets", outside);
+        const std::string text = MakeStoredPath(fs::path(current), *folder, assetsRoot, outside);
         if (outside) warn("The terrain image \"" + current + "\" lives outside the assets folder. It will not be shipped with the game: copy it into assets/ and choose it again.");
         return text;
     };
@@ -106,7 +107,7 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
             entry["path"] = model->GetSourcePath();
         } else {
             bool outside = false;
-            entry["path"] = MakeStoredPath(fs::path(model->GetSourcePath()), *folder, "assets", outside);
+            entry["path"] = MakeStoredPath(fs::path(model->GetSourcePath()), *folder, assetsRoot, outside);
             if (outside) {
                 warn("The model \"" + std::string(model->GetEditorName()) + "\" lives outside the assets folder (" +
                      model->GetSourcePath() + "). It will not be shipped with the game: copy its folder into assets/ and import it from there.");
@@ -240,7 +241,8 @@ void ApplyGlobals(Scene& scene, const json& root, std::vector<std::string>& warn
 
 }  // namespace
 
-bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::string>& warnings, std::string& error)
+bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::string>& warnings, std::string& error,
+               const std::string& assetsRoot)
 {
     const fs::path file = fs::absolute(fs::path(path));
     const fs::path folder = file.parent_path();
@@ -255,7 +257,7 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
     json objects = json::array();
     for (const auto& owned : scene.GetObjects()) {
         if (!owned) continue;
-        json entry = DescribeObject(*owned, &folder, &warnings);
+        json entry = DescribeObject(*owned, &folder, &warnings, assetsRoot);
         if (!entry.is_null()) objects.push_back(std::move(entry));
     }
     root["objects"] = std::move(objects);
@@ -359,7 +361,7 @@ bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std:
 // ---------------------------------------------------------------------------------------------------------
 std::string CaptureObjectState(const SceneObject& object)
 {
-    const json entry = DescribeObject(object, nullptr, nullptr);
+    const json entry = DescribeObject(object, nullptr, nullptr, fs::path());
     return entry.is_null() ? std::string() : entry.dump();
 }
 
