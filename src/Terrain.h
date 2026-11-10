@@ -1,5 +1,6 @@
 #pragma once
 #include "Heightfield.h"
+#include "HeightfieldEdit.h"
 #include "RayPicking.h"
 #include "Renderable.h"
 #include "SceneObject.h"
@@ -95,6 +96,7 @@ struct TerrainSettings {
 	void Clamp();
 	void ResetLayers();   // puts only the layer/material fields back to defaults
 	bool SameShape(const TerrainSettings& other) const;  // true if only material fields differ
+	bool SameSource(const TerrainSettings& other) const; // true if the grid and the generated heights (resolution, noise) agree
 };
 
 class Terrain final : public SceneObject {
@@ -149,6 +151,28 @@ public:
 	// across terrains. Things that measured the ground (the water's depth map) compare it to know when to measure again.
 	unsigned GetRevision() const { return revision_; }
 
+	// The ground height as a 0..1 sample value (what the brushes and the saved PNG use). False outside the terrain.
+	bool SampleNormalizedHeight(float worldX, float worldZ, float& value) const;
+
+	// --- Sculpting (lesson 27) ---
+	// True once the heights have been shaped by hand (or loaded from a saved sculpt). From then on the generated source
+	// (heightmap, noise, mesh resolution) is not used any more and the editor locks those controls; width and height
+	// scale still work because the heights are kept as 0..1.
+	bool IsSculpted() const { return sculpted_; }
+	// A stroke is everything from pressing the mouse button to releasing it: one undo step.
+	void BeginSculptStroke();
+	// One step of a brush at a WORLD position; brush.radius is in world units. False if nothing changed.
+	bool Sculpt(const BrushSettings& brush, float worldX, float worldZ, float seconds);
+	HeightfieldPatch EndSculptStroke();   // the finished stroke (empty if it changed nothing)
+	// Undo / redo of a stroke: writes the patch's "before" or "after" values and refreshes the chunks it touches.
+	bool ApplyPatch(const HeightfieldPatch& patch, bool useAfter);
+	// Replaces every height at once (loading a saved sculpt, discarding or restoring one). The size must match the grid.
+	bool ReplaceHeights(std::vector<float> samples, bool sculpted);
+	// What the heightmap and noise settings make, ignoring any sculpting: the "Discard sculpting" target.
+	bool GenerateOriginalHeights(std::vector<float>& samples) const;
+	// Reads a saved sculpt (16-bit PNG, one pixel per grid vertex). `error` says what was wrong if it fails.
+	bool LoadSculptedHeights(const std::string& path, std::string& error);
+
 	// For tools that need to fit things to the terrain (e.g. the water plane).
 	DirectX::XMFLOAT2 GetWorldExtent() const;               // x/z size in world units
 	void GetHeightRange(float& minY, float& maxY) const;    // world-space Y range of the surface
@@ -167,7 +191,10 @@ private:
 		std::vector<float> values;  // 0..1, row-major
 	};
 
-	bool Rebuild(const TerrainSettings& settings);
+	// `keepSculpt`: carry the sculpted heights over into the rebuilt mesh (only when the grid is unchanged).
+	bool Rebuild(const TerrainSettings& settings, bool keepSculpt = false);
+	// Re-makes the vertices of every chunk that holds a sample in `changed` (plus one sample around it, for the normals).
+	void RefreshChunks(const GridRect& changed);
 	bool RebuildLayerTexture(TerrainLayerMap map);   // re-reads the four files of one kind of map into its texture array
 	// Draws the chunks that are inside `view`. shaderOverride == nullptr -> the terrain's own shader.
 	void DrawChunks(ID3D11DeviceContext* ctx, const Shader* shaderOverride, const RenderView& view) const;
@@ -182,11 +209,15 @@ private:
 	std::unique_ptr<TextureArray> layerOrm_;
 	Heightmap heightmap_;      // decoded ONCE; every rebuild reuses it instead of re-reading the PNG
 	Heightfield heightfield_;  // the FINAL grid the mesh was built from (heightmap + noise, at mesh resolution)
+	bool sculpted_ = false;    // the grid has been shaped by hand: it is the truth, not the heightmap
+	StrokeRecorder stroke_;    // the "before" values of the stroke in progress
+	bool strokeActive_ = false;
 	std::string heightmapPath_;
 	std::string colorMapPath_;
 	std::string layerMapPaths_[kTerrainLayerCount][3];   // [layer][albedo / normal / orm]
 	float depth_ = 0.0f;       // world-space size along Z of the current mesh
 	unsigned revision_ = 0;    // see GetRevision()
+	void NewRevision();        // gives the terrain a revision no terrain has had before
 	std::vector<TerrainChunk> chunks_;                    // one per mesh in the model, same order
 	mutable std::vector<unsigned char> drawList_;         // scratch: per chunk, the LOD to draw or Model::kSkipMesh
 	mutable std::vector<unsigned char> chunkLod_;         // each chunk's CURRENT level (kept for hysteresis)

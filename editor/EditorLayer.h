@@ -2,6 +2,7 @@
 #include "AssetBrowserPanel.h"
 #include "ConsolePanel.h"
 #include "Layer.h"
+#include "HeightfieldEdit.h"
 #include "ModelObject.h"
 #include "Project.h"
 #include "RayPicking.h"
@@ -58,6 +59,7 @@ private:
     void DrawShadowInspector();
     void DrawEnvironmentInspector();
     void DrawTerrainInspector(Terrain* terrain);
+    void DrawSculptSection(Terrain* terrain);
     void DrawWaterInspector(Water* water);
     void DrawAddWaterItems();
     void DrawSkyboxInspector(Skybox* skybox);
@@ -91,6 +93,11 @@ private:
     void RecordAdded(SceneObject* object, const std::string& name);   // an object was just put into the scene
     void RecordPropertyChange(SceneObjectId id, const std::string& name, const std::string& before, const std::string& after);
     void RecordGlobalChange(const std::string& before, const std::string& after);
+    // --- terrain sculpting (lesson 27) ---
+    void ToggleSculptMode();                                      // on: selects the terrain; off: lets go of it
+    void FinishSculptStroke(Terrain* terrain);                    // the mouse button came up: one undo step
+    void RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch patch);
+    void DiscardSculpt(Terrain* terrain);                         // back to the heightmap and noise (undoable)
     void DrawHistoryPanel();
     void HandleSceneFileRequests(LayerContext& ctx);
     void HandleTerrainFileRequest(LayerContext& ctx);
@@ -116,6 +123,9 @@ private:
     // so nothing is added or removed while a list is being drawn).
     GizmoTool gizmoTool_ = GizmoTool::Translate;
     bool gizmoLocal_ = false;
+    bool sculptMode_ = false;       // left-drag on the terrain shapes it instead of selecting
+    bool sculptStroking_ = false;   // a stroke is in progress (the button went down on the terrain)
+    BrushSettings brush_;           // brush_.radius is in WORLD units here; Terrain::Sculpt converts it
     bool viewportFocused_ = false;
     bool hierarchyFocused_ = false;
     bool addCubeRequested_ = false;

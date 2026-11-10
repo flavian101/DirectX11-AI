@@ -3,6 +3,7 @@
 #include "Logger.h"
 #include "ModelImporter.h"
 #include "ModelObject.h"
+#include "Png16.h"
 #include <fstream>
 #include <filesystem>
 #include "SceneJson.h"
@@ -169,6 +170,16 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
         if (!terrain->ApplySettings(entry.value("settings", TerrainSettings{}))) {
             warnings.push_back("The terrain mesh could not be rebuilt with the saved settings.");
         }
+        // Hand-sculpted heights (lesson 27): a 16-bit PNG beside the scene file. Only scene FILES carry this entry (undo
+        // snapshots never do), and it is applied last, once the settings have given the grid its final size.
+        if (entry.contains("sculpt") && entry["sculpt"].is_object() && entry["sculpt"].contains("heights") &&
+            entry["sculpt"]["heights"].is_string()) {
+            const std::string heightsFile = resolve(entry["sculpt"]["heights"].get<std::string>());
+            std::string loadError;
+            if (!terrain->LoadSculptedHeights(heightsFile, loadError)) {
+                warnings.push_back("The sculpted terrain heights could not be loaded (" + loadError + "): " + heightsFile);
+            }
+        }
     } else if (auto* water = dynamic_cast<Water*>(&object)) {
         if (entry.contains("name") && entry["name"].is_string()) water->SetName(entry["name"].get<std::string>());
         WaterSettings loaded = entry.value("settings", WaterSettings{});
@@ -241,11 +252,27 @@ void ApplyGlobals(Scene& scene, const json& root, std::vector<std::string>& warn
 
 }  // namespace
 
+// The file a sculpted terrain's heights are saved in, next to the scene file:
+// "castle.scene.json" -> "castle.terrain.png" (a second terrain would get "castle.terrain2.png").
+static std::string SculptFileName(const fs::path& sceneFile, int index)
+{
+    std::string stem = sceneFile.filename().string();
+    for (const char* suffixText : { ".scene.json", ".json" }) {
+        const std::string suffix = suffixText;
+        if (stem.size() > suffix.size() && stem.compare(stem.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            stem.resize(stem.size() - suffix.size());
+            break;
+        }
+    }
+    return stem + ".terrain" + (index > 0 ? std::to_string(index + 1) : std::string()) + ".png";
+}
+
 bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::string>& warnings, std::string& error,
                const std::string& assetsRoot)
 {
     const fs::path file = fs::absolute(fs::path(path));
     const fs::path folder = file.parent_path();
+    int sculptedTerrains = 0;   // how many sculpted terrains have been written so far (names their PNG files)
 
     json root;
     root["format"] = kFormatName;
@@ -260,7 +287,21 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
     for (const auto& owned : scene.GetObjects()) {
         if (!owned) continue;
         json entry = DescribeObject(*owned, &folder, &warnings, assetsRoot);
-        if (!entry.is_null()) objects.push_back(std::move(entry));
+        if (entry.is_null()) continue;
+        // A sculpted terrain's heights go in a 16-bit PNG next to the scene file, and the entry points at it. If that
+        // file cannot be written the whole save fails: a scene that silently forgets your sculpting is worse.
+        if (const auto* terrain = dynamic_cast<const Terrain*>(owned.get()); terrain && terrain->IsSculpted()) {
+            const HeightfieldLayout& layout = terrain->GetHeightfield().GetLayout();
+            const std::string heightsName = SculptFileName(file, sculptedTerrains++);
+            std::string pngError;
+            if (!WriteGrayscale16Png((folder / heightsName).string(), layout.cellsX + 1, layout.cellsZ + 1,
+                                     QuantizeHeights(terrain->GetHeightfield().Samples()), pngError)) {
+                error = "Could not save the sculpted terrain heights: " + pngError;
+                return false;
+            }
+            entry["sculpt"] = { { "heights", heightsName } };
+        }
+        objects.push_back(std::move(entry));
     }
     root["objects"] = std::move(objects);
 

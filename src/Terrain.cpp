@@ -6,6 +6,7 @@
 #include "Logger.h"
 #include "Mesh.h"
 #include "ShaderSlots.h"
+#include "TerrainChunks.h"
 #include "libs/stb_image.h"
 #include <DirectXMath.h>
 #include <algorithm>
@@ -127,37 +128,36 @@ float SampleHeightmap(const std::vector<float>& values, int width, int height, f
 
 static_assert(kTerrainSkipChunk == Model::kSkipMesh, "the terrain and the model must agree on the \"not drawn\" marker");
 
-constexpr int kChunkCells = 32;   // grid cells per tile side: 32x32 quads = 2048 triangles per tile
+constexpr int kChunkCells = kTerrainChunkCells;   // grid cells per tile side: 32x32 quads = 2048 triangles per tile
 
-Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, int mapWidth, int mapHeight,
-						 const TerrainSettings& settings, float& outDepth, std::vector<TerrainChunk>& outChunks,
-						 int& outChunksX, int& outChunksZ,
-						 std::vector<float>& outSamples, int& outCellsX, int& outCellsZ)
+// How many cells the grid has for a heightmap of this pixel size, and how deep the terrain is (it follows the picture's shape).
+struct GridShape {
+	int cellsX = 0;
+	int cellsZ = 0;
+	float depth = 0.0f;   // world-space size along Z
+};
+
+GridShape ComputeGridShape(const TerrainSettings& settings, int mapWidth, int mapHeight)
 {
-	if (!device || map.empty()) return nullptr;
+	GridShape shape;
+	shape.cellsX = settings.maxCells;
+	shape.cellsZ = std::max(2, static_cast<int>(std::lround(
+		static_cast<float>(shape.cellsX) * static_cast<float>(mapHeight) / static_cast<float>(mapWidth))));
+	shape.depth = settings.width * static_cast<float>(mapHeight) / static_cast<float>(mapWidth);
+	return shape;
+}
 
-	const float terrainWidth = settings.width;
-	const int cellsX = settings.maxCells;
-	const int cellsZ = std::max(2, static_cast<int>(std::lround(
-		static_cast<float>(cellsX) * static_cast<float>(mapHeight) / static_cast<float>(mapWidth))));
-	const int gridWidth = cellsX + 1;
-	const int gridHeight = cellsZ + 1;
-	const float depth = terrainWidth * static_cast<float>(mapHeight) / static_cast<float>(mapWidth);
-	const float cellWidth = terrainWidth / static_cast<float>(cellsX);
-	const float cellDepth = depth / static_cast<float>(cellsZ);
-	outDepth = depth;
-
+// The generated heights: the picture resampled to the grid, plus noise. 0..1, row by row.
+std::vector<float> GenerateHeights(const std::vector<float>& map, int mapWidth, int mapHeight,
+								   const TerrainSettings& settings, const GridShape& shape)
+{
+	const int gridWidth = shape.cellsX + 1;
+	const int gridHeight = shape.cellsZ + 1;
 	std::vector<float> heights(static_cast<size_t>(gridWidth) * gridHeight);
-	auto heightAt = [&](int x, int z) {
-		x = std::clamp(x, 0, gridWidth - 1);
-		z = std::clamp(z, 0, gridHeight - 1);
-		return heights[static_cast<size_t>(z) * gridWidth + x];
-	};
-
 	for (int z = 0; z < gridHeight; ++z) {
-		const float v = static_cast<float>(z) / static_cast<float>(cellsZ);
+		const float v = static_cast<float>(z) / static_cast<float>(shape.cellsZ);
 		for (int x = 0; x < gridWidth; ++x) {
-			const float u = static_cast<float>(x) / static_cast<float>(cellsX);
+			const float u = static_cast<float>(x) / static_cast<float>(shape.cellsX);
 			const float baseHeight = SampleHeightmap(map, mapWidth, mapHeight, u, v);
 			const float noise = FractalNoise(u * settings.noiseScale, v * settings.noiseScale,
 				settings.noiseSeed, settings.noiseOctaves);
@@ -165,21 +165,65 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 				baseHeight + noise * settings.noiseStrength, 0.0f, 1.0f);
 		}
 	}
+	return heights;
+}
 
-	// A vertex at grid position (x, z). Normals come from the WHOLE height grid, so lighting is
-	// seamless even across chunk borders.
-	auto makeVertex = [&](int x, int z) {
-		const float v = static_cast<float>(z) / static_cast<float>(gridHeight - 1);
-		const float u = static_cast<float>(x) / static_cast<float>(gridWidth - 1);
-		const float y = heightAt(x, z) * settings.heightScale;
-		const float slopeX = (heightAt(x + 1, z) - heightAt(x - 1, z)) * settings.heightScale /
-							 (2.0f * cellWidth);
-		const float slopeZ = (heightAt(x, z + 1) - heightAt(x, z - 1)) * settings.heightScale /
-							 (2.0f * cellDepth);
-		XMFLOAT3 normal;
-		XMStoreFloat3(&normal, XMVector3Normalize(XMVectorSet(-slopeX, 1.0f, -slopeZ, 0.0f)));
-		return Vertex(XMFLOAT3((u - 0.5f) * terrainWidth, y, (v - 0.5f) * depth), normal, XMFLOAT2(u, v));
+// How far the skirts hang down: enough to cover the height gap a coarser neighbour can leave.
+float SkirtDepthFor(float heightScale)
+{
+	return (std::max)(1.5f, heightScale * 0.06f);
+}
+
+// ONE chunk's vertices: the block x0..x1, z0..z1 of the height grid, then the four skirts (north, south, west, east),
+// in exactly the order the chunk's index buffers expect. The same function builds a chunk the first time and rebuilds
+// it after a sculpt stroke, so the two can never disagree. Normals come from the WHOLE grid, so lighting is seamless
+// across chunk borders. `boundsMin/Max` come out including the skirt.
+void BuildChunkVertices(const Heightfield& field, int x0, int z0, int x1, int z1, std::vector<Vertex>& vertices,
+						XMFLOAT3& boundsMin, XMFLOAT3& boundsMax)
+{
+	const HeightfieldLayout& layout = field.GetLayout();
+	const float skirtDepth = SkirtDepthFor(layout.heightScale);
+	const int cellsInX = x1 - x0;
+	const int cellsInZ = z1 - z0;
+	const int vertsX = cellsInX + 1;
+
+	vertices.clear();
+	vertices.reserve(static_cast<size_t>(vertsX) * (cellsInZ + 1) + 2 * static_cast<size_t>(vertsX + cellsInZ + 1));
+	boundsMin = XMFLOAT3(FLT_MAX, FLT_MAX, FLT_MAX);
+	boundsMax = XMFLOAT3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+	for (int z = z0; z <= z1; ++z) {
+		for (int x = x0; x <= x1; ++x) {
+			const float u = static_cast<float>(x) / static_cast<float>(layout.cellsX);
+			const float v = static_cast<float>(z) / static_cast<float>(layout.cellsZ);
+			const HfVec3 n = field.VertexNormal(x, z);
+			vertices.push_back(Vertex(XMFLOAT3((u - 0.5f) * layout.sizeX, field.Sample(x, z) * layout.heightScale, (v - 0.5f) * layout.sizeZ),
+									  XMFLOAT3(n.x, n.y, n.z), XMFLOAT2(u, v)));
+			const XMFLOAT3& p = vertices.back().position;
+			boundsMin = { (std::min)(boundsMin.x, p.x), (std::min)(boundsMin.y, p.y), (std::min)(boundsMin.z, p.z) };
+			boundsMax = { (std::max)(boundsMax.x, p.x), (std::max)(boundsMax.y, p.y), (std::max)(boundsMax.z, p.z) };
+		}
+	}
+
+	// SKIRTS: copies of the edge vertices moved straight down (see the long comment in BuildTerrainModel).
+	auto addSkirtVertex = [&](int x, int z) {
+		Vertex copy = vertices[static_cast<size_t>(z) * vertsX + x];
+		copy.position.y -= skirtDepth;
+		boundsMin.y = (std::min)(boundsMin.y, copy.position.y);
+		vertices.push_back(copy);
 	};
+	for (int x = 0; x <= cellsInX; ++x) addSkirtVertex(x, 0);
+	for (int x = 0; x <= cellsInX; ++x) addSkirtVertex(x, cellsInZ);
+	for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(0, z);
+	for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(cellsInX, z);
+}
+
+Model* BuildTerrainModel(ID3D11Device* device, const Heightfield& field, std::vector<TerrainChunk>& outChunks,
+						 int& outChunksX, int& outChunksZ)
+{
+	if (!device || field.IsEmpty()) return nullptr;
+	const HeightfieldLayout& layout = field.GetLayout();
+	const int cellsX = layout.cellsX;
+	const int cellsZ = layout.cellsZ;
 
 	// Cut the grid into tiles of kChunkCells x kChunkCells quads. Each tile becomes its own mesh
 	// (with its own bounding box), so a view can draw only the tiles it can see. Tiles on the
@@ -188,8 +232,6 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 	const int chunksZ = (cellsZ + kChunkCells - 1) / kChunkCells;
 	outChunksX = chunksX;
 	outChunksZ = chunksZ;
-	// How far the skirts hang down: enough to cover the height gap a coarser neighbour can leave.
-	const float skirtDepth = (std::max)(1.5f, settings.heightScale * 0.06f);
 	std::vector<Mesh*> meshes;
 	meshes.reserve(static_cast<size_t>(chunksX) * chunksZ);
 	outChunks.clear();
@@ -202,16 +244,8 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 			const int vertsX = x1 - x0 + 1;
 
 			std::vector<Vertex> vertices;
-			vertices.reserve(static_cast<size_t>(vertsX) * (z1 - z0 + 1));
-			XMFLOAT3 boundsMin(FLT_MAX, FLT_MAX, FLT_MAX), boundsMax(-FLT_MAX, -FLT_MAX, -FLT_MAX);
-			for (int z = z0; z <= z1; ++z) {
-				for (int x = x0; x <= x1; ++x) {
-					vertices.push_back(makeVertex(x, z));
-					const XMFLOAT3& p = vertices.back().position;
-					boundsMin = { (std::min)(boundsMin.x, p.x), (std::min)(boundsMin.y, p.y), (std::min)(boundsMin.z, p.z) };
-					boundsMax = { (std::max)(boundsMax.x, p.x), (std::max)(boundsMax.y, p.y), (std::max)(boundsMax.z, p.z) };
-				}
-			}
+			XMFLOAT3 boundsMin, boundsMax;
+			BuildChunkVertices(field, x0, z0, x1, z1, vertices, boundsMin, boundsMax);
 
 			const int cellsInX = x1 - x0;
 			const int cellsInZ = z1 - z0;
@@ -222,22 +256,12 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 			// vertices are copies of the edge vertices, moved straight down. The skirts are stored as
 			// separate PARTS of the index buffer (north, south, west, east) so that a draw can include
 			// only the edges that really have a neighbour at a different level (see TerrainSkirts.h).
-			const int gridVertexCount = static_cast<int>(vertices.size());
+			const int gridVertexCount = vertsX * (cellsInZ + 1);   // the surface's vertices; the skirt vertices (made by BuildChunkVertices) follow them
 			const int northBase = gridVertexCount;                       // z = 0 edge, one per x
 			const int southBase = northBase + (cellsInX + 1);             // z = cellsInZ edge
 			const int westBase = southBase + (cellsInX + 1);              // x = 0 edge, one per z
 			const int eastBase = westBase + (cellsInZ + 1);               // x = cellsInX edge
 			auto grid = [&](int x, int z) { return static_cast<uint32_t>(z * vertsX + x); };
-			auto addSkirtVertex = [&](int x, int z) {
-				Vertex v = vertices[grid(x, z)];
-				v.position.y -= skirtDepth;
-				boundsMin.y = (std::min)(boundsMin.y, v.position.y);
-				vertices.push_back(v);
-			};
-			for (int x = 0; x <= cellsInX; ++x) addSkirtVertex(x, 0);
-			for (int x = 0; x <= cellsInX; ++x) addSkirtVertex(x, cellsInZ);
-			for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(0, z);
-			for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(cellsInX, z);
 
 			// LEVELS OF DETAIL: the same vertices, connected more coarsely. Level L skips grid lines
 			// so that only every (2^L)-th vertex is used. The last line is always kept, so the tile's
@@ -304,7 +328,7 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 				levels.push_back(std::move(level));
 			}
 
-			meshes.push_back(new Mesh(device, vertices, levels));
+			meshes.push_back(new Mesh(device, vertices, levels, /*updatableVertices=*/true));   // sculpting rewrites them
 			TerrainChunk chunk;
 			chunk.boundsMin = boundsMin;
 			chunk.boundsMax = boundsMax;
@@ -316,10 +340,6 @@ Model* BuildTerrainModel(ID3D11Device* device, const std::vector<float>& map, in
 		}
 	}
 
-	// Keep the grid. It used to die here; now the terrain keeps it so it can answer height and ray queries (lesson 25).
-	outSamples = std::move(heights);
-	outCellsX = cellsX;
-	outCellsZ = cellsZ;
 	return new Model(meshes);
 }
 }
@@ -376,6 +396,12 @@ bool TerrainSettings::SameShape(const TerrainSettings& o) const
 {
 	return width == o.width && heightScale == o.heightScale && maxCells == o.maxCells &&
 		noiseStrength == o.noiseStrength && noiseScale == o.noiseScale &&
+		noiseOctaves == o.noiseOctaves && noiseSeed == o.noiseSeed;
+}
+
+bool TerrainSettings::SameSource(const TerrainSettings& o) const
+{
+	return maxCells == o.maxCells && noiseStrength == o.noiseStrength && noiseScale == o.noiseScale &&
 		noiseOctaves == o.noiseOctaves && noiseSeed == o.noiseSeed;
 }
 
@@ -497,28 +523,37 @@ bool Terrain::ApplySettings(TerrainSettings settings)
 		UpdateMaterial();
 		return true;
 	}
-	return Rebuild(settings);
+	// Width and height scale only STRETCH the heights, so a sculpt survives them. A different resolution or noise
+	// would mean a different grid, so those throw the sculpt away (the editor locks them while sculpted).
+	return Rebuild(settings, /*keepSculpt=*/sculpted_ && settings.SameSource(settings_));
 }
 
-bool Terrain::Rebuild(const TerrainSettings& settings)
+bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 {
 	if (!device_ || !texture_ || !texture_->IsValid() || heightmap_.values.empty()) return false;
 
-	float depth = 0.0f;
+	const GridShape shape = ComputeGridShape(settings, heightmap_.width, heightmap_.height);
+	// A sculpt is kept only while the grid is the very same one it was made on.
+	const bool keep = keepSculpt && sculpted_ && !heightfield_.IsEmpty() &&
+		heightfield_.GetLayout().cellsX == shape.cellsX && heightfield_.GetLayout().cellsZ == shape.cellsZ;
+	std::vector<float> samples = keep ? heightfield_.Samples()
+									  : GenerateHeights(heightmap_.values, heightmap_.width, heightmap_.height, settings, shape);
+	Heightfield field;
+	if (!field.Reset({ shape.cellsX, shape.cellsZ, settings.width, shape.depth, settings.heightScale }, std::move(samples))) return false;
+
+	const float depth = shape.depth;
 	std::vector<TerrainChunk> chunks;
 	int chunksX = 0, chunksZ = 0;
-	std::vector<float> samples;
-	int cellsX = 0, cellsZ = 0;
-	Model* model = BuildTerrainModel(device_, heightmap_.values, heightmap_.width, heightmap_.height,
-									 settings, depth, chunks, chunksX, chunksZ, samples, cellsX, cellsZ);
+	Model* model = BuildTerrainModel(device_, field, chunks, chunksX, chunksZ);
 	if (!model) return false;
 	auto replacement = std::make_unique<Renderable>(device_, model, L"shaders/vs.hlsl", L"shaders/terrain_ps.hlsl");
 	if (!replacement->IsValid()) return false;
 
 	renderable_ = std::move(replacement);
-	if (!heightfield_.Reset({ cellsX, cellsZ, settings.width, depth, settings.heightScale }, std::move(samples))) {
-		LOG_ERROR("Terrain height grid could not be kept: height queries will not work");   // cannot happen: sizes come from the same numbers
-	}
+	heightfield_ = std::move(field);
+	sculpted_ = keep;
+	stroke_.Clear();
+	strokeActive_ = false;
 	settings_ = settings;
 	depth_ = depth;
 	chunks_ = std::move(chunks);
@@ -704,6 +739,136 @@ bool Terrain::Raycast(const Ray& ray, float& distance, XMFLOAT3* point) const
 	return true;
 }
 
+bool Terrain::SampleNormalizedHeight(float worldX, float worldZ, float& value) const
+{
+	if (heightfield_.IsEmpty() || std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return false;
+	float localY = 0.0f;
+	if (!heightfield_.HeightAt((worldX - position_.x) / scale_.x, (worldZ - position_.z) / scale_.z, localY)) return false;
+	value = localY / heightfield_.GetLayout().heightScale;
+	return true;
+}
+
+// ---- Sculpting (lesson 27) ----------------------------------------------------------------------------------------
+
+void Terrain::BeginSculptStroke()
+{
+	stroke_.Clear();
+	strokeActive_ = true;
+}
+
+bool Terrain::Sculpt(const BrushSettings& brush, float worldX, float worldZ, float seconds)
+{
+	if (heightfield_.IsEmpty() || !renderable_ || std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return false;
+	// The brush works in the heightfield's local space, where everything is divided by the scale.
+	BrushSettings local = brush;
+	local.radius = brush.radius / scale_.x;
+	const GridRect changed = ApplyBrush(heightfield_, local, (worldX - position_.x) / scale_.x, (worldZ - position_.z) / scale_.z,
+										seconds, strokeActive_ ? &stroke_ : nullptr);
+	if (changed.IsEmpty()) return false;
+	sculpted_ = true;
+	RefreshChunks(changed);
+	// The revision moves when the stroke ENDS, not on every step: the water re-measures its shore each time it changes,
+	// which is too much work to do every frame while you drag. (A step outside a stroke has no end, so it counts at once.)
+	if (!strokeActive_) NewRevision();
+	return true;
+}
+
+HeightfieldPatch Terrain::EndSculptStroke()
+{
+	HeightfieldPatch patch = stroke_.Finish(heightfield_);
+	const bool changedGround = strokeActive_ && !patch.IsEmpty();
+	stroke_.Clear();
+	strokeActive_ = false;
+	if (changedGround) NewRevision();   // the ground is final now: the water's shore map can be measured again
+	return patch;
+}
+
+bool Terrain::ApplyPatch(const HeightfieldPatch& patch, bool useAfter)
+{
+	if (heightfield_.IsEmpty() || !renderable_) return false;
+	const GridRect changed = ::ApplyPatch(heightfield_, patch, useAfter);   // the free function: same name as this member
+	if (changed.IsEmpty()) return false;
+	if (useAfter) sculpted_ = true;
+	RefreshChunks(changed);
+	NewRevision();
+	return true;
+}
+
+bool Terrain::ReplaceHeights(std::vector<float> samples, bool sculpted)
+{
+	if (heightfield_.IsEmpty() || !renderable_ || samples.size() != heightfield_.Samples().size()) return false;
+	const HeightfieldLayout layout = heightfield_.GetLayout();
+	if (!heightfield_.Reset(layout, std::move(samples))) return false;
+	sculpted_ = sculpted;
+	stroke_.Clear();
+	strokeActive_ = false;
+	NewRevision();
+	GridRect everything;
+	everything.Include(0, 0);
+	everything.Include(layout.cellsX, layout.cellsZ);
+	RefreshChunks(everything);
+	return true;
+}
+
+bool Terrain::GenerateOriginalHeights(std::vector<float>& samples) const
+{
+	if (heightmap_.values.empty()) return false;
+	const GridShape shape = ComputeGridShape(settings_, heightmap_.width, heightmap_.height);
+	samples = GenerateHeights(heightmap_.values, heightmap_.width, heightmap_.height, settings_, shape);
+	return true;
+}
+
+bool Terrain::LoadSculptedHeights(const std::string& path, std::string& error)
+{
+	int width = 0, height = 0;
+	std::vector<float> values;
+	if (!LoadHeightmapFile(path.c_str(), width, height, values)) {
+		error = "the image could not be read";
+		return false;
+	}
+	const HeightfieldLayout& layout = heightfield_.GetLayout();
+	if (heightfield_.IsEmpty() || width != layout.cellsX + 1 || height != layout.cellsZ + 1) {
+		error = "the image is " + std::to_string(width) + " x " + std::to_string(height) + " but this terrain's grid is " +
+				std::to_string(layout.cellsX + 1) + " x " + std::to_string(layout.cellsZ + 1);
+		return false;
+	}
+	return ReplaceHeights(std::move(values), true);
+}
+
+void Terrain::RefreshChunks(const GridRect& changed)
+{
+	if (changed.IsEmpty() || !renderable_ || heightfield_.IsEmpty() || !device_) return;
+	Model* model = renderable_->GetModel();
+	if (!model) return;
+	const HeightfieldLayout& layout = heightfield_.GetLayout();
+
+	// Which chunks hold the edited samples, plus one sample around them for the normals (see TerrainChunks.h).
+	const ChunkRange range = ChunksToRefresh(changed, layout.cellsX, layout.cellsZ);
+	if (range.IsEmpty()) return;
+	const int firstX = range.firstX, lastX = (std::min)(range.lastX, chunksX_ - 1);
+	const int firstZ = range.firstZ, lastZ = (std::min)(range.lastZ, chunksZ_ - 1);
+
+	ID3D11DeviceContext* ctx = nullptr;
+	device_->GetImmediateContext(&ctx);
+	if (!ctx) return;
+	std::vector<Vertex> vertices;   // one scratch buffer for every chunk
+	for (int chunkZ = firstZ; chunkZ <= lastZ; ++chunkZ) {
+		for (int chunkX = firstX; chunkX <= lastX; ++chunkX) {
+			const size_t index = static_cast<size_t>(chunkZ) * chunksX_ + chunkX;
+			Mesh* mesh = model->GetMesh(index);
+			if (!mesh || index >= chunks_.size()) continue;
+			const int x0 = chunkX * kChunkCells, x1 = (std::min)(x0 + kChunkCells, layout.cellsX);
+			const int z0 = chunkZ * kChunkCells, z1 = (std::min)(z0 + kChunkCells, layout.cellsZ);
+			XMFLOAT3 boundsMin, boundsMax;
+			BuildChunkVertices(heightfield_, x0, z0, x1, z1, vertices, boundsMin, boundsMax);
+			if (!mesh->UpdateVertices(ctx, vertices)) continue;
+			chunks_[index].boundsMin = boundsMin;   // the box culling uses must follow the new shape
+			chunks_[index].boundsMax = boundsMax;
+		}
+	}
+	ctx->Release();
+}
+
 XMFLOAT2 Terrain::GetWorldExtent() const
 {
 	return { settings_.width * scale_.x, depth_ * scale_.z };
@@ -734,10 +899,15 @@ bool Terrain::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotat
 	return true;
 }
 
-void Terrain::UpdateWorldTransform()
+void Terrain::NewRevision()
 {
 	static unsigned nextRevision = 0;   // one counter for every terrain: a revision is never reused
 	revision_ = ++nextRevision;
+}
+
+void Terrain::UpdateWorldTransform()
+{
+	NewRevision();
 	const XMMATRIX transform = XMMatrixScaling(scale_.x, scale_.y, scale_.z) *
 		XMMatrixRotationX(rotation_.x) * XMMatrixRotationY(rotation_.y) *
 		XMMatrixRotationZ(rotation_.z) *

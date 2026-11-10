@@ -22,7 +22,8 @@ Mesh::Mesh(ID3D11Device* device, const std::vector<Vertex>& vertices,
 {
 }
 
-Mesh::Mesh(ID3D11Device* device, const std::vector<Vertex>& vertices, const std::vector<MeshLevel>& levels)
+Mesh::Mesh(ID3D11Device* device, const std::vector<Vertex>& vertices, const std::vector<MeshLevel>& levels,
+           bool updatableVertices)
 {
     if (!device || vertices.empty() || levels.empty()) {
         LOG_ERROR("Cannot create mesh from empty data or without a device");
@@ -37,7 +38,8 @@ Mesh::Mesh(ID3D11Device* device, const std::vector<Vertex>& vertices, const std:
 
     D3D11_BUFFER_DESC desc{};
     desc.ByteWidth = static_cast<UINT>(vertices.size() * sizeof(Vertex));
-    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    // IMMUTABLE = fastest, but never writable. DEFAULT = still lives on the GPU, and UpdateSubresource can overwrite it.
+    desc.Usage = updatableVertices ? D3D11_USAGE_DEFAULT : D3D11_USAGE_IMMUTABLE;
     desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
     D3D11_SUBRESOURCE_DATA data{};
     data.pSysMem = vertices.data();
@@ -46,6 +48,8 @@ Mesh::Mesh(ID3D11Device* device, const std::vector<Vertex>& vertices, const std:
         LOG_HR(hr, "Vertex buffer creation failed");
         return;
     }
+    updatable_ = updatableVertices;
+    vertexCount_ = static_cast<UINT>(vertices.size());
 
     for (const MeshLevel& level : levels) {
         const std::vector<uint32_t>& indices = level.indices;
@@ -73,6 +77,13 @@ Mesh::Mesh(ID3D11Device* device, const std::vector<Vertex>& vertices, const std:
         partCounts_.emplace_back(level.partIndexCounts.begin(), level.partIndexCounts.end());
         if (partCounts_.back().empty()) partCounts_.back().push_back(static_cast<UINT>(indices.size()));
     }
+}
+
+bool Mesh::UpdateVertices(ID3D11DeviceContext* ctx, const std::vector<Vertex>& vertices)
+{
+    if (!ctx || !vertexBuffer_ || !updatable_ || vertices.size() != vertexCount_) return false;
+    ctx->UpdateSubresource(vertexBuffer_, 0, nullptr, vertices.data(), 0, 0);   // the whole buffer, from the CPU copy
+    return true;
 }
 
 Mesh::~Mesh()

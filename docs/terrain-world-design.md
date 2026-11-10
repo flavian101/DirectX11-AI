@@ -52,8 +52,8 @@ This is a design note, not a lesson. It answers three questions: how big worlds 
 
 ## The roadmap
 
-1. **Heightfield** (this step): the kept height grid, `GetHeightAt`, `GetNormalAt`, `Raycast`, snap to terrain, ground readout.
-2. **Sculpt brushes**: raise, lower, smooth, flatten; brush ring in the shader; partial vertex updates; undo by tile deltas; heights saved as 16-bit.
+1. **Heightfield** (done, lesson 25): the kept height grid, `GetHeightAt`, `GetNormalAt`, `Raycast`, snap to terrain, ground readout.
+2. **Sculpt brushes** (done, lesson 27): raise, lower, smooth, flatten; brush ring (an ImGui overlay for now, a shader decal later); partial vertex updates; undo by stroke patches; heights saved as a 16-bit PNG.
 3. **Paint layers**: a paint map blended with the existing slope and height rules. Its texel size is also where the biome ids will live.
 4. **Generators**: ridged noise, terracing, erosion.
 5. **Scatter**: instanced placement with density, spacing, slope limits and per-chunk culling. Biome recipes drive it.

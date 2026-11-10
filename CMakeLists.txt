@@ -81,6 +81,8 @@ add_library(Engine STATIC
 	src/DemoScene.cpp
 	src/Terrain.cpp
 	src/Heightfield.cpp
+	src/HeightfieldEdit.cpp
+	src/Png16.cpp
 	src/Water.cpp
 	src/Skybox.cpp
 	src/EnvironmentLighting.cpp
@@ -136,6 +138,16 @@ if(BUILD_TESTS)
     target_include_directories(ProjectTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(ProjectTests PRIVATE nlohmann_json::nlohmann_json)
     add_test(NAME Project COMMAND ProjectTests)
+    # Sculpting (lesson 27): brushes, the chunk-refresh rule, and the 16-bit PNG writer (read back with stb_image).
+    add_executable(HeightfieldEditTests tests/heightfield_edit_test.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
+    target_include_directories(HeightfieldEditTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME HeightfieldEdit COMMAND HeightfieldEditTests)
+    add_executable(TerrainChunksTests tests/terrain_chunks_test.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
+    target_include_directories(TerrainChunksTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME TerrainChunks COMMAND TerrainChunksTests)
+    add_executable(Png16Tests tests/png16_test.cpp src/Png16.cpp src/libs/stb_image.cpp)
+    target_include_directories(Png16Tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME Png16 COMMAND Png16Tests)
 endif()
 
 if(BUILD_EDITOR)

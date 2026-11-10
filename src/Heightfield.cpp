@@ -27,6 +27,12 @@ float Heightfield::Sample(int gridX, int gridZ) const
     return samples_[static_cast<size_t>(gridZ) * (layout_.cellsX + 1) + gridX];
 }
 
+void Heightfield::SetSample(int index, float value)
+{
+    if (index < 0 || static_cast<size_t>(index) >= samples_.size()) return;
+    samples_[static_cast<size_t>(index)] = std::clamp(value, 0.0f, 1.0f);
+}
+
 // A cell is a square of four samples. The mesh cuts it into TWO triangles along the diagonal from bottom-left to
 // top-right (Terrain.cpp: {topLeft, bottomLeft, topRight} and {topRight, bottomLeft, bottomRight}). A point inside the
 // cell is at (fx, fz), each 0..1 across the cell. On that diagonal fx + fz == 1: below it the point is in the first

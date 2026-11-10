@@ -19,6 +19,7 @@ public:
     void Draw(ID3D11DeviceContext* ctx, const std::vector<unsigned char>* drawList = nullptr,
               const std::vector<unsigned char>* partMasks = nullptr) const;
     size_t GetMeshCount() const { return meshes_.size(); }
+    Mesh* GetMesh(size_t index) const { return index < meshes_.size() ? meshes_[index] : nullptr; }   // still owned by the model
 
 private:
     std::vector<Mesh*> meshes_; // Model takes ownership of each mesh.

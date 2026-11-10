@@ -35,6 +35,14 @@ public:
     // One stored sample (0..1). Grid indices outside the grid are clamped to the nearest edge sample.
     float Sample(int gridX, int gridZ) const;
 
+    // --- editing (lesson 27) ---
+    const std::vector<float>& Samples() const { return samples_; }   // row by row, z-major, each 0..1
+    int IndexOf(int gridX, int gridZ) const { return gridZ * (layout_.cellsX + 1) + gridX; }   // the caller keeps x and z inside the grid
+    void SetSample(int index, float value);   // clamps to 0..1; an index outside the grid is ignored
+
+    // The normal the mesh stores at a vertex: the slope from the two neighbours on each side (edges are clamped).
+    HfVec3 VertexNormal(int gridX, int gridZ) const;
+
     // Height (local-space Y) of the SURFACE at (x, z), exactly as the mesh draws it at full detail: the surface is
     // made of triangles, so this interpolates inside the triangle that holds the point, not across the whole cell.
     // False if (x, z) is outside the field.
@@ -56,7 +64,6 @@ private:
         float weight[3];
     };
     bool Locate(float x, float z, Location& out) const;
-    HfVec3 VertexNormal(int gridX, int gridZ) const;                          // the normal the mesh stores at a vertex
     float HeightClamped(float x, float z) const;                              // like HeightAt, but never fails
 
     HeightfieldLayout layout_;
