@@ -111,6 +111,7 @@ private:
     SceneObjectId selectedId_ = 0;   // 0 = nothing; an id (not an index) survives adds and deletes
     TerrainSettings pendingTerrainSettings_;
     bool lastTerrainGenerationSucceeded_ = true;
+    bool terrainKeepProportions_ = true;   // widening the terrain also raises its height scale, so it keeps its look (editor-only)
     bool showShadowMap_ = false;
 
     // Panels
@@ -164,7 +165,7 @@ private:
 
     // Terrain > Texture files: which image the user asked to replace (the file dialog opens at the start of the next frame).
     struct TerrainFileRequest {
-        int kind = 0;    // 0 none, 1 a layer map, 2 the heightmap, 3 the colour map
+        int kind = 0;    // 0 none, 1 a layer map, 2 the heightmap
         int layer = 0;
         int map = 0;
     };

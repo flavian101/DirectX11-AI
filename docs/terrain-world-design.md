@@ -42,6 +42,19 @@ This is a design note, not a lesson. It answers three questions: how big worlds 
 
 **Where we are.** Rotation is now locked (lesson 25). Scale still works for now. When tiles arrive, size comes from the data (cells x metres per cell) and the scale handles go away, and the terrain's position snaps to the tile grid.
 
+## Units, size, and what limits the terrain today
+
+**Units.** One world unit is one metre. The editor shows the terrain's width in kilometres and its height scale in metres, and a line under "Mesh resolution" shows the real world size and metres per cell.
+
+**Width and height are independent, and both absolute.** The heightmap picture is stretched over `width` metres, and its white is `heightScale` metres tall. Make the terrain 4x wider with the same height scale and every slope becomes 4x gentler: it looks flat, and the rock layer (which starts at a slope) vanishes. That is how engines behave (Unity's terrain has separate width, length and height; so do the exporters of World Machine and Gaea, which think in a real extent and a real height range). "Keep proportions" in the editor raises the height scale with the width for you.
+
+**What stops it from being a big world today.**
+- *The camera's far plane is 1000 m* (`Camera::kFarPlane`). Anything further is not drawn, so a terrain wider than about a kilometre is clipped. Raising it with a 0.1 m near plane and a normal depth buffer spends depth precision badly; the usual fix is a reversed-Z depth buffer.
+- *One tile of at most 1024 x 1024 cells.* At 4 km wide that is 4 m per cell: coarse hills, and (lesson 29) the layer weights have one texel per cell, so layer borders get blocky too. Bigger worlds need several tiles, each at a fixed metres-per-cell, which is the "world" step of the roadmap.
+- *Everything is resident.* Every chunk's vertex buffer lives on the GPU; there is no streaming.
+- *32-bit floats far from the origin* (see above): needs camera-relative rendering.
+- *The sun's shadow map* covers a fixed area around the camera, so shadows also need cascades at that scale.
+
 ## What we build now and what we leave for later
 
 **Now: one tile, built like a tile.** The heightfield has its own local space and layout, new code uses no global "the terrain" singleton, and the terrain's position is the tile's world position. Nothing built in the next steps has to be thrown away when tiles arrive.
@@ -54,7 +67,7 @@ This is a design note, not a lesson. It answers three questions: how big worlds 
 
 1. **Heightfield** (done, lesson 25): the kept height grid, `GetHeightAt`, `GetNormalAt`, `Raycast`, snap to terrain, ground readout.
 2. **Sculpt brushes** (done, lesson 27): raise, lower, smooth, flatten; brush ring (an ImGui overlay for now, a shader decal later); partial vertex updates; undo by stroke patches; heights saved as a 16-bit PNG.
-3. **Paint layers**: a paint map blended with the existing slope and height rules. Its texel size is also where the biome ids will live.
+3. **Paint layers**: a paint map blended with the existing slope and height rules. (Lesson 29 bakes those rules into a splat texture, so a painted layer is just an override applied before the upload.) Its texel size is also where the biome ids will live.
 4. **Generators**: ridged noise, terracing, erosion.
 5. **Scatter**: instanced placement with density, spacing, slope limits and per-chunk culling. Biome recipes drive it.
 6. **Performance pass**: GPU timers first, then skipping unused layers in the shader, shared index buffers, cheaper shadow detail.

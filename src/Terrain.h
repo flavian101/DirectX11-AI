@@ -7,6 +7,7 @@
 #include "Texture.h"
 #include "TextureArray.h"
 #include "TerrainSkirts.h"
+#include "TerrainSplat.h"
 #include <memory>
 #include <vector>
 
@@ -35,8 +36,11 @@ struct TerrainViewStats {
 
 struct TerrainSettings {
 	// --- shape: changing any of these rebuilds the mesh ---
-	float width = 240.0f;       // world units along X; depth follows the heightmap's aspect ratio
-	float heightScale = 45.0f;  // world units for a 1.0 (white) heightmap pixel
+	// UNITS: one world unit is one metre (docs/terrain-world-design.md). Width and height are independent and both ABSOLUTE:
+	// the heightmap picture is stretched over `width` metres and its white is `heightScale` metres tall, so making the terrain
+	// wider WITHOUT raising heightScale makes it flatter (slopes = height / distance). The editor can keep the proportions for you.
+	float width = 240.0f;       // metres along X; depth follows the heightmap's aspect ratio
+	float heightScale = 45.0f;  // metres for a 1.0 (white) heightmap pixel
 	int maxCells = 512;         // mesh resolution: grid cells along X (Z follows the aspect)
 	float noiseStrength = 0.0f;
 	float noiseScale = 4.0f;
@@ -53,14 +57,15 @@ struct TerrainSettings {
 	float sandTiling = 0.08f;
 	float snowTiling = 0.06f;
 	float rockDarkness = 1.0f;  // rock brightness: 1 = as in the texture
-	float macroInfluence = 0.0f; // how much the terrain-wide colour map ("Diffuse Map") tints the layers: 0 = layers keep their own colours
 	float normalStrength = 1.0f; // 0 = flat layers, 1 = as authored
 	bool flipGreen = true;       // layer normal maps are OpenGL-style ("_nor_gl_"); untick for DirectX-style
-	float heightBlend = 0.6f;    // 0 = plain linear blends, 1 = the taller layer wins (pebbles poke through sand)
+	float heightBlend = 0.6f;    // 0 = plain linear blends, 1 = the taller layer wins (pebbles poke through sand). Per pixel, in the shader
 	float aoStrength = 1.0f;
 	float roughnessScale = 1.0f;
 	DirectX::XMFLOAT3 groundTint = { 1.0f, 1.0f, 1.0f };      // sRGB; tints MULTIPLY the layer's texture
 	DirectX::XMFLOAT3 rockTint = { 1.0f, 1.0f, 1.0f };
+	// The rules below decide WHERE each layer goes. They are baked into a splat map (lesson 29), so changing one re-bakes
+	// the map (a few ms) instead of costing every pixel every frame.
 	float slopeStart = 0.25f;   // slope (0 flat .. 1 vertical) where rock starts to appear
 	float slopeFade = 0.25f;    // how quickly it takes over
 	float shoreHeight = 5.0f;   // world Y below which the ground turns to sand
@@ -83,7 +88,7 @@ struct TerrainSettings {
 
 	// One source of truth for the valid ranges: Clamp() enforces them, the editor sliders use them.
 	static constexpr float kWidthMin = 40.0f, kWidthMax = 1000.0f;
-	static constexpr float kHeightMin = 1.0f, kHeightMax = 150.0f;
+	static constexpr float kHeightMin = 1.0f, kHeightMax = 500.0f;
 	static constexpr int kCellsMin = 32, kCellsMax = 1024;
 	static constexpr float kNoiseScaleMin = 0.5f, kNoiseScaleMax = 32.0f;
 	static constexpr int kOctavesMin = 1, kOctavesMax = 8;
@@ -97,6 +102,7 @@ struct TerrainSettings {
 	void ResetLayers();   // puts only the layer/material fields back to defaults
 	bool SameShape(const TerrainSettings& other) const;  // true if only material fields differ
 	bool SameSource(const TerrainSettings& other) const; // true if the grid and the generated heights (resolution, noise) agree
+	bool SameSplatRules(const TerrainSettings& other) const; // true if the rules that decide where each layer goes agree (they are baked, lesson 29)
 };
 
 class Terrain final : public SceneObject {
@@ -122,7 +128,8 @@ public:
 	const TerrainSettings& GetSettings() const { return settings_; }
 	const TerrainViewStats& GetStats(ViewKind kind) const { return stats_[static_cast<int>(kind)]; }
 
-	// How many of the 4 layers found their albedo / normal / ORM file (the rest use neutral defaults).
+	// How many of the 4 layers found their albedo / normal / ORM file (the rest use neutral defaults). (The GPU packs the three
+	// kinds of file into two arrays, lesson 29, but the files, and these counts, are unchanged.)
 	void GetLayerFileCounts(int& albedo, int& normal, int& orm) const;
 
 	// --- The images the terrain is made from. All can be replaced while the program runs. ---
@@ -130,13 +137,10 @@ public:
 	// missing or cannot be read.
 	static std::string DefaultLayerMapPath(int layer, TerrainLayerMap map);   // assets/Terrain/<Layer>/albedo.png ...
 	static const char* DefaultHeightmapPath() { return "assets/dark alien/Height Map.png"; }
-	static const char* DefaultColorMapPath() { return "assets/dark alien/Diffuse Map.png"; }
 	const std::string& GetLayerMapPath(int layer, TerrainLayerMap map) const { return layerMapPaths_[layer][static_cast<int>(map)]; }
 	bool SetLayerMap(int layer, TerrainLayerMap map, const std::string& path);
 	const std::string& GetHeightmapPath() const { return heightmapPath_; }
 	bool SetHeightmap(const std::string& path);   // 8-bit or 16-bit greyscale image; 16-bit gives much smoother slopes
-	const std::string& GetColorMapPath() const { return colorMapPath_; }
-	bool SetColorMap(const std::string& path);
 
 	// --- Asking the terrain about its own surface (lesson 25) ---
 	// All in WORLD space, and all answered from the kept height grid, not from the GPU.
@@ -195,7 +199,18 @@ private:
 	bool Rebuild(const TerrainSettings& settings, bool keepSculpt = false);
 	// Re-makes the vertices of every chunk that holds a sample in `changed` (plus one sample around it, for the normals).
 	void RefreshChunks(const GridRect& changed);
-	bool RebuildLayerTexture(TerrainLayerMap map);   // re-reads the four files of one kind of map into its texture array
+	// Re-reads the twelve layer files and PACKS them into the two texture arrays the shader reads (lesson 29): albedo + height,
+	// and normal XY + occlusion + roughness. The old arrays stay if the new ones cannot be built.
+	bool RebuildLayerTextures();
+
+	// The baked layer weights (lesson 29). `splat_` is the CPU copy, the texture is what the shader reads.
+	SplatRules CurrentSplatRules() const;
+	SplatPlacement CurrentSplatPlacement() const;   // where the terrain's transform puts the heights in the world
+	// Re-bakes the weights of the cells in `cells` from the heightfield and uploads just that block. Nothing to do before
+	// the first Rebuild.
+	void RefreshSplat(const GridRect& cells);
+	void RefreshSplatAll();
+	void ReleaseSplatTexture();
 	// Draws the chunks that are inside `view`. shaderOverride == nullptr -> the terrain's own shader.
 	void DrawChunks(ID3D11DeviceContext* ctx, const Shader* shaderOverride, const RenderView& view) const;
 	void UpdateMaterial();
@@ -203,17 +218,18 @@ private:
 
 	ID3D11Device* device_ = nullptr;
 	std::unique_ptr<Renderable> renderable_;
-	std::unique_ptr<Texture> texture_;                  // the terrain-wide colour map ("macro" colour)
-	std::unique_ptr<TextureArray> layerAlbedo_;         // slices: 0 grass, 1 rock, 2 sand, 3 snow
-	std::unique_ptr<TextureArray> layerNormal_;
-	std::unique_ptr<TextureArray> layerOrm_;
+	std::unique_ptr<TextureArray> layerDiffHeight_;     // slices: 0 grass, 1 rock, 2 sand, 3 snow. rgb = albedo (sRGB), a = height
+	std::unique_ptr<TextureArray> layerNormRough_;      // same slices. r,g = normal XY, b = occlusion, a = roughness
+	int layerFileCounts_[3] = {};                       // files found per kind: albedo, normal, ORM
+	SplatMap splat_;                                    // the layer weights, one texel per grid cell
+	ID3D11Texture2D* splatTexture_ = nullptr;           // the same weights on the GPU (RGBA8, no mips)
+	ID3D11ShaderResourceView* splatView_ = nullptr;
 	Heightmap heightmap_;      // decoded ONCE; every rebuild reuses it instead of re-reading the PNG
 	Heightfield heightfield_;  // the FINAL grid the mesh was built from (heightmap + noise, at mesh resolution)
 	bool sculpted_ = false;    // the grid has been shaped by hand: it is the truth, not the heightmap
 	StrokeRecorder stroke_;    // the "before" values of the stroke in progress
 	bool strokeActive_ = false;
 	std::string heightmapPath_;
-	std::string colorMapPath_;
 	std::string layerMapPaths_[kTerrainLayerCount][3];   // [layer][albedo / normal / orm]
 	float depth_ = 0.0f;       // world-space size along Z of the current mesh
 	unsigned revision_ = 0;    // see GetRevision()

@@ -16,6 +16,11 @@ class TextureArray {
 public:
     TextureArray(ID3D11Device* device, const std::vector<std::string>& layerPaths, ColorSpace colorSpace,
                  std::array<std::uint8_t, 4> fillColor);
+    // From pixels the caller already prepared: one RGBA8 slice per layer, all of width x height. `loadedCount` is only
+    // reported back by GetLoadedCount(). Used by the terrain, which PACKS several image files into the channels of one
+    // array (lesson 29) instead of keeping one array per kind of file.
+    TextureArray(ID3D11Device* device, int width, int height, ColorSpace colorSpace,
+                 const std::vector<std::vector<std::uint8_t>>& slices, int loadedCount);
     ~TextureArray();
     TextureArray(const TextureArray&) = delete;
     TextureArray& operator=(const TextureArray&) = delete;
@@ -25,7 +30,17 @@ public:
     int GetLayerCount() const { return layerCount_; }
     int GetLoadedCount() const { return loadedCount_; }   // how many layers came from a real file
 
+    // Helpers for callers that prepare slices themselves.
+    // Reads an image file as RGBA8 (alpha 255 if the file has none). False, and the outputs untouched, if it is missing or unreadable.
+    static bool LoadImageRgba8(const std::string& path, int& width, int& height, std::vector<std::uint8_t>& pixels);
+    // Scales RGBA8 pixels to another size (bilinear: good enough for a one-time load).
+    static std::vector<std::uint8_t> ResizeRgba8(const std::vector<std::uint8_t>& source, int sourceWidth, int sourceHeight, int width, int height);
+
 private:
+    // The shared back half of both constructors: texture + view + mip chain from finished slices.
+    void CreateFromSlices(ID3D11Device* device, int width, int height, DXGI_FORMAT format,
+                          const std::vector<std::vector<std::uint8_t>>& slices);
+
     ID3D11Texture2D* texture_ = nullptr;
     ID3D11ShaderResourceView* shaderResourceView_ = nullptr;
     int layerCount_ = 0;

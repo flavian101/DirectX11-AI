@@ -975,7 +975,6 @@ void EditorLayer::HandleTerrainFileRequest(LayerContext& ctx)
     bool ok = false;
     if (request.kind == 1) ok = terrain->SetLayerMap(request.layer, static_cast<TerrainLayerMap>(request.map), path);
     else if (request.kind == 2) ok = terrain->SetHeightmap(path);
-    else if (request.kind == 3) ok = terrain->SetColorMap(path);
 
     if (!ok) {
         ShowMessage("Could not use that image", "The image could not be read (or the terrain could not be rebuilt with it):\n" + path);
@@ -1705,14 +1704,37 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
     DrawSculptSection(terrain);
 
     ImGui::SeparatorText("Shape");
-    ImGui::SliderFloat("Width", &s.width, TerrainSettings::kWidthMin, TerrainSettings::kWidthMax, "%.0f");
+    // One world unit is one metre. Width is shown in kilometres; height in metres. Both are ABSOLUTE sizes: a wider terrain with
+    // the same height scale is simply flatter (the same heightmap picture is stretched over more ground), which is how every
+    // engine behaves, so "Keep proportions" offers to raise the height scale together with the width.
+    {
+        const TerrainSettings& committed = terrain->GetSettings();   // unchanged until the drag is released
+        float widthKm = s.width / 1000.0f;
+        if (ImGui::SliderFloat("Width", &widthKm, TerrainSettings::kWidthMin / 1000.0f, TerrainSettings::kWidthMax / 1000.0f, "%.3f km",
+                               ImGuiSliderFlags_Logarithmic)) {
+            s.width = widthKm * 1000.0f;
+            if (terrainKeepProportions_ && committed.width > 0.0f) {
+                s.heightScale = std::clamp(committed.heightScale * s.width / committed.width, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax);
+            }
+        }
+        commitOnRelease();
+        ImGui::SetItemTooltip("Along X, in kilometres (1 world unit = 1 metre). The depth follows the heightmap's shape.");
+        ImGui::Checkbox("Keep proportions", &terrainKeepProportions_);
+        ImGui::SetItemTooltip("On: changing the width changes the height scale by the same factor, so the terrain keeps its look.\nOff: the height stays the same, so a wider terrain is flatter.");
+    }
+    ImGui::SliderFloat("Height scale", &s.heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax, "%.0f m");
     commitOnRelease();
-    ImGui::SliderFloat("Height scale", &s.heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax, "%.1f");
-    commitOnRelease();
+    ImGui::SetItemTooltip("How tall a white heightmap pixel is, in metres.");
     ImGui::BeginDisabled(terrain->IsSculpted());   // a sculpt replaces what these make, so they are locked (see Sculpt)
     ImGui::SliderInt("Mesh resolution", &s.maxCells, TerrainSettings::kCellsMin, TerrainSettings::kCellsMax);
     commitOnRelease();
     ImGui::SetItemTooltip("Grid cells across the terrain. Higher = smoother and slower to rebuild.");
+    {
+        const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();   // includes the transform's scale
+        const int cellsX = terrain->GetHeightfield().GetLayout().cellsX;
+        ImGui::TextDisabled("World size %.3f x %.3f km, %.2f m per cell", extent.x / 1000.0f, extent.y / 1000.0f,
+                            cellsX > 0 ? extent.x / static_cast<float>(cellsX) : 0.0f);
+    }
 
     ImGui::SeparatorText("Noise");
     ImGui::SliderFloat("Strength", &s.noiseStrength, 0.0f, 1.0f, "%.3f");
@@ -1785,11 +1807,6 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
         else if (heightResult == 2) terrain->SetHeightmap("");
         ImGui::SetItemTooltip("%s\nA 16-bit greyscale image gives much smoother slopes than 8-bit.", terrain->GetHeightmapPath().c_str());
         ImGui::EndDisabled();
-        ImGui::TextUnformatted("Colour map");
-        ImGui::SameLine(90.0f);
-        const int colorResult = fileButton("colormap", terrain->GetColorMapPath(), Terrain::DefaultColorMapPath(), 160.0f);
-        if (colorResult == 1) terrainFileRequest_ = { 3, 0, 0 };
-        else if (colorResult == 2) terrain->SetColorMap("");
     }
 
     ImGui::SeparatorText("Layers");
@@ -1826,8 +1843,6 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
                                         TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
     layersChanged |= ImGui::SliderFloat("Snow tiling", &s.snowTiling, TerrainSettings::kRockTilingMin,
                                         TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
-    layersChanged |= ImGui::SliderFloat("Colour map influence", &s.macroInfluence, 0.0f, 1.0f, "%.2f");
-    ImGui::SetItemTooltip("How much the terrain-wide colour map (Diffuse Map.png) tints the layer textures.\n0 = pure layer textures, 1 = full large-scale colour variation.");
     layersChanged |= ImGui::SliderFloat("Height blend", &s.heightBlend, 0.0f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("0 = layers fade into each other like a double exposure.\nHigher = the taller bumps of each layer win, so stones poke through sand.");
     layersChanged |= ImGui::SliderFloat("Normal strength", &s.normalStrength, 0.0f, 3.0f, "%.2f");
@@ -1837,10 +1852,9 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
     if (ImGui::Button("Use original colours")) {
         const XMFLOAT3 white(1.0f, 1.0f, 1.0f);
         s.groundTint = white; s.rockTint = white; s.shoreColor = white; s.snowColor = white;
-        s.macroInfluence = 0.0f;
         layersChanged = true;
     }
-    ImGui::SetItemTooltip("Tints MULTIPLY the layer textures, and the colour map blends its own colours in.\nThis turns both off, so every layer shows exactly the colours of its image.");
+    ImGui::SetItemTooltip("Tints MULTIPLY the layer textures.\nThis resets them to white, so every layer shows exactly the colours of its image.");
     float groundRgb[3] = { s.groundTint.x, s.groundTint.y, s.groundTint.z };
     if (ImGui::ColorEdit3("Ground tint", groundRgb)) { s.groundTint = { groundRgb[0], groundRgb[1], groundRgb[2] }; layersChanged = true; }
     float rockRgb[3] = { s.rockTint.x, s.rockTint.y, s.rockTint.z };

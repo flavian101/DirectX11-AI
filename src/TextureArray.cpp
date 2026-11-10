@@ -71,7 +71,6 @@ TextureArray::TextureArray(ID3D11Device* device, const std::vector<std::string>&
     if (width == 0) { width = 4; height = 4; }   // nothing loaded: a tiny all-default array
 
     // 2. Build one slice of pixels per layer: the file (resized if needed) or the neutral fill.
-    const UINT mipLevels = FullMipCount(width, height);
     std::vector<std::vector<std::uint8_t>> slices(layerPaths.size());
     for (size_t i = 0; i < layerPaths.size(); ++i) {
         if (images[i].pixels) {
@@ -87,13 +86,60 @@ TextureArray::TextureArray(ID3D11Device* device, const std::vector<std::string>&
         }
     }
 
-    // 3. One texture with N slices and a full mip chain (same recipe as the cubemap: upload level 0 of
-    //    each slice, then let the GPU fill the smaller levels of ALL slices).
+    CreateFromSlices(device, width, height, format, slices);
+}
+
+TextureArray::TextureArray(ID3D11Device* device, int width, int height, ColorSpace colorSpace,
+                           const std::vector<std::vector<std::uint8_t>>& slices, int loadedCount)
+{
+    if (!device || slices.empty() || width <= 0 || height <= 0) {
+        LOG_ERROR("Cannot create a texture array without a device, a size and at least one slice");
+        return;
+    }
+    for (const std::vector<std::uint8_t>& slice : slices) {
+        if (slice.size() != static_cast<size_t>(width) * height * 4) {
+            LOG_ERROR("A texture array slice does not match the array's size");
+            return;
+        }
+    }
+    layerCount_ = static_cast<int>(slices.size());
+    loadedCount_ = loadedCount;
+    CreateFromSlices(device, width, height,
+                     (colorSpace == ColorSpace::SRGB) ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM, slices);
+}
+
+bool TextureArray::LoadImageRgba8(const std::string& path, int& width, int& height, std::vector<std::uint8_t>& pixels)
+{
+    std::error_code error;
+    if (path.empty() || !std::filesystem::exists(path, error)) return false;
+    int channels = 0, w = 0, h = 0;
+    unsigned char* data = stbi_load(path.c_str(), &w, &h, &channels, STBI_rgb_alpha);
+    if (!data) { LOG_ERROR("Failed to load image: " + path); return false; }
+    width = w;
+    height = h;
+    pixels.assign(data, data + static_cast<size_t>(w) * h * 4);
+    stbi_image_free(data);
+    return true;
+}
+
+std::vector<std::uint8_t> TextureArray::ResizeRgba8(const std::vector<std::uint8_t>& source, int sourceWidth, int sourceHeight,
+                                                    int width, int height)
+{
+    return ResizeBilinear(source.data(), sourceWidth, sourceHeight, width, height);
+}
+
+void TextureArray::CreateFromSlices(ID3D11Device* device, int width, int height, DXGI_FORMAT format,
+                                    const std::vector<std::vector<std::uint8_t>>& slices)
+{
+    const UINT mipLevels = FullMipCount(width, height);
+    const size_t layerCount = slices.size();
+    // One texture with N slices and a full mip chain (same recipe as the cubemap: upload level 0 of
+    // each slice, then let the GPU fill the smaller levels of ALL slices).
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = static_cast<UINT>(width);
     desc.Height = static_cast<UINT>(height);
     desc.MipLevels = mipLevels;
-    desc.ArraySize = static_cast<UINT>(layerPaths.size());
+    desc.ArraySize = static_cast<UINT>(layerCount);
     desc.Format = format;
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
@@ -108,7 +154,7 @@ TextureArray::TextureArray(ID3D11Device* device, const std::vector<std::string>&
     srvDesc.Texture2DArray.MostDetailedMip = 0;
     srvDesc.Texture2DArray.MipLevels = static_cast<UINT>(-1);
     srvDesc.Texture2DArray.FirstArraySlice = 0;
-    srvDesc.Texture2DArray.ArraySize = static_cast<UINT>(layerPaths.size());
+    srvDesc.Texture2DArray.ArraySize = static_cast<UINT>(layerCount);
     hr = device->CreateShaderResourceView(texture_, &srvDesc, &shaderResourceView_);
     if (FAILED(hr)) {
         LOG_HR(hr, "Failed to create texture array view");

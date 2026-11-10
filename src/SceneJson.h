@@ -53,7 +53,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpe
                                                 meshDetail, lodDistance, frustumCulling)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainSettings, width, heightScale, maxCells, noiseStrength, noiseScale,
                                                 noiseOctaves, noiseSeed, uvTiling, groundTiling, rockTiling, sandTiling, snowTiling,
-                                                rockDarkness, macroInfluence, normalStrength, flipGreen, heightBlend, aoStrength,
+                                                rockDarkness, normalStrength, flipGreen, heightBlend, aoStrength,
                                                 roughnessScale, groundTint, rockTint, slopeStart, slopeFade, shoreHeight, shoreWidth,
                                                 snowHeight, snowFade, breakupScale, breakupAmount, shoreColor, snowColor, frustumCulling,
                                                 lodEnabled, lodDistance0, lodDistance1)

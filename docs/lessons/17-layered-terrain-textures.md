@@ -1,5 +1,7 @@
 # Lesson 17 - Layered terrain: texture blending with normals and more
 
+> Lesson 29 replaces how the weights are computed (baked once, not per pixel) and how many textures are read. The ideas here (weights add up to 1, height-based blending, projections) still hold.
+
 ## Understand
 
 **Lesson 12 blended colours; this lesson blends materials.** Before, rock, sand and snow were the *same* texture, darkened or tinted. Now each layer has its own albedo, normal map and ORM map, so rock has cracks, sand has grain and snow is smooth. The *rules* that decide where each layer appears (height, slope, noise) did not change.

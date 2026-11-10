@@ -23,10 +23,10 @@ using namespace DirectX;
 namespace {
 // Must match `cbuffer TerrainMaterial : register(b4)` in shaders/terrain_ps.hlsl, field for field.
 struct TerrainMaterialCB {
-	XMFLOAT4 layers;       // rock tiling, breakup scale, breakup amount, rock brightness
-	XMFLOAT4 heightBands;  // shore height, shore width, snow height, snow fade
-	XMFLOAT4 slope;        // slope start, slope fade, debug flag, height blend
-	XMFLOAT4 tilings;      // ground tiling, sand tiling, snow tiling, macro colour influence
+	XMFLOAT4 layers;       // rock tiling, rock brightness, -, -
+	XMFLOAT4 blend;        // height blend, height-blend transition width, debug flag, colour-map influence
+	XMFLOAT4 splat;        // world X, world Z of the terrain's low corner, 1 / world size X, 1 / world size Z
+	XMFLOAT4 tilings;      // ground tiling, sand tiling, snow tiling, -
 	XMFLOAT4 surface;      // normal strength, flip green (1/0), AO strength, roughness scale
 	XMFLOAT4 groundTint;   // linear rgb
 	XMFLOAT4 rockTint;
@@ -34,6 +34,56 @@ struct TerrainMaterialCB {
 	XMFLOAT4 snowTint;
 };
 static_assert(sizeof(TerrainMaterialCB) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
+
+// How close behind the tallest layer another layer may be and still show through (height-based blending, terrain_ps.hlsl).
+constexpr float kHeightTransition = 0.2f;
+
+SplatRules MakeSplatRules(const TerrainSettings& s)
+{
+	SplatRules rules;
+	rules.slopeStart = s.slopeStart;     rules.slopeFade = s.slopeFade;
+	rules.shoreHeight = s.shoreHeight;   rules.shoreWidth = s.shoreWidth;
+	rules.snowHeight = s.snowHeight;     rules.snowFade = s.snowFade;
+	rules.breakupScale = s.breakupScale; rules.breakupAmount = s.breakupAmount;
+	rules.seed = s.noiseSeed;
+	return rules;
+}
+
+// The baked layer weights as a GPU texture (RGBA8, no mips: they are smooth, and the shader reads level 0). They are DATA,
+// so the format is not sRGB. The caller owns the two objects it gets back.
+bool CreateSplatTexture(ID3D11Device* device, const SplatMap& map, ID3D11Texture2D*& texture, ID3D11ShaderResourceView*& view)
+{
+	texture = nullptr;
+	view = nullptr;
+	if (!device || map.IsEmpty()) return false;
+	D3D11_TEXTURE2D_DESC desc{};
+	desc.Width = static_cast<UINT>(map.width);
+	desc.Height = static_cast<UINT>(map.height);
+	desc.MipLevels = 1;
+	desc.ArraySize = 1;
+	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+	D3D11_SUBRESOURCE_DATA initial{};
+	initial.pSysMem = map.rgba.data();
+	initial.SysMemPitch = static_cast<UINT>(map.width * kSplatChannels);
+	HRESULT hr = device->CreateTexture2D(&desc, &initial, &texture);
+	if (FAILED(hr)) {
+		LOG_HR(hr, "Failed to create the terrain splat map");
+		texture = nullptr;
+		return false;
+	}
+	hr = device->CreateShaderResourceView(texture, nullptr, &view);
+	if (FAILED(hr)) {
+		LOG_HR(hr, "Failed to create the terrain splat map view");
+		texture->Release();
+		texture = nullptr;
+		view = nullptr;
+		return false;
+	}
+	return true;
+}
 
 float SmoothStep(float value)
 {
@@ -358,7 +408,6 @@ void TerrainSettings::Clamp()
 	sandTiling = std::clamp(sandTiling, kRockTilingMin, kRockTilingMax);
 	snowTiling = std::clamp(snowTiling, kRockTilingMin, kRockTilingMax);
 	rockDarkness = std::clamp(rockDarkness, 0.1f, 1.5f);
-	macroInfluence = std::clamp(macroInfluence, 0.0f, 1.0f);
 	normalStrength = std::clamp(normalStrength, 0.0f, 3.0f);
 	heightBlend = std::clamp(heightBlend, 0.0f, 1.0f);
 	aoStrength = std::clamp(aoStrength, 0.0f, 1.0f);
@@ -380,7 +429,7 @@ void TerrainSettings::ResetLayers()
 	const TerrainSettings defaults;
 	groundTiling = defaults.groundTiling; rockTiling = defaults.rockTiling;
 	sandTiling = defaults.sandTiling;     snowTiling = defaults.snowTiling;
-	rockDarkness = defaults.rockDarkness; macroInfluence = defaults.macroInfluence;
+	rockDarkness = defaults.rockDarkness;
 	normalStrength = defaults.normalStrength; flipGreen = defaults.flipGreen;
 	heightBlend = defaults.heightBlend;   aoStrength = defaults.aoStrength;
 	roughnessScale = defaults.roughnessScale;
@@ -405,6 +454,12 @@ bool TerrainSettings::SameSource(const TerrainSettings& o) const
 		noiseOctaves == o.noiseOctaves && noiseSeed == o.noiseSeed;
 }
 
+bool TerrainSettings::SameSplatRules(const TerrainSettings& o) const
+{
+	return slopeStart == o.slopeStart && slopeFade == o.slopeFade && shoreHeight == o.shoreHeight && shoreWidth == o.shoreWidth &&
+		snowHeight == o.snowHeight && snowFade == o.snowFade && breakupScale == o.breakupScale && breakupAmount == o.breakupAmount;
+}
+
 std::string Terrain::DefaultLayerMapPath(int layer, TerrainLayerMap map)
 {
 	static const char* const kFileNames[] = { "albedo.png", "normal.png", "orm.png" };
@@ -415,17 +470,13 @@ std::string Terrain::DefaultLayerMapPath(int layer, TerrainLayerMap map)
 Terrain::Terrain(ID3D11Device* device) : device_(device)
 {
 	heightmapPath_ = DefaultHeightmapPath();
-	colorMapPath_ = DefaultColorMapPath();
-	texture_ = std::make_unique<Texture>(device, colorMapPath_);
 
 	// The layer maps: assets/Terrain/<Layer>/albedo.png, normal.png (alpha = height), orm.png, unless replaced.
 	// Slice order is part of the contract with terrain_ps.hlsl: 0 grass, 1 rock, 2 sand, 3 snow.
 	for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
 		for (int map = 0; map < 3; ++map) layerMapPaths_[layer][map] = DefaultLayerMapPath(layer, static_cast<TerrainLayerMap>(map));
 	}
-	RebuildLayerTexture(TerrainLayerMap::Albedo);
-	RebuildLayerTexture(TerrainLayerMap::Normal);
-	RebuildLayerTexture(TerrainLayerMap::Orm);
+	RebuildLayerTextures();
 	LoadHeightmapFile(heightmapPath_.c_str(), heightmap_.width, heightmap_.height, heightmap_.values);
 	settings_.Clamp();
 	if (!Rebuild(settings_)) LOG_ERROR("Terrain mesh initialization failed");
@@ -436,40 +487,89 @@ Terrain::Terrain(ID3D11Device* device) : device_(device)
 Terrain::~Terrain()
 {
 	if (wireframeState_) wireframeState_->Release();
+	ReleaseSplatTexture();
+}
+
+void Terrain::ReleaseSplatTexture()
+{
+	if (splatView_) { splatView_->Release(); splatView_ = nullptr; }
+	if (splatTexture_) { splatTexture_->Release(); splatTexture_ = nullptr; }
 }
 
 bool Terrain::IsValid() const
 {
-	return renderable_ && renderable_->IsValid() && texture_ && texture_->IsValid() &&
-		layerAlbedo_ && layerAlbedo_->IsValid() && layerNormal_ && layerNormal_->IsValid() &&
-		layerOrm_ && layerOrm_->IsValid();
+	return renderable_ && renderable_->IsValid() &&
+		layerDiffHeight_ && layerDiffHeight_->IsValid() && layerNormRough_ && layerNormRough_->IsValid() && splatView_;
 }
 
 void Terrain::GetLayerFileCounts(int& albedo, int& normal, int& orm) const
 {
-	albedo = layerAlbedo_ ? layerAlbedo_->GetLoadedCount() : 0;
-	normal = layerNormal_ ? layerNormal_->GetLoadedCount() : 0;
-	orm = layerOrm_ ? layerOrm_->GetLoadedCount() : 0;
+	albedo = layerFileCounts_[0];
+	normal = layerFileCounts_[1];
+	orm = layerFileCounts_[2];
 }
 
-// Reads the four files of one kind of map into a fresh texture array. The fill for a missing file is the neutral
-// value of that kind: white colour (the tint decides the look), a flat normal with middling height, no occlusion +
-// medium roughness + not metal. The old array stays if the new one cannot be built.
-bool Terrain::RebuildLayerTexture(TerrainLayerMap map)
+// Reads the twelve files (4 layers x albedo / normal / ORM) and PACKS them into the channels of two texture arrays:
+//     array 1 (sRGB):   r g b = albedo,                 a = height   (the normal map's alpha)
+//     array 2 (linear): r g   = normal XY (z is rebuilt in the shader), b = ambient occlusion, a = roughness
+// Shipped engines pack like this: a layer then costs TWO texture reads instead of three (and the unused metallic channel
+// is dropped), and the height that blending needs rides along with the colour. The files themselves are unchanged.
+// The fill for a missing file is the neutral value of that channel: white colour, middling height, a flat normal,
+// no occlusion, medium roughness. The old arrays stay if the new ones cannot be built.
+bool Terrain::RebuildLayerTextures()
 {
-	const int kind = static_cast<int>(map);
-	std::vector<std::string> paths;
-	for (int layer = 0; layer < kTerrainLayerCount; ++layer) paths.push_back(layerMapPaths_[layer][kind]);
+	struct Image { std::vector<std::uint8_t> pixels; int width = 0, height = 0; };
+	Image images[kTerrainLayerCount][3];
+	int counts[3] = {};
+	int width = 0, height = 0;   // the first file that loads decides the size of everything
+	for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+		for (int kind = 0; kind < 3; ++kind) {
+			Image& image = images[layer][kind];
+			if (!TextureArray::LoadImageRgba8(layerMapPaths_[layer][kind], image.width, image.height, image.pixels)) {
+				LOG_INFO("Layer map not found, using the neutral default: " + layerMapPaths_[layer][kind]);
+				continue;
+			}
+			++counts[kind];
+			if (width == 0) { width = image.width; height = image.height; }
+		}
+	}
+	if (width == 0) { width = 4; height = 4; }   // nothing loaded: a tiny all-default array
 
-	std::unique_ptr<TextureArray>& target = (map == TerrainLayerMap::Albedo) ? layerAlbedo_
-										  : (map == TerrainLayerMap::Normal) ? layerNormal_ : layerOrm_;
-	const ColorSpace colorSpace = (map == TerrainLayerMap::Albedo) ? ColorSpace::SRGB : ColorSpace::Linear;
-	const std::array<std::uint8_t, 4> fill = (map == TerrainLayerMap::Albedo) ? std::array<std::uint8_t, 4>{ 255, 255, 255, 255 }
-										   : (map == TerrainLayerMap::Normal) ? std::array<std::uint8_t, 4>{ 128, 128, 255, 128 }
-																			  : std::array<std::uint8_t, 4>{ 255, 128, 0, 255 };
-	auto replacement = std::make_unique<TextureArray>(device_, paths, colorSpace, fill);
-	if (!replacement->IsValid()) return false;
-	target = std::move(replacement);
+	const size_t texels = static_cast<size_t>(width) * height;
+	std::vector<std::vector<std::uint8_t>> diffHeight(kTerrainLayerCount), normRough(kTerrainLayerCount);
+	for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+		for (int kind = 0; kind < 3; ++kind) {
+			Image& image = images[layer][kind];
+			if (image.pixels.empty() || (image.width == width && image.height == height)) continue;
+			image.pixels = TextureArray::ResizeRgba8(image.pixels, image.width, image.height, width, height);   // odd-sized file: scale it
+			image.width = width;
+			image.height = height;
+		}
+		const std::vector<std::uint8_t>& albedo = images[layer][static_cast<int>(TerrainLayerMap::Albedo)].pixels;
+		const std::vector<std::uint8_t>& normal = images[layer][static_cast<int>(TerrainLayerMap::Normal)].pixels;
+		const std::vector<std::uint8_t>& orm = images[layer][static_cast<int>(TerrainLayerMap::Orm)].pixels;
+		diffHeight[layer].resize(texels * 4);
+		normRough[layer].resize(texels * 4);
+		for (size_t i = 0; i < texels; ++i) {
+			std::uint8_t* d = &diffHeight[layer][i * 4];
+			std::uint8_t* n = &normRough[layer][i * 4];
+			d[0] = albedo.empty() ? 255 : albedo[i * 4 + 0];
+			d[1] = albedo.empty() ? 255 : albedo[i * 4 + 1];
+			d[2] = albedo.empty() ? 255 : albedo[i * 4 + 2];
+			d[3] = normal.empty() ? 128 : normal[i * 4 + 3];     // height lives in the normal map's alpha
+			n[0] = normal.empty() ? 128 : normal[i * 4 + 0];
+			n[1] = normal.empty() ? 128 : normal[i * 4 + 1];
+			n[2] = orm.empty() ? 255 : orm[i * 4 + 0];           // ambient occlusion
+			n[3] = orm.empty() ? 128 : orm[i * 4 + 1];           // roughness (the ORM's blue, metallic, is not used for ground)
+		}
+	}
+
+	auto first = std::make_unique<TextureArray>(device_, width, height, ColorSpace::SRGB, diffHeight, counts[0]);
+	auto second = std::make_unique<TextureArray>(device_, width, height, ColorSpace::Linear, normRough, counts[1]);
+	if (!first->IsValid() || !second->IsValid()) return false;
+	layerDiffHeight_ = std::move(first);
+	layerNormRough_ = std::move(second);
+	for (int kind = 0; kind < 3; ++kind) layerFileCounts_[kind] = counts[kind];
 	return true;
 }
 
@@ -483,7 +583,7 @@ bool Terrain::SetLayerMap(int layer, TerrainLayerMap map, const std::string& pat
 	std::string& slot = layerMapPaths_[layer][static_cast<int>(map)];
 	const std::string previous = slot;
 	slot = wanted;
-	if (!RebuildLayerTexture(map)) {   // the files for the other layers could not be read together: undo
+	if (!RebuildLayerTextures()) {   // the files could not be packed together: undo
 		slot = previous;
 		return false;
 	}
@@ -505,22 +605,14 @@ bool Terrain::SetHeightmap(const std::string& path)
 	return true;
 }
 
-bool Terrain::SetColorMap(const std::string& path)
-{
-	const std::string wanted = path.empty() ? std::string(DefaultColorMapPath()) : path;
-	auto replacement = std::make_unique<Texture>(device_, wanted);
-	if (!replacement->IsValid()) return false;
-	texture_ = std::move(replacement);
-	colorMapPath_ = wanted;
-	return true;
-}
-
 bool Terrain::ApplySettings(TerrainSettings settings)
 {
 	settings.Clamp();
-	if (renderable_ && settings.SameShape(settings_)) {   // only the tiling changed
+	if (renderable_ && settings.SameShape(settings_)) {   // only the material changed
+		const bool rulesChanged = !settings.SameSplatRules(settings_);
 		settings_ = settings;
 		UpdateMaterial();
+		if (rulesChanged) RefreshSplatAll();   // the rules are baked into the splat map: a few ms, instead of per pixel every frame
 		return true;
 	}
 	// Width and height scale only STRETCH the heights, so a sculpt survives them. A different resolution or noise
@@ -530,7 +622,7 @@ bool Terrain::ApplySettings(TerrainSettings settings)
 
 bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 {
-	if (!device_ || !texture_ || !texture_->IsValid() || heightmap_.values.empty()) return false;
+	if (!device_ || heightmap_.values.empty()) return false;
 
 	const GridShape shape = ComputeGridShape(settings, heightmap_.width, heightmap_.height);
 	// A sculpt is kept only while the grid is the very same one it was made on.
@@ -549,6 +641,19 @@ bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 	auto replacement = std::make_unique<Renderable>(device_, model, L"shaders/vs.hlsl", L"shaders/terrain_ps.hlsl");
 	if (!replacement->IsValid()) return false;
 
+	// The layer weights for the new grid (lesson 29), baked now so the very first frame has them. Made before anything is
+	// committed, like the mesh, so a failure leaves the old terrain on screen.
+	SplatMap splat;
+	splat.Resize(shape.cellsX, shape.cellsZ);
+	BakeSplatAll(field, MakeSplatRules(settings), CurrentSplatPlacement(), splat);
+	ID3D11Texture2D* splatTexture = nullptr;
+	ID3D11ShaderResourceView* splatView = nullptr;
+	if (!CreateSplatTexture(device_, splat, splatTexture, splatView)) return false;
+
+	ReleaseSplatTexture();
+	splat_ = std::move(splat);
+	splatTexture_ = splatTexture;
+	splatView_ = splatView;
 	renderable_ = std::move(replacement);
 	heightfield_ = std::move(field);
 	sculpted_ = keep;
@@ -690,10 +795,14 @@ void Terrain::UpdateMaterial()
 	const XMFLOAT3 sand = SrgbToLinear(settings_.shoreColor);
 	const XMFLOAT3 snow = SrgbToLinear(settings_.snowColor);
 	TerrainMaterialCB block;
-	block.layers = { settings_.rockTiling, settings_.breakupScale, settings_.breakupAmount, settings_.rockDarkness };
-	block.heightBands = { settings_.shoreHeight, settings_.shoreWidth, settings_.snowHeight, settings_.snowFade };
-	block.slope = { settings_.slopeStart, settings_.slopeFade, settings_.showLayers ? 1.0f : 0.0f, settings_.heightBlend };
-	block.tilings = { settings_.groundTiling, settings_.sandTiling, settings_.snowTiling, settings_.macroInfluence };
+	block.layers = { settings_.rockTiling, settings_.rockDarkness, 0.0f, 0.0f };
+	block.blend = { settings_.heightBlend, kHeightTransition, settings_.showLayers ? 1.0f : 0.0f, 0.0f };
+	// World XZ -> splat UV: the mesh spans `extent` world units centred on the terrain's position (it is never rotated).
+	const XMFLOAT2 extent = GetWorldExtent();
+	const float invX = std::fabs(extent.x) > 1e-6f ? 1.0f / extent.x : 0.0f;
+	const float invZ = std::fabs(extent.y) > 1e-6f ? 1.0f / extent.y : 0.0f;
+	block.splat = { position_.x - 0.5f * extent.x, position_.z - 0.5f * extent.y, invX, invZ };
+	block.tilings = { settings_.groundTiling, settings_.sandTiling, settings_.snowTiling, 0.0f };
 	block.surface = { settings_.normalStrength, settings_.flipGreen ? 1.0f : 0.0f, settings_.aoStrength, settings_.roughnessScale };
 	block.groundTint = { ground.x, ground.y, ground.z, 1.0f };
 	block.rockTint = { rock.x, rock.y, rock.z, 1.0f };
@@ -767,6 +876,7 @@ bool Terrain::Sculpt(const BrushSettings& brush, float worldX, float worldZ, flo
 	if (changed.IsEmpty()) return false;
 	sculpted_ = true;
 	RefreshChunks(changed);
+	RefreshSplat(SplatCellsForSamples(changed, heightfield_.GetLayout().cellsX, heightfield_.GetLayout().cellsZ));   // new slopes: new layer weights
 	// The revision moves when the stroke ENDS, not on every step: the water re-measures its shore each time it changes,
 	// which is too much work to do every frame while you drag. (A step outside a stroke has no end, so it counts at once.)
 	if (!strokeActive_) NewRevision();
@@ -790,6 +900,7 @@ bool Terrain::ApplyPatch(const HeightfieldPatch& patch, bool useAfter)
 	if (changed.IsEmpty()) return false;
 	if (useAfter) sculpted_ = true;
 	RefreshChunks(changed);
+	RefreshSplat(SplatCellsForSamples(changed, heightfield_.GetLayout().cellsX, heightfield_.GetLayout().cellsZ));
 	NewRevision();
 	return true;
 }
@@ -807,6 +918,7 @@ bool Terrain::ReplaceHeights(std::vector<float> samples, bool sculpted)
 	everything.Include(0, 0);
 	everything.Include(layout.cellsX, layout.cellsZ);
 	RefreshChunks(everything);
+	RefreshSplatAll();
 	return true;
 }
 
@@ -869,6 +981,56 @@ void Terrain::RefreshChunks(const GridRect& changed)
 	ctx->Release();
 }
 
+SplatRules Terrain::CurrentSplatRules() const
+{
+	return MakeSplatRules(settings_);
+}
+
+SplatPlacement Terrain::CurrentSplatPlacement() const
+{
+	SplatPlacement placement;
+	placement.originY = position_.y;
+	placement.scaleX = scale_.x;
+	placement.scaleY = scale_.y;
+	placement.scaleZ = scale_.z;
+	return placement;
+}
+
+void Terrain::RefreshSplat(const GridRect& cells)
+{
+	if (cells.IsEmpty() || splat_.IsEmpty() || !splatTexture_ || heightfield_.IsEmpty() || !device_) return;
+	if (std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.y) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return;   // a collapsed terrain has no slope to measure
+	BakeSplat(heightfield_, CurrentSplatRules(), CurrentSplatPlacement(), cells, splat_);
+
+	// Upload only the block that was re-baked (the same clamping BakeSplat did).
+	const int x0 = (std::max)(cells.x0, 0), z0 = (std::max)(cells.z0, 0);
+	const int x1 = (std::min)(cells.x1, splat_.width - 1), z1 = (std::min)(cells.z1, splat_.height - 1);
+	if (x1 < x0 || z1 < z0) return;
+	ID3D11DeviceContext* ctx = nullptr;
+	device_->GetImmediateContext(&ctx);
+	if (!ctx) return;
+	D3D11_BOX box{};
+	box.left = static_cast<UINT>(x0);
+	box.top = static_cast<UINT>(z0);
+	box.front = 0;
+	box.right = static_cast<UINT>(x1 + 1);
+	box.bottom = static_cast<UINT>(z1 + 1);
+	box.back = 1;
+	// The source pointer is the first texel OF THE BLOCK; the pitch is the whole map's row length.
+	ctx->UpdateSubresource(splatTexture_, 0, &box, &splat_.rgba[(static_cast<size_t>(z0) * splat_.width + x0) * kSplatChannels],
+						   static_cast<UINT>(splat_.width * kSplatChannels), 0);
+	ctx->Release();
+}
+
+void Terrain::RefreshSplatAll()
+{
+	if (splat_.IsEmpty()) return;
+	GridRect everything;
+	everything.Include(0, 0);
+	everything.Include(splat_.width - 1, splat_.height - 1);
+	RefreshSplat(everything);
+}
+
 XMFLOAT2 Terrain::GetWorldExtent() const
 {
 	return { settings_.width * scale_.x, depth_ * scale_.z };
@@ -892,10 +1054,15 @@ bool Terrain::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotat
 	const XMFLOAT3& scale)
 {
 	(void)rotation;   // the terrain is never tilted (SupportsRotation() is false): its height queries rely on it
+	// The layer rules talk in WORLD height and slope, so lifting or stretching the terrain changes the weights. Moving it
+	// sideways does not (the noise is read in the terrain's own space).
+	const bool weightsMoved = position.y != position_.y || scale.x != scale_.x || scale.y != scale_.y || scale.z != scale_.z;
 	position_ = position;
 	rotation_ = { 0.0f, 0.0f, 0.0f };
 	scale_ = scale;
 	UpdateWorldTransform();
+	UpdateMaterial();   // the splat map's place in the world moved
+	if (weightsMoved) RefreshSplatAll();
 	return true;
 }
 
@@ -924,12 +1091,10 @@ void Terrain::Update(float /*dt*/)
 void Terrain::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 {
 	if (!IsValid()) return;
-	renderable_->SetTexture(ctx, texture_->GetShaderResourceView());   // t0: the terrain-wide colour map
-	ID3D11ShaderResourceView* albedo = layerAlbedo_->GetShaderResourceView();
-	ID3D11ShaderResourceView* normal = layerNormal_->GetShaderResourceView();
-	ID3D11ShaderResourceView* orm = layerOrm_->GetShaderResourceView();
-	ctx->PSSetShaderResources(Slots::kSrvTerrainAlbedo, 1, &albedo);
-	ctx->PSSetShaderResources(Slots::kSrvTerrainNormal, 1, &normal);
-	ctx->PSSetShaderResources(Slots::kSrvTerrainOrm, 1, &orm);
+	ID3D11ShaderResourceView* diffHeight = layerDiffHeight_->GetShaderResourceView();
+	ID3D11ShaderResourceView* normRough = layerNormRough_->GetShaderResourceView();
+	ctx->PSSetShaderResources(Slots::kSrvTerrainAlbedo, 1, &diffHeight);
+	ctx->PSSetShaderResources(Slots::kSrvTerrainNormal, 1, &normRough);
+	ctx->PSSetShaderResources(Slots::kSrvTerrainSplat, 1, &splatView_);
 	DrawChunks(ctx, nullptr, view);
 }

@@ -82,6 +82,7 @@ add_library(Engine STATIC
 	src/Terrain.cpp
 	src/Heightfield.cpp
 	src/HeightfieldEdit.cpp
+	src/TerrainSplat.cpp
 	src/Png16.cpp
 	src/Water.cpp
 	src/Skybox.cpp
@@ -145,6 +146,11 @@ if(BUILD_TESTS)
     add_executable(TerrainChunksTests tests/terrain_chunks_test.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
     target_include_directories(TerrainChunksTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME TerrainChunks COMMAND TerrainChunksTests)
+    add_executable(TerrainSplatTests tests/terrain_splat_test.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
+    target_include_directories(TerrainSplatTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    find_package(Threads REQUIRED)
+    target_link_libraries(TerrainSplatTests PRIVATE Threads::Threads)
+    add_test(NAME TerrainSplat COMMAND TerrainSplatTests)
     add_executable(Png16Tests tests/png16_test.cpp src/Png16.cpp src/libs/stb_image.cpp)
     target_include_directories(Png16Tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME Png16 COMMAND Png16Tests)

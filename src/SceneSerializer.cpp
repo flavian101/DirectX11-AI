@@ -74,7 +74,6 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
         entry["settings"] = terrain->GetSettings();
         json maps = json::object();
         if (json v = storedImage(terrain->GetHeightmapPath(), Terrain::DefaultHeightmapPath()); !v.is_null()) maps["heightmap"] = v;
-        if (json v = storedImage(terrain->GetColorMapPath(), Terrain::DefaultColorMapPath()); !v.is_null()) maps["colorMap"] = v;
         static const char* const kMapKeys[] = { "albedo", "normal", "orm" };
         json layers = json::array();
         bool anyLayer = false;
@@ -153,8 +152,6 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
         };
         const std::string height = wanted(maps, "heightmap", Terrain::DefaultHeightmapPath());
         if (height != terrain->GetHeightmapPath() && !terrain->SetHeightmap(height)) warnings.push_back("The terrain's heightmap could not be loaded: " + height);
-        const std::string color = wanted(maps, "colorMap", Terrain::DefaultColorMapPath());
-        if (color != terrain->GetColorMapPath() && !terrain->SetColorMap(color)) warnings.push_back("The terrain's colour map could not be loaded: " + color);
         static const char* const kMapKeys[] = { "albedo", "normal", "orm" };
         for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
             const json layerEntry = (maps.contains("layers") && maps["layers"].is_array() && layer < static_cast<int>(maps["layers"].size()))
