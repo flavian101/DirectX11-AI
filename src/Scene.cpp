@@ -1,6 +1,7 @@
 ﻿#include "Scene.h"
 #include "Cube.h"
 #include "Logger.h"
+#include "ScatterObject.h"
 #include "ShaderSlots.h"
 #include "Skybox.h"
 #include "Water.h"
@@ -151,6 +152,8 @@ void Scene::Update(float dt)
     // Every water body measures the terrain under it (only when something changed: this is a cheap comparison otherwise).
     const Terrain* terrain = GetTerrain();
     for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) water->RefreshShoreDepth(terrain);
+    // Scatter follows the ground the same way: it regenerates the cells whose ground changed (within a time budget).
+    for (auto& obj : objects_) if (auto* scatter = dynamic_cast<ScatterObject*>(obj.get())) scatter->Refresh(terrain, camera_.GetPosition());
 }
 
 // Smallest sphere containing both input spheres.
@@ -209,6 +212,7 @@ void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
     XMStoreFloat4x4(&sunViewProj, XMLoadFloat4x4(&sunFrame.view) * XMLoadFloat4x4(&sunFrame.proj));
     sunView.frustum = Frustum::FromViewProj(sunViewProj);
     sunView.lodOrigin = camera_.GetPosition();
+    sunView.projScale = camera_.GetProjectionMatrix()._22;   // detail follows the real camera, so does its lens
 
     for (const auto& object : objects_) {
         if (object && object->CastsShadow()) object->RenderShadow(ctx, shadow_->GetShader(), sunView);
@@ -278,6 +282,7 @@ RenderView Scene::GetMainView() const
     XMStoreFloat4x4(&viewProj, XMLoadFloat4x4(&cameraView) * XMLoadFloat4x4(&cameraProj));
     view.frustum = Frustum::FromViewProj(viewProj);
     view.lodOrigin = camera_.GetPosition();
+    view.projScale = cameraProj._22;
     return view;
 }
 
@@ -398,6 +403,7 @@ void Scene::RenderReflection(ID3D11DeviceContext* ctx, float planeHeight,
     XMStoreFloat4x4(&mirroredViewProj, XMLoadFloat4x4(&frame.view) * XMLoadFloat4x4(&frame.proj));
     reflectionView.frustum = Frustum::FromViewProj(mirroredViewProj);
     reflectionView.lodOrigin = camera_.GetPosition();   // detail follows the REAL camera, not the mirror
+    reflectionView.projScale = camera_.GetProjectionMatrix()._22;
 
     // Sky + solid objects only. The water itself (transparent) must not appear in its own mirror.
     RenderPhase(ctx, ScenePhase::Opaque, reflectionView);

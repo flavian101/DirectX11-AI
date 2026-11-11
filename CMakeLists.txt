@@ -40,6 +40,18 @@ FetchContent_MakeAvailable(assimp)
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
 FetchContent_MakeAvailable(json)
 
+# meshoptimizer: simplifies meshes into levels of detail and re-orders triangles for the GPU's vertex cache (src/MeshLod.cpp).
+# Small, C++ only. Offline? -DFETCHCONTENT_SOURCE_DIR_MESHOPTIMIZER=<path>
+set(MESHOPT_BUILD_DEMO OFF CACHE BOOL "" FORCE)
+set(MESHOPT_BUILD_GLTFPACK OFF CACHE BOOL "" FORCE)
+set(MESHOPT_WERROR OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(meshoptimizer
+	GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
+	GIT_TAG v0.22
+	GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(meshoptimizer)
+
 option(BUILD_EDITOR "Build the editor executable (needs extern/imgui on its docking branch)" ON)
 
 # ---------------------------------------------------------------------------------------------
@@ -62,6 +74,10 @@ add_library(Engine STATIC
 	src/Mesh.cpp
 	src/Vertex.cpp
 	src/ModelImporter.cpp
+	src/MeshLod.cpp
+	src/ProceduralModels.cpp
+	src/ScatterPlacement.cpp
+	src/ScatterObject.cpp
 	src/ModelObject.cpp
 	src/RayPicking.cpp
 	src/SceneSerializer.cpp
@@ -99,7 +115,7 @@ target_compile_definitions(Engine PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 # Link against the Windows SDK libraries for DirectX 11
 # The d3d11 and dxgi libraries are part of the SDK and are available on Windows
 # dxguid supplies the interface IDs (e.g. for D3DReflect in Shader.cpp); MSVC can hide the need, MinGW cannot.
-target_link_libraries(Engine PUBLIC d3d11 dxgi d3dcompiler dxguid imm32 dwmapi assimp::assimp nlohmann_json::nlohmann_json)
+target_link_libraries(Engine PUBLIC d3d11 dxgi d3dcompiler dxguid imm32 dwmapi assimp::assimp nlohmann_json::nlohmann_json meshoptimizer)
 
 add_executable(D3D11Example src/main.cpp)
 target_link_libraries(D3D11Example PRIVATE Engine)
@@ -157,6 +173,21 @@ if(BUILD_TESTS)
     target_include_directories(TerrainPaintTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(TerrainPaintTests PRIVATE Threads::Threads)   # TerrainSplat.cpp bakes on several threads
     add_test(NAME TerrainPaint COMMAND TerrainPaintTests)
+    # Scatter, culling and levels of detail (lesson 31): where trees stand, which level each one gets, the automatic
+    # simplifier, and the built-in models.
+    add_executable(ScatterPlacementTests tests/scatter_placement_test.cpp src/ScatterPlacement.cpp src/Heightfield.cpp)
+    target_include_directories(ScatterPlacementTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME ScatterPlacement COMMAND ScatterPlacementTests)
+    add_executable(LodSelectTests tests/lod_select_test.cpp)
+    target_include_directories(LodSelectTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME LodSelect COMMAND LodSelectTests)
+    add_executable(MeshLodTests tests/mesh_lod_test.cpp src/MeshLod.cpp)
+    target_include_directories(MeshLodTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(MeshLodTests PRIVATE meshoptimizer)
+    add_test(NAME MeshLod COMMAND MeshLodTests)
+    add_executable(ProceduralModelsTests tests/procedural_models_test.cpp src/ProceduralModels.cpp src/Vertex.cpp)
+    target_include_directories(ProceduralModelsTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME ProceduralModels COMMAND ProceduralModelsTests)
     add_executable(Png16Tests tests/png16_test.cpp src/Png16.cpp src/libs/stb_image.cpp)
     target_include_directories(Png16Tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME Png16 COMMAND Png16Tests)

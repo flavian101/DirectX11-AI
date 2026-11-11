@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <cstring>
 #include <map>
 #include <vector>
 
@@ -79,6 +80,7 @@ bool Shader::Load(const wchar_t* vsPath, const wchar_t* psPath, ID3D11Device* de
     // A vertex shader that only reads system values (a full-screen triangle uses SV_VertexID)
     // has no vertex data to describe, so it needs no input layout. Ask the compiled shader.
     bool needsLayout = true;
+    bool instanced = false;   // the shader reads per-instance data (INSTPOS / INSTROT): scatter_vs.hlsl
     ID3D11ShaderReflection* reflection = nullptr;
     if (SUCCEEDED(D3DReflect(vsBlob_->GetBufferPointer(), vsBlob_->GetBufferSize(),
                                 IID_ID3D11ShaderReflection, reinterpret_cast<void**>(&reflection)))) {
@@ -89,20 +91,28 @@ bool Shader::Load(const wchar_t* vsPath, const wchar_t* psPath, ID3D11Device* de
             D3D11_SIGNATURE_PARAMETER_DESC parameter{};
             reflection->GetInputParameterDesc(i, &parameter);
             if (parameter.SystemValueType == D3D_NAME_UNDEFINED) needsLayout = true;   // a real vertex attribute
+            if (parameter.SemanticName && std::strcmp(parameter.SemanticName, "INSTPOS") == 0) instanced = true;
         }
         reflection->Release();
     }
     if (!needsLayout) return true;
 
-    const D3D11_INPUT_ELEMENT_DESC layout[] = {
+    std::vector<D3D11_INPUT_ELEMENT_DESC> layout = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"TANGENT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0}
     };
+    // Instanced shaders (lesson 31) read a SECOND vertex stream, slot 1, that advances once per INSTANCE instead of once
+    // per vertex: 32 bytes = position + scale, then a rotation quaternion (ScatterInstance). Only offered to shaders that
+    // ask for it: a layout that mentions slot 1 makes the debug layer demand a buffer there for every draw.
+    if (instanced) {
+        layout.push_back({"INSTPOS", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1});
+        layout.push_back({"INSTROT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D11_INPUT_PER_INSTANCE_DATA, 1});
+    }
     // The layout may offer MORE than a vertex shader reads: vs.hlsl uses the tangent, the shadow and
     // water shaders simply ignore it. Offering less than a shader reads would fail right here.
-    hr = device->CreateInputLayout(layout, static_cast<UINT>(std::size(layout)),
+    hr = device->CreateInputLayout(layout.data(), static_cast<UINT>(layout.size()),
                                    vsBlob_->GetBufferPointer(), vsBlob_->GetBufferSize(), &layout_);
     if (FAILED(hr)) {
         LOG_HR(hr, "Input layout creation failed");

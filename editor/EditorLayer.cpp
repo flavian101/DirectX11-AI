@@ -9,6 +9,7 @@
 #include <memory>
 #include "Cube.h"
 #include "ModelImporter.h"
+#include "ProceduralModels.h"
 #include "SceneSerializer.h"
 #include "Direct3D11Renderer.h"
 #include "Logger.h"
@@ -342,6 +343,8 @@ void EditorLayer::DrawMenuBar()
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Model from file...")) importRequested_ = true;
+        if (ImGui::MenuItem("Scatter on terrain (trees, rocks)", nullptr, false, scene_ && scene_->GetTerrain())) addScatterRequested_ = true;
+        ImGui::SetItemTooltip("Grows trees and rocks over the terrain by rules (which layer, how steep, how high),\ndrawn with instancing, frustum culling and levels of detail. Needs a terrain.");
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
@@ -655,6 +658,15 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
             RecordAdded(cube, "Add cube");
         }
     }
+    if (addScatterRequested_) {
+        addScatterRequested_ = false;
+        if (ctx.scene.GetTerrain()) {
+            ScatterObject* scatter = ctx.scene.Add<ScatterObject>(ctx.renderer.GetDevice());
+            scatter->SetSettings(ScatterSettings::Starter());
+            Select(scatter);
+            RecordAdded(scatter, "Add scatter");
+        }
+    }
     if (addWaterType_ >= 0) {
         const WaterBodyType type = static_cast<WaterBodyType>(addWaterType_);
         addWaterType_ = -1;
@@ -885,6 +897,7 @@ void EditorLayer::DrawHierarchyPanel()
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Add model from file...")) importRequested_ = true;
+        if (ImGui::MenuItem("Add scatter on terrain", nullptr, false, scene_ && scene_->GetTerrain())) addScatterRequested_ = true;
         ImGui::EndPopup();
     }
     ImGui::End();
@@ -923,6 +936,7 @@ void EditorLayer::DrawObjectInspector(SceneObject* object)
         DrawSurfaceInspector(cube->GetSurface());
     }
     if (auto* model = dynamic_cast<ModelObject*>(object)) DrawModelInspector(model);
+    if (auto* scatter = dynamic_cast<ScatterObject*>(object)) DrawScatterInspector(scatter);
 }
 
 namespace {
@@ -1349,6 +1363,32 @@ void EditorLayer::DrawModelInspector(ModelObject* model)
     ImGui::Text("%zu parts, %zu materials, %u triangles", model->GetPartCount(), model->GetMaterialCount(), model->GetTriangleCount());
     if (ImGui::Button("Fit to 10 units")) model->FitToSize(10.0f);
 
+    // Culling and level of detail (lesson 31).
+    ImGui::SeparatorText("Culling and detail");
+    ModelRenderSettings render = model->GetRenderSettings();
+    bool renderChanged = false;
+    renderChanged |= ImGui::Checkbox("Frustum culling", &render.frustumCulling);
+    ImGui::SetItemTooltip("Parts the camera (or the sun) cannot see are not sent to the GPU at all.\nTurn it off to see how many triangles that saves.");
+    renderChanged |= ImGui::Checkbox("Level of detail", &render.lodEnabled);
+    ImGui::SetItemTooltip("Parts that look small are drawn with fewer triangles.\nLevels come from the file (meshes named Pine_LOD0, Pine_LOD1...) or are generated when the model loads.");
+    if (render.lodEnabled) {
+        renderChanged |= ImGui::SliderFloat("Detail bias", &render.lodBias, ModelRenderSettings::kBiasMin, ModelRenderSettings::kBiasMax, "%.2f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Above 1: stay detailed for longer. Below 1: simplify sooner.");
+        renderChanged |= ImGui::SliderFloat("Level 1 below", &render.lodScreen[0], 0.003f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Fractions of the screen's height that the part covers. Level 1 starts when it covers less than this,\nlevel 2 and 3 below the next two. A part half the screen tall is 0.5.");
+        renderChanged |= ImGui::SliderFloat("Level 2 below", &render.lodScreen[1], 0.002f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        renderChanged |= ImGui::SliderFloat("Level 3 below", &render.lodScreen[2], 0.001f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        renderChanged |= ImGui::SliderFloat("Hide below", &render.cullScreen, 0.0f, 0.05f, "%.4f");
+        ImGui::SetItemTooltip("A part covering less than this fraction of the screen is not drawn at all. 0 = always drawn.");
+    }
+    if (renderChanged) model->SetRenderSettings(render);
+    const ModelViewStats& camera = model->GetViewStats(ViewKind::Main);
+    ImGui::TextDisabled("%s: %d levels", model->HasAuthoredLods() ? "From the file" : "Generated", model->GetLodLevelCount());
+    ImGui::TextDisabled("Camera drew %d of %d parts, %d triangles", camera.partsDrawn, camera.partsTotal, camera.trianglesDrawn);
+    if (model->GetLodLevelCount() > 1) {
+        ImGui::TextDisabled("Parts per level: %d / %d / %d / %d", camera.partsPerLod[0], camera.partsPerLod[1], camera.partsPerLod[2], camera.partsPerLod[3]);
+    }
+
     for (size_t i = 0; i < model->GetMaterialCount(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         if (ImGui::TreeNode(model->GetMaterialName(i).c_str())) {
@@ -1357,6 +1397,140 @@ void EditorLayer::DrawModelInspector(ModelObject* model)
         }
         ImGui::PopID();
     }
+}
+
+void EditorLayer::DrawScatterInspector(ScatterObject* scatter)
+{
+    // Like water, every value here applies live: read the settings, edit, write back if anything moved. What actually has to
+    // be done (reload a model, place the cells again, nothing) is worked out by the scatter.
+    ScatterSettings s = scatter->GetSettings();
+    bool changed = false;
+    ImGui::SeparatorText("Scatter");
+    if (!scatter->HasGround()) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "There is no terrain to scatter on.");
+    changed |= ImGui::Checkbox("Enabled", &s.enabled);
+    if (scatter->GetPendingCells() > 0) ImGui::TextDisabled("Placing: %d cells left (nearest first)", scatter->GetPendingCells());
+
+    if (ImGui::CollapsingHeader("Placement")) {
+        changed |= ImGui::InputInt("Seed", &s.seed);
+        ImGui::SetItemTooltip("A different seed is a different forest.\nThe same seed always gives the same forest, on any machine.");
+        changed |= ImGui::SliderFloat("Cell size (m)", &s.cellSize, ScatterSettings::kCellMin, ScatterSettings::kCellMax, "%.0f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("The terrain is cut into square cells. A cell is culled, simplified and regenerated as one block.\nSmall: finer culling and quicker edits, but more draw calls.\nLarge: fewer draw calls, coarser culling.");
+        changed |= ImGui::SliderFloat("Placement budget (ms/frame)", &s.generationBudgetMs, 0.5f, 30.0f, "%.1f");
+        ImGui::SetItemTooltip("How long each frame may spend placing cells after an edit. Higher: the forest appears sooner, the editor stutters more.");
+        changed |= ImGui::SliderInt("Max instances per species", &s.maxInstancesPerSpecies, 1000, 5000000, "%d", ImGuiSliderFlags_Logarithmic);
+    }
+    if (ImGui::CollapsingHeader("Culling and detail", ImGuiTreeNodeFlags_DefaultOpen)) {
+        changed |= ImGui::Checkbox("Frustum culling", &s.frustumCulling);
+        ImGui::SetItemTooltip("Cells outside the view are skipped. Turn it off to see how much that saves.");
+        changed |= ImGui::Checkbox("Level of detail", &s.lodEnabled);
+        changed |= ImGui::SliderFloat("Detail bias", &s.lodBias, ModelRenderSettings::kBiasMin, ModelRenderSettings::kBiasMax, "%.2f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Above 1: stay detailed for longer. Below 1: simplify sooner and hide small things earlier.");
+        changed |= ImGui::Checkbox("Cast shadows", &s.shadows);
+        ImGui::SetItemTooltip("The master switch. Each species also has its own, and a distance beyond which it casts none.");
+        changed |= ImGui::SliderFloat("Reflection detail", &s.reflectionDetail, 0.1f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("The water's mirror draws the scene a second time. At 0.5 it sees scatter at half the distance.");
+    }
+    if (ImGui::CollapsingHeader("Statistics")) {
+        const ScatterViewStats& main = scatter->GetViewStats(ViewKind::Main);
+        const ScatterViewStats& sun = scatter->GetViewStats(ViewKind::Shadow);
+        ImGui::Text("Camera: %d / %d cells, %d / %d instances", main.cellsDrawn, main.cellsTotal, main.instancesDrawn, main.instancesTotal);
+        ImGui::Text("%d draw calls, %.2f M triangles", main.drawCalls, main.trianglesDrawn / 1.0e6f);
+        ImGui::TextDisabled("Instances per level: %d / %d / %d / %d", main.instancesPerLod[0], main.instancesPerLod[1], main.instancesPerLod[2], main.instancesPerLod[3]);
+        ImGui::Text("Sun: %d instances, %d draw calls, %.2f M triangles", sun.instancesDrawn, sun.drawCalls, sun.trianglesDrawn / 1.0e6f);
+    }
+
+    ImGui::SeparatorText("Species");
+    int removeIndex = -1;
+    for (size_t i = 0; i < s.species.size(); ++i) {
+        ScatterSpeciesSettings& sp = s.species[i];
+        ImGui::PushID(static_cast<int>(i));
+        const bool open = ImGui::TreeNodeEx("##species", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap, "%s", sp.name.c_str());
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 40.0f);
+        if (ImGui::SmallButton("Remove")) removeIndex = static_cast<int>(i);
+        if (open) {
+            char nameBuffer[64];
+            std::snprintf(nameBuffer, sizeof(nameBuffer), "%s", sp.name.c_str());
+            if (ImGui::InputText("Name", nameBuffer, sizeof(nameBuffer))) { sp.name = nameBuffer; changed = true; }
+            changed |= ImGui::Checkbox("Enabled", &sp.enabled);
+
+            // The model: a built-in one or any file the importer reads.
+            ImGui::TextDisabled("%s", sp.model.c_str());
+            if (ImGui::SmallButton("Pine")) { sp.model = kBuiltinPine; changed = true; }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Rock")) { sp.model = kBuiltinRock; changed = true; }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Model file...")) {
+                const std::string path = PickModelFile(hwnd_);
+                if (!path.empty()) { sp.model = path; changed = true; }
+            }
+            ImGui::SetItemTooltip("Any glTF / FBX / OBJ. Its base centre is where it stands.\nMeshes named Name_LOD0, Name_LOD1... are used as levels of detail; otherwise they are generated.");
+            if (!scatter->IsSpeciesReady(i)) {
+                const std::string& error = scatter->GetSpeciesError(i);
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", error.empty() ? "Loading..." : error.c_str());
+            } else {
+                ImGui::TextDisabled("%zu placed, %d levels of detail", scatter->GetInstanceCount(i), scatter->GetSpeciesLodLevels(i));
+            }
+
+            ImGui::SeparatorText("Where");
+            changed |= ImGui::SliderFloat("Spacing (m)", &sp.spacing, 0.5f, 100.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SetItemTooltip("The ground is cut into squares this wide, each with at most one plant. The most you can get is 1 / spacing^2 per m^2.");
+            changed |= ImGui::SliderFloat("Min distance (m)", &sp.minDistance, 0.0f, sp.spacing, "%.1f");
+            ImGui::SetItemTooltip("Two plants are never closer than this. Set it to roughly the width of a full-grown one.");
+            changed |= ImGui::SliderFloat("Density", &sp.density, 0.0f, 1.0f, "%.2f");
+            ImGui::SetItemTooltip("The chance that a square on PERFECT ground gets a plant.\nAbout %.1f per 1000 m^2 at most.", 1000.0f * sp.density / (sp.spacing * sp.spacing));
+            ImGui::TextDisabled("Likes the terrain layer:");
+            for (int k = 0; k < kSplatChannels; ++k) changed |= ImGui::SliderFloat(kTerrainLayerNames[k], &sp.layerDensity[k], 0.0f, 1.0f, "%.2f");
+            ImGui::SetItemTooltip("1 = grows freely where this layer is, 0 = never. The layers are the baked rules plus what you painted:\npaint grass and trees come, paint rock and they leave.");
+            changed |= ImGui::SliderFloat("Min slope", &sp.minSlope, 0.0f, 90.0f, "%.0f deg");
+            changed |= ImGui::SliderFloat("Max slope", &sp.maxSlope, 0.0f, 90.0f, "%.0f deg");
+            changed |= ImGui::DragFloatRange2("Height (m)", &sp.minHeight, &sp.maxHeight, 1.0f, -1000.0f, 5000.0f, "%.0f", "%.0f");
+            changed |= ImGui::SliderFloat("Clumping", &sp.clusterStrength, 0.0f, 1.0f, "%.2f");
+            ImGui::SetItemTooltip("0 = evenly spread. 1 = groves with clearings between them.");
+            if (sp.clusterStrength > 0.0f) changed |= ImGui::SliderFloat("Clump size (m)", &sp.clusterScale, 5.0f, 300.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+
+            ImGui::SeparatorText("Each one");
+            changed |= ImGui::DragFloatRange2("Scale", &sp.scaleMin, &sp.scaleMax, 0.01f, 0.05f, 10.0f, "%.2f", "%.2f");
+            changed |= ImGui::SliderFloat("Follow ground", &sp.alignToNormal, 0.0f, 1.0f, "%.2f");
+            ImGui::SetItemTooltip("0 = stands straight up (trees). 1 = leans with the slope (rocks).");
+            changed |= ImGui::SliderFloat("Random lean", &sp.tilt, 0.0f, 30.0f, "%.1f deg");
+            changed |= ImGui::SliderFloat("Sink", &sp.sink, 0.0f, 0.8f, "%.2f");
+            ImGui::SetItemTooltip("The fraction of its height buried in the ground. Rocks look planted, not placed, with a little sink.");
+            changed |= ImGui::InputInt("Seed##species", &sp.seed);
+
+            ImGui::SeparatorText("Drawing");
+            changed |= ImGui::SliderFloat("Level 1 below", &sp.lodScreen[0], 0.003f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SetItemTooltip("Fractions of the screen's height that one plant covers. Level 1 starts below the first,\nlevel 2 below the second, level 3 below the third. 0.1 is about 100 pixels on a 1080p screen.");
+            changed |= ImGui::SliderFloat("Level 2 below", &sp.lodScreen[1], 0.002f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+            changed |= ImGui::SliderFloat("Level 3 below", &sp.lodScreen[2], 0.001f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+            changed |= ImGui::SliderFloat("Hide below", &sp.cullScreen, 0.0f, 0.05f, "%.4f");
+            ImGui::SetItemTooltip("Plants covering less than this fraction of the screen are not drawn. 0.004 is about 4 pixels.");
+            changed |= ImGui::Checkbox("Casts shadows", &sp.castShadows);
+            if (sp.castShadows) changed |= ImGui::SliderFloat("Shadow distance (m)", &sp.shadowDistance, 10.0f, 500.0f, "%.0f");
+            ImGui::SetItemTooltip("Beyond this distance from the camera the species casts no shadow. The sun's shadow map covers the whole terrain,\nso far shadows would be a few blurry texels anyway.");
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+    if (removeIndex >= 0) { s.species.erase(s.species.begin() + removeIndex); changed = true; }
+
+    if (ImGui::Button("Add species...")) ImGui::OpenPopup("AddSpecies");
+    if (ImGui::BeginPopup("AddSpecies")) {
+        auto add = [&](const char* name, const std::string& model, float spacing, float maxSlope) {
+            ScatterSpeciesSettings fresh;
+            fresh.name = name; fresh.model = model; fresh.spacing = spacing; fresh.minDistance = spacing * 0.6f; fresh.maxSlope = maxSlope;
+            fresh.seed = static_cast<int>(s.species.size()) + 1;
+            s.species.push_back(fresh);
+            changed = true;
+        };
+        if (ImGui::MenuItem("Pine (built-in)")) add("Pine", kBuiltinPine, 7.0f, 32.0f);
+        if (ImGui::MenuItem("Rock (built-in)")) add("Rock", kBuiltinRock, 9.0f, 60.0f);
+        if (ImGui::MenuItem("From a model file...")) {
+            const std::string path = PickModelFile(hwnd_);
+            if (!path.empty()) add(std::filesystem::path(path).stem().string().c_str(), path, 8.0f, 35.0f);
+        }
+        ImGui::EndPopup();
+    }
+    if (changed) scatter->SetSettings(s);
 }
 
 void EditorLayer::DrawEnvironmentInspector()

@@ -4,6 +4,8 @@
 #include "EnvironmentLighting.h"
 #include "Light.h"
 #include "PostSettings.h"
+#include "ModelObject.h"
+#include "ScatterObject.h"
 #include "ShadowMap.h"
 #include "SurfaceMaterial.h"
 #include "Terrain.h"
@@ -51,6 +53,15 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpe
                                                 reflectivity, reflectionMode, reflectionDistortion, refraction, scatter,
                                                 glintStrength, glintSharpness, crestFoam, crestFoamThreshold,
                                                 meshDetail, lodDistance, frustumCulling)
+// Culling and level of detail of a model (lesson 31), and the scatter that grows trees and rocks on the terrain.
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ModelRenderSettings, frustumCulling, lodEnabled, lodBias, lodScreen, cullScreen)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterSpeciesSettings, name, model, enabled, spacing, minDistance, density, layerDensity,
+                                                minSlope, maxSlope, minHeight, maxHeight, clusterStrength, clusterScale, scaleMin,
+                                                scaleMax, alignToNormal, tilt, sink, seed, lodScreen, cullScreen, castShadows,
+                                                shadowDistance)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterSettings, enabled, cellSize, seed, lodBias, frustumCulling, lodEnabled, shadows,
+                                                reflectionDetail, generationBudgetMs, maxInstancesPerSpecies, species)
+
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainSettings, width, heightScale, maxCells, noiseStrength, noiseScale,
                                                 noiseOctaves, noiseSeed, uvTiling, groundTiling, rockTiling, sandTiling, snowTiling,
                                                 rockDarkness, normalStrength, flipGreen, heightBlend, aoStrength,

@@ -4,6 +4,7 @@
 #include "Layer.h"
 #include "HeightfieldEdit.h"
 #include "ModelObject.h"
+#include "ScatterObject.h"
 #include "Project.h"
 #include "RayPicking.h"
 #include "ScenesPanel.h"
@@ -65,6 +66,7 @@ private:
     void DrawSkyboxInspector(Skybox* skybox);
     void DrawSurfaceInspector(SurfaceMaterial& surface);
     void DrawModelInspector(ModelObject* model);
+    void DrawScatterInspector(ScatterObject* scatter);
     void ImportModelWithDialog(LayerContext& ctx);
     void ImportModelFromFile(LayerContext& ctx, const std::string& path);
 
@@ -137,6 +139,7 @@ private:
     bool viewportFocused_ = false;
     bool hierarchyFocused_ = false;
     bool addCubeRequested_ = false;
+    bool addScatterRequested_ = false;   // add a scatter (trees and rocks on the terrain) at the start of the next frame
     int addWaterType_ = -1;           // >= 0: add a water body of this WaterBodyType at the start of the next frame
     bool duplicateRequested_ = false;
     bool deleteRequested_ = false;

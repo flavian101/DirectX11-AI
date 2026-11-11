@@ -37,6 +37,11 @@ public:
     // Draws part 0, plus every further part whose bit is set in `partMask` (bit 0 = part 1, bit 1 = part 2, ...).
     void Draw(ID3D11DeviceContext* ctx, int lod = 0, unsigned int partMask = ~0u) const;
     int GetLodCount() const { return static_cast<int>(indexBuffers_.size()); }
+    // Binds the vertex buffer (slot 0) and the index buffer of one level without drawing, for callers that make their own
+    // draw calls (instanced scatter: ScatterObject). `lod` is clamped to the levels that exist.
+    void Bind(ID3D11DeviceContext* ctx, int lod = 0) const;
+    // How many indices a level has (all its parts), and so how many triangles * 3 a full draw of it costs.
+    UINT GetIndexCount(int lod = 0) const;
     // Replaces ALL the vertices with new ones (the same number as before). Only works on a mesh made with
     // updatableVertices = true; the indices, and so the triangles' connections, stay as they were.
     bool UpdateVertices(ID3D11DeviceContext* ctx, const std::vector<Vertex>& vertices);

@@ -196,6 +196,20 @@ public:
 	// Reads a saved paint map (RGBA8 PNG, one pixel per grid cell). `error` says what was wrong if it fails.
 	bool LoadPaint(const std::string& path, std::string& error);
 
+	// --- For things that stand on the ground (scatter, lesson 31) ---
+	// The final layer weights (baked rules + paint), one texel per grid cell: what the pixel shader reads.
+	const SplatMap& GetSplatMap() const { return splat_; }
+	// Where the ground changed (heights, layer weights, or the terrain itself moved / was rebuilt). Every change gets a
+	// number from a counter shared by all terrains; the last few are remembered with the world XZ box they touched.
+	struct SurfaceChange {
+		unsigned revision = 0;
+		float minX = 0.0f, minZ = 0.0f, maxX = 0.0f, maxZ = 0.0f;   // world X/Z box of the change
+	};
+	unsigned GetSurfaceRevision() const { return surfaceRevision_; }
+	// Appends the changes made AFTER `sinceRevision` to `changes`. Returns false when the log no longer reaches back that
+	// far (or `sinceRevision` came from another terrain): the caller must then treat the whole ground as changed.
+	bool GetSurfaceChangesSince(unsigned sinceRevision, std::vector<SurfaceChange>& changes) const;
+
 	// For tools that need to fit things to the terrain (e.g. the water plane).
 	DirectX::XMFLOAT2 GetWorldExtent() const;               // x/z size in world units
 	void GetHeightRange(float& minY, float& maxY) const;    // world-space Y range of the surface
@@ -256,6 +270,11 @@ private:
 	std::string layerMapPaths_[kTerrainLayerCount][3];   // [layer][albedo / normal / orm]
 	float depth_ = 0.0f;       // world-space size along Z of the current mesh
 	unsigned revision_ = 0;    // see GetRevision()
+	unsigned surfaceRevision_ = 0;                  // see GetSurfaceRevision()
+	unsigned surfaceLogFloor_ = 0;                  // changes with a revision <= this are forgotten
+	std::vector<SurfaceChange> surfaceLog_;         // the most recent changes, oldest first
+	void LogSurfaceChange(float minX, float minZ, float maxX, float maxZ);   // world X/Z box
+	void LogSurfaceChangeEverywhere();
 	void NewRevision();        // gives the terrain a revision no terrain has had before
 	std::vector<TerrainChunk> chunks_;                    // one per mesh in the model, same order
 	mutable std::vector<unsigned char> drawList_;         // scratch: per chunk, the LOD to draw or Model::kSkipMesh

@@ -3,6 +3,8 @@
 #include "Logger.h"
 #include "ModelImporter.h"
 #include "ModelObject.h"
+#include "ProceduralModels.h"
+#include "ScatterObject.h"
 #include "Png16.h"
 #include <fstream>
 #include <filesystem>
@@ -118,6 +120,22 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
             materials.push_back({ { "name", model->GetMaterialName(i) }, { "surface", model->GetMaterial(i).Settings() } });
         }
         entry["materials"] = materials;
+        entry["render"] = model->GetRenderSettings();   // culling and level of detail
+    } else if (const auto* scatter = dynamic_cast<const ScatterObject*>(&object)) {
+        entry["type"] = "Scatter";
+        ScatterSettings settings = scatter->GetSettings();
+        if (!snapshot) {
+            for (ScatterSpeciesSettings& species : settings.species) {
+                if (species.model.empty() || IsBuiltinModel(species.model)) continue;   // the built-in ones are not files
+                bool outside = false;
+                species.model = MakeStoredPath(fs::path(species.model), *folder, assetsRoot, outside);
+                if (outside) {
+                    warn("The scatter species \"" + species.name + "\" uses a model outside the assets folder (" + species.model +
+                         "). It will not be shipped with the game: copy its folder into assets/ and choose it again.");
+                }
+            }
+        }
+        entry["settings"] = settings;
     } else {
         warn(std::string("Skipped an object this editor cannot save yet: ") + object.GetEditorName());
         return nullptr;
@@ -208,6 +226,13 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
             }
             model->GetMaterial(i).Settings() = materials[i].value("surface", model->GetMaterial(i).Settings());
         }
+        model->SetRenderSettings(entry.value("render", ModelRenderSettings{}));
+    } else if (auto* scatter = dynamic_cast<ScatterObject*>(&object)) {
+        ScatterSettings loaded = entry.value("settings", ScatterSettings{});
+        for (ScatterSpeciesSettings& species : loaded.species) {
+            if (!species.model.empty() && !IsBuiltinModel(species.model)) species.model = resolve(species.model);
+        }
+        scatter->SetSettings(loaded);
     }
 
     // Transform LAST: setting the transform of some objects (the cube, the water) changes other state.
@@ -393,6 +418,7 @@ bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std:
             else if (type == "Water") created = scene.Add<Water>(device);
             else if (type == "Skybox") created = scene.Add<Skybox>(device);
             else if (type == "Cube") created = scene.Add<Cube>(device);
+            else if (type == "Scatter") created = scene.Add<ScatterObject>(device);
             else if (type == "Model") {
                 fs::path modelPath(entry.value("path", ""));
                 if (modelPath.is_relative()) modelPath = sceneFolder / modelPath;   // stored relative to the scene file

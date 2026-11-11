@@ -56,6 +56,10 @@ private:
     std::vector<unsigned char> materialData_;          // CPU copy of the material block
     mutable ID3D11Buffer* materialCb_ = nullptr;       // created lazily at first draw
     mutable bool materialDirty_ = false;
+    // What the per-object buffer holds right now. A scene full of objects that never move draws the same bytes every frame,
+    // so the Map / Unmap (a driver call and a GPU copy per draw) is skipped when nothing changed (lesson 31).
+    mutable CBPerObject uploaded_{};
+    mutable bool uploadedValid_ = false;
 };
 
 

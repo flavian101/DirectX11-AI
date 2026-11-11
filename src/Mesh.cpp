@@ -92,13 +92,26 @@ Mesh::~Mesh()
     for (ID3D11Buffer* buffer : indexBuffers_) if (buffer) buffer->Release();
 }
 
-void Mesh::Draw(ID3D11DeviceContext* ctx, int lod, unsigned int partMask) const
+void Mesh::Bind(ID3D11DeviceContext* ctx, int lod) const
 {
     if (!ctx || !vertexBuffer_ || indexBuffers_.empty()) return;
     const size_t level = static_cast<size_t>(std::clamp(lod, 0, GetLodCount() - 1));
     ctx->IASetVertexBuffers(0, 1, &vertexBuffer_, &stride_, &offset_);
     ctx->IASetIndexBuffer(indexBuffers_[level], DXGI_FORMAT_R32_UINT, 0);
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+}
+
+UINT Mesh::GetIndexCount(int lod) const
+{
+    if (indexCounts_.empty()) return 0;
+    return indexCounts_[static_cast<size_t>(std::clamp(lod, 0, GetLodCount() - 1))];
+}
+
+void Mesh::Draw(ID3D11DeviceContext* ctx, int lod, unsigned int partMask) const
+{
+    if (!ctx || !vertexBuffer_ || indexBuffers_.empty()) return;
+    const size_t level = static_cast<size_t>(std::clamp(lod, 0, GetLodCount() - 1));
+    Bind(ctx, lod);
 
     // Walk the parts in order. Parts that are wanted AND touch each other in the index buffer are drawn with ONE
     // call (a draw call has a cost; ranges that are side by side cost nothing extra to merge).

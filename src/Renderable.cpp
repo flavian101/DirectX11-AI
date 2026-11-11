@@ -63,20 +63,23 @@ void Renderable::RenderWith(ID3D11DeviceContext* ctx, const Shader& shader,
                             const std::vector<unsigned char>* partMasks) const
 {
     if (!valid_ || !ctx) return;
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    const HRESULT hr = ctx->Map(cb_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (FAILED(hr)) {
-        LOG_HR(hr, "Map per-object constant buffer failed");
-        return;
-    }
-    auto* data = static_cast<CBPerObject*>(mapped.pData);
-
     // Transpose before upload: XMMATRIX is row-major, HLSL reads column-major.
-    XMStoreFloat4x4(&data->world, XMMatrixTranspose(XMLoadFloat4x4(&model_->GetWorld())));
-    data->materialColor = materialColor_;
-    data->materialParams = materialParameters_;
-
-    ctx->Unmap(cb_, 0);
+    CBPerObject wanted;
+    XMStoreFloat4x4(&wanted.world, XMMatrixTranspose(XMLoadFloat4x4(&model_->GetWorld())));
+    wanted.materialColor = materialColor_;
+    wanted.materialParams = materialParameters_;
+    if (!uploadedValid_ || std::memcmp(&wanted, &uploaded_, sizeof(CBPerObject)) != 0) {
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        const HRESULT hr = ctx->Map(cb_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (FAILED(hr)) {
+            LOG_HR(hr, "Map per-object constant buffer failed");
+            return;
+        }
+        std::memcpy(mapped.pData, &wanted, sizeof(CBPerObject));
+        ctx->Unmap(cb_, 0);
+        uploaded_ = wanted;
+        uploadedValid_ = true;
+    }
 
     // The material's own block, if it has one: created on first use, re-uploaded only when changed.
     if (!materialData_.empty()) {

@@ -68,6 +68,8 @@ public:
     void Bind(ID3D11DeviceContext* ctx) const;
     // Hands the settings to the renderable's material block (b4). (Renderable skips the GPU copy if nothing changed.)
     void Upload(Renderable& renderable) const;
+    // The same numbers as a plain struct, for objects that own their constant buffer instead of a Renderable (ScatterObject).
+    SurfaceMaterialCB Constants() const;
 
 private:
     static bool LoadInto(ID3D11Device* device, std::unique_ptr<Texture>& target, const std::string& path,

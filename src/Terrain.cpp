@@ -1086,6 +1086,16 @@ void Terrain::RefreshSplat(const GridRect& cells)
 	if (std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.y) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return;   // a collapsed terrain has no slope to measure
 	BakeSplat(heightfield_, CurrentSplatRules(), CurrentSplatPlacement(), cells, splat_);
 	ApplyPaint(paint_, cells, splat_);   // the baking just overwrote those texels with the rules: lay the paint back over them (lesson 30)
+	{
+		// Scatter reads these weights (and the heights that produced them): tell it which patch of ground changed.
+		const HeightfieldLayout& layout = heightfield_.GetLayout();
+		const float cellX = layout.sizeX / static_cast<float>(layout.cellsX), cellZ = layout.sizeZ / static_cast<float>(layout.cellsZ);
+		const float lx0 = -0.5f * layout.sizeX + static_cast<float>(cells.x0) * cellX, lx1 = -0.5f * layout.sizeX + static_cast<float>(cells.x1 + 1) * cellX;
+		const float lz0 = -0.5f * layout.sizeZ + static_cast<float>(cells.z0) * cellZ, lz1 = -0.5f * layout.sizeZ + static_cast<float>(cells.z1 + 1) * cellZ;
+		const float wx0 = position_.x + lx0 * scale_.x, wx1 = position_.x + lx1 * scale_.x;
+		const float wz0 = position_.z + lz0 * scale_.z, wz1 = position_.z + lz1 * scale_.z;
+		LogSurfaceChange((std::min)(wx0, wx1), (std::min)(wz0, wz1), (std::max)(wx0, wx1), (std::max)(wz0, wz1));
+	}
 
 	// Upload only the block that was re-baked (the same clamping BakeSplat did).
 	const int x0 = (std::max)(cells.x0, 0), z0 = (std::max)(cells.z0, 0);
@@ -1151,6 +1161,43 @@ bool Terrain::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotat
 	return true;
 }
 
+void Terrain::LogSurfaceChange(float minX, float minZ, float maxX, float maxZ)
+{
+	static unsigned nextSurfaceRevision = 0;   // one counter for every terrain, like NewRevision
+	SurfaceChange change;
+	change.revision = ++nextSurfaceRevision;
+	change.minX = minX; change.minZ = minZ; change.maxX = maxX; change.maxZ = maxZ;
+	surfaceRevision_ = change.revision;
+	surfaceLog_.push_back(change);
+	constexpr size_t kLogLimit = 128;
+	if (surfaceLog_.size() > kLogLimit) {
+		surfaceLogFloor_ = surfaceLog_[surfaceLog_.size() - kLogLimit - 1].revision;
+		surfaceLog_.erase(surfaceLog_.begin(), surfaceLog_.end() - kLogLimit);
+	}
+}
+
+void Terrain::LogSurfaceChangeEverywhere()
+{
+	constexpr float kHuge = 1.0e30f;
+	LogSurfaceChange(-kHuge, -kHuge, kHuge, kHuge);
+}
+
+bool Terrain::GetSurfaceChangesSince(unsigned sinceRevision, std::vector<SurfaceChange>& changes) const
+{
+	if (sinceRevision == surfaceRevision_) return true;   // nothing new
+	// `sinceRevision` must be a revision this terrain really issued and still remembers: either one of the logged changes,
+	// or the last one that was forgotten (the log then starts right after it). Anything else (0, an older one, one from
+	// another terrain) cannot be continued from.
+	bool anchored = sinceRevision == surfaceLogFloor_;
+	const size_t first = changes.size();
+	for (const SurfaceChange& change : surfaceLog_) {
+		if (change.revision == sinceRevision) anchored = true;
+		else if (change.revision > sinceRevision) changes.push_back(change);
+	}
+	if (!anchored) changes.resize(first);
+	return anchored;
+}
+
 void Terrain::NewRevision()
 {
 	static unsigned nextRevision = 0;   // one counter for every terrain: a revision is never reused
@@ -1160,6 +1207,7 @@ void Terrain::NewRevision()
 void Terrain::UpdateWorldTransform()
 {
 	NewRevision();
+	LogSurfaceChangeEverywhere();   // moved or stretched: everything standing on it must be placed again
 	const XMMATRIX transform = XMMatrixScaling(scale_.x, scale_.y, scale_.z) *
 		XMMatrixRotationX(rotation_.x) * XMMatrixRotationY(rotation_.y) *
 		XMMatrixRotationZ(rotation_.z) *

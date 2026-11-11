@@ -53,6 +53,12 @@ void SurfaceMaterial::Bind(ID3D11DeviceContext* ctx) const
 
 void SurfaceMaterial::Upload(Renderable& renderable) const
 {
+    const SurfaceMaterialCB cb = Constants();
+    renderable.SetMaterialBlock(&cb, sizeof(cb));
+}
+
+SurfaceMaterialCB SurfaceMaterial::Constants() const
+{
     SurfaceMaterialCB cb{};
     // Shader: roughness = ORM.g * params.y, metallic = ORM.b * extra.y. A real map holds the values, so the
     // scales multiply it; the neutral default is white, so the constants take the scales' place.
@@ -63,5 +69,5 @@ void SurfaceMaterial::Upload(Renderable& renderable) const
                                  static_cast<float>(settings_.debugView), 0.0f);
     cb.baseColor = settings_.baseColor;
     cb.extra = DirectX::XMFLOAT4(settings_.alphaCutoff, hasMap ? settings_.metallicScale : settings_.fallbackMetallic, 0.0f, 0.0f);
-    renderable.SetMaterialBlock(&cb, sizeof(cb));
+    return cb;
 }
