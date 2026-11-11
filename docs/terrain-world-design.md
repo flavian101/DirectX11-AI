@@ -69,6 +69,6 @@ This is a design note, not a lesson. It answers three questions: how big worlds 
 2. **Sculpt brushes** (done, lesson 27): raise, lower, smooth, flatten; brush ring (an ImGui overlay for now, a shader decal later); partial vertex updates; undo by stroke patches; heights saved as a 16-bit PNG.
 3. **Paint layers**: a paint map blended with the existing slope and height rules. (Lesson 29 bakes those rules into a splat texture, so a painted layer is just an override applied before the upload.) Its texel size is also where the biome ids will live.
 4. **Generators**: ridged noise, terracing, erosion.
-5. **Scatter**: instanced placement with density, spacing, slope limits and per-chunk culling. Biome recipes drive it.
-6. **Performance pass**: GPU timers first, then skipping unused layers in the shader, shared index buffers, cheaper shadow detail.
+5. **Scatter** (done, lesson 31): instanced placement driven by the terrain layers, with density, spacing, slope and height limits, per-cell culling and levels of detail. Biome recipes will drive it.
+6. **Performance pass** (started in lesson 31: culling and LOD for models, no redundant constant-buffer uploads, vertex-cache ordering): GPU timers first, then skipping unused layers in the shader, shared index buffers, cascaded shadows, GPU-driven culling.
 7. **The world**: tiles, streaming, distant level of detail, camera-relative rendering.
