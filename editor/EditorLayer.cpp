@@ -1407,7 +1407,7 @@ void EditorLayer::DrawScatterInspector(ScatterObject* scatter)
     bool changed = false;
     ImGui::SeparatorText("Scatter");
     if (!scatter->HasGround()) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "There is no terrain to scatter on.");
-    changed |= ImGui::Checkbox("Enabled", &s.enabled);
+    changed |= ImGui::Checkbox("Enabled##scatter", &s.enabled);
     if (scatter->GetPendingCells() > 0) ImGui::TextDisabled("Placing: %d cells left (nearest first)", scatter->GetPendingCells());
 
     if (ImGui::CollapsingHeader("Placement")) {
@@ -1446,20 +1446,20 @@ void EditorLayer::DrawScatterInspector(ScatterObject* scatter)
         ImGui::PushID(static_cast<int>(i));
         const bool open = ImGui::TreeNodeEx("##species", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap, "%s", sp.name.c_str());
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 40.0f);
-        if (ImGui::SmallButton("Remove")) removeIndex = static_cast<int>(i);
+        if (ImGui::SmallButton("Remove##species")) removeIndex = static_cast<int>(i);
         if (open) {
             char nameBuffer[64];
             std::snprintf(nameBuffer, sizeof(nameBuffer), "%s", sp.name.c_str());
             if (ImGui::InputText("Name", nameBuffer, sizeof(nameBuffer))) { sp.name = nameBuffer; changed = true; }
-            changed |= ImGui::Checkbox("Enabled", &sp.enabled);
+            changed |= ImGui::Checkbox("Enabled##species", &sp.enabled);
 
             // The model: a built-in one or any file the importer reads.
             ImGui::TextDisabled("%s", sp.model.c_str());
-            if (ImGui::SmallButton("Pine")) { sp.model = kBuiltinPine; changed = true; }
+            if (ImGui::SmallButton("Pine##builtin")) { sp.model = kBuiltinPine; changed = true; }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Rock")) { sp.model = kBuiltinRock; changed = true; }
+            if (ImGui::SmallButton("Rock##builtin")) { sp.model = kBuiltinRock; changed = true; }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Model file...")) {
+            if (ImGui::SmallButton("Model file...##species")) {
                 const std::string path = PickModelFile(hwnd_);
                 if (!path.empty()) { sp.model = path; changed = true; }
             }
