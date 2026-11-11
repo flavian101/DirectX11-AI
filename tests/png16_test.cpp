@@ -74,6 +74,30 @@ int main()
     CHECK(q[0] == 0 && q[1] == 65535 && q[2] == 32768 && q[3] == 0 && q[4] == 65535);
     CHECK(std::fabs(q[5] / 65535.0f - 0.123456f) <= 0.5f / 65535.0f + 1e-7f);
 
+    // 8-bit RGBA (the paint map): write, read back as 4 channels, demand every byte identical
+    {
+        auto rgbaRoundTrip = [&](const std::string& path, int w, int h, const std::vector<std::uint8_t>& bytes) {
+            std::string err;
+            if (!WriteRgba8Png(path, w, h, bytes, err)) { std::printf("  rgba write failed: %s\n", err.c_str()); return false; }
+            if (stbi_is_16_bit(path.c_str())) return false;                      // must be 8-bit
+            int rw = 0, rh = 0, channels = 0;
+            stbi_uc* image = stbi_load(path.c_str(), &rw, &rh, &channels, 4);
+            if (!image) { std::printf("  stb_image refused the RGBA file: %s\n", stbi_failure_reason()); return false; }
+            bool same = rw == w && rh == h && channels == 4;
+            for (size_t i = 0; same && i < bytes.size(); ++i) same = image[i] == bytes[i];
+            stbi_image_free(image);
+            return same;
+        };
+        CHECK(rgbaRoundTrip(file("rgba1.png"), 1, 1, { 10, 20, 30, 40 }));
+        CHECK(rgbaRoundTrip(file("rgba2.png"), 3, 2, { 0,0,0,0, 255,255,255,255, 1,2,3,4, 250,0,5,0, 7,7,7,7, 0,255,0,255 }));
+        std::vector<std::uint8_t> big(static_cast<size_t>(512) * 512 * 4);      // a real paint map: 1 MB, many stored blocks
+        for (size_t i = 0; i < big.size(); ++i) big[i] = static_cast<std::uint8_t>(i % 5 == 0 ? RandomU16() : i);
+        CHECK(rgbaRoundTrip(file("rgba512.png"), 512, 512, big));
+        std::string err;
+        CHECK(!WriteRgba8Png(file("badrgba.png"), 2, 2, std::vector<std::uint8_t>(15), err) && !err.empty());
+        CHECK(!std::filesystem::exists(file("badrgba.png")));
+    }
+
     std::filesystem::remove_all(dir);
     if (g_failures == 0) std::printf("Png16: all tests passed\n");
     return g_failures == 0 ? 0 : 1;

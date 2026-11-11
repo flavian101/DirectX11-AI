@@ -6,6 +6,7 @@
 #include "SceneObject.h"
 #include "Texture.h"
 #include "TextureArray.h"
+#include "TerrainPaint.h"
 #include "TerrainSkirts.h"
 #include "TerrainSplat.h"
 #include <memory>
@@ -177,6 +178,24 @@ public:
 	// Reads a saved sculpt (16-bit PNG, one pixel per grid vertex). `error` says what was wrong if it fails.
 	bool LoadSculptedHeights(const std::string& path, std::string& error);
 
+	// --- Painting layers (lesson 30) ---
+	// The artist's layer weights, laid over the weights the rules bake. They never touch the heights, so they survive
+	// sculpting, noise and every rule slider; they are lost only if the GRID changes (mesh resolution, or a heightmap of a
+	// different shape), which is why the editor locks those while painted.
+	bool IsPainted() const { return painted_; }
+	// A stroke is everything from pressing the mouse button to releasing it: one undo step.
+	void BeginPaintStroke();
+	// One step of a brush at a WORLD position; brush.radius is in world units. False if nothing changed.
+	bool Paint(const PaintBrush& brush, float worldX, float worldZ, float seconds);
+	HeightfieldPatch EndPaintStroke();   // the finished stroke (empty if it changed nothing)
+	// Undo / redo of a stroke: writes the patch's "before" or "after" values and re-uploads the texels it touches.
+	bool ApplyPaintPatch(const HeightfieldPatch& patch, bool useAfter);
+	const PaintMap& GetPaintMap() const { return paint_; }
+	// Replaces all the painted weights at once (clearing, or restoring a cleared paint). The size must match the map.
+	bool ReplacePaint(std::vector<float> weights, bool painted);
+	// Reads a saved paint map (RGBA8 PNG, one pixel per grid cell). `error` says what was wrong if it fails.
+	bool LoadPaint(const std::string& path, std::string& error);
+
 	// For tools that need to fit things to the terrain (e.g. the water plane).
 	DirectX::XMFLOAT2 GetWorldExtent() const;               // x/z size in world units
 	void GetHeightRange(float& minY, float& maxY) const;    // world-space Y range of the surface
@@ -229,6 +248,10 @@ private:
 	bool sculpted_ = false;    // the grid has been shaped by hand: it is the truth, not the heightmap
 	StrokeRecorder stroke_;    // the "before" values of the stroke in progress
 	bool strokeActive_ = false;
+	PaintMap paint_;           // painted layer weights, same grid as splat_ (always sized after the first Rebuild)
+	bool painted_ = false;     // something has been painted (or loaded): saved next to the scene file
+	StrokeRecorder paintStroke_;
+	bool paintStrokeActive_ = false;
 	std::string heightmapPath_;
 	std::string layerMapPaths_[kTerrainLayerCount][3];   // [layer][albedo / normal / orm]
 	float depth_ = 0.0f;       // world-space size along Z of the current mesh

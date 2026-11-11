@@ -79,6 +79,11 @@ void Weights(float height, float slope, const SplatRules& r, float out[kSplatCha
 }
 }
 
+void QuantiseSplat(const float weights[kSplatChannels], std::uint8_t* out)
+{
+    Quantise(weights, out);
+}
+
 GridRect SplatCellsForSamples(const GridRect& editedSamples, int cellsX, int cellsZ)
 {
     GridRect cells;

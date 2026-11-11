@@ -43,13 +43,17 @@ void StrokeRecorder::Remember(int index, float valueBeforeTheStroke)
 
 HeightfieldPatch StrokeRecorder::Finish(const Heightfield& field) const
 {
+    return Finish(field.Samples());
+}
+
+HeightfieldPatch StrokeRecorder::Finish(const std::vector<float>& samples) const
+{
     std::vector<int> touched;
     touched.reserve(before_.size());
     for (const auto& entry : before_) touched.push_back(entry.first);
     std::sort(touched.begin(), touched.end());   // a fixed order, so the same stroke always gives the same patch
 
     HeightfieldPatch patch;
-    const std::vector<float>& samples = field.Samples();
     for (const int index : touched) {
         if (index < 0 || static_cast<size_t>(index) >= samples.size()) continue;
         const float before = before_.at(index);

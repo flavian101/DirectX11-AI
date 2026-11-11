@@ -65,26 +65,14 @@ std::vector<std::uint16_t> QuantizeHeights(const std::vector<float>& samples)
     return out;
 }
 
-bool WriteGrayscale16Png(const std::string& path, int width, int height, const std::vector<std::uint16_t>& values,
-                         std::string& error)
+namespace {
+
+// Steps 2-4: everything that does not depend on the pixel format. `raw` is the picture ALREADY in PNG's row format
+// (every row: a filter byte, then the pixels); `bitDepth` and `colourType` go into the header (16 / 0 = 16-bit grey,
+// 8 / 6 = 8-bit RGBA).
+bool WritePng(const std::string& path, int width, int height, int bitDepth, int colourType,
+              const std::vector<std::uint8_t>& raw, std::string& error)
 {
-    if (width < 1 || height < 1 || values.size() != static_cast<size_t>(width) * static_cast<size_t>(height)) {
-        error = "the image size does not match the number of values";
-        return false;
-    }
-
-    // 1. The raw picture: every row starts with a "filter type" byte (0 = none), then the pixels, 2 bytes each, big-endian.
-    std::vector<std::uint8_t> raw;
-    raw.reserve(static_cast<size_t>(height) * (1 + static_cast<size_t>(width) * 2));
-    for (int row = 0; row < height; ++row) {
-        raw.push_back(0);
-        for (int column = 0; column < width; ++column) {
-            const std::uint16_t v = values[static_cast<size_t>(row) * width + column];
-            raw.push_back(static_cast<std::uint8_t>(v >> 8));
-            raw.push_back(static_cast<std::uint8_t>(v & 0xFF));
-        }
-    }
-
     // 2. Wrap it as a zlib stream made of "stored" (uncompressed) deflate blocks of up to 65535 bytes each:
     //    2 header bytes, then per block [1 byte: 1 if last | LEN (2 bytes, little-endian) | NLEN = ~LEN | the bytes],
     //    then the Adler-32 of the raw data, big-endian.
@@ -110,8 +98,8 @@ bool WriteGrayscale16Png(const std::string& path, int width, int height, const s
     std::vector<std::uint8_t> header;
     PutU32(header, static_cast<std::uint32_t>(width));
     PutU32(header, static_cast<std::uint32_t>(height));
-    header.push_back(16);   // bit depth
-    header.push_back(0);    // colour type 0 = greyscale
+    header.push_back(static_cast<std::uint8_t>(bitDepth));
+    header.push_back(static_cast<std::uint8_t>(colourType));   // 0 = greyscale, 6 = RGBA
     header.push_back(0);    // compression method (always 0)
     header.push_back(0);    // filter method (always 0)
     header.push_back(0);    // no interlacing
@@ -138,4 +126,45 @@ bool WriteGrayscale16Png(const std::string& path, int width, int height, const s
         if (fsError) { error = "could not replace " + target.string() + ": " + fsError.message(); return false; }
     }
     return true;
+}
+
+}  // namespace
+
+bool WriteGrayscale16Png(const std::string& path, int width, int height, const std::vector<std::uint16_t>& values,
+                         std::string& error)
+{
+    if (width < 1 || height < 1 || values.size() != static_cast<size_t>(width) * static_cast<size_t>(height)) {
+        error = "the image size does not match the number of values";
+        return false;
+    }
+
+    // 1. The raw picture: every row starts with a "filter type" byte (0 = none), then the pixels, 2 bytes each, big-endian.
+    std::vector<std::uint8_t> raw;
+    raw.reserve(static_cast<size_t>(height) * (1 + static_cast<size_t>(width) * 2));
+    for (int row = 0; row < height; ++row) {
+        raw.push_back(0);
+        for (int column = 0; column < width; ++column) {
+            const std::uint16_t v = values[static_cast<size_t>(row) * width + column];
+            raw.push_back(static_cast<std::uint8_t>(v >> 8));
+            raw.push_back(static_cast<std::uint8_t>(v & 0xFF));
+        }
+    }
+    return WritePng(path, width, height, 16, 0, raw, error);
+}
+
+bool WriteRgba8Png(const std::string& path, int width, int height, const std::vector<std::uint8_t>& rgba, std::string& error)
+{
+    if (width < 1 || height < 1 || rgba.size() != static_cast<size_t>(width) * static_cast<size_t>(height) * 4) {
+        error = "the image size does not match the number of bytes";
+        return false;
+    }
+    // The same raw layout with 4 one-byte channels per pixel (red, green, blue, alpha).
+    std::vector<std::uint8_t> raw;
+    raw.reserve(static_cast<size_t>(height) * (1 + static_cast<size_t>(width) * 4));
+    for (int row = 0; row < height; ++row) {
+        raw.push_back(0);
+        const std::uint8_t* first = rgba.data() + static_cast<size_t>(row) * width * 4;
+        raw.insert(raw.end(), first, first + static_cast<size_t>(width) * 4);
+    }
+    return WritePng(path, width, height, 8, 6, raw, error);
 }

@@ -177,6 +177,16 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
                 warnings.push_back("The sculpted terrain heights could not be loaded (" + loadError + "): " + heightsFile);
             }
         }
+        // Painted layers (lesson 30): an RGBA8 PNG beside the scene file, one channel per layer. Applied last, after the
+        // settings have given the grid its final size (the image must match it).
+        if (entry.contains("paint") && entry["paint"].is_object() && entry["paint"].contains("weights") &&
+            entry["paint"]["weights"].is_string()) {
+            const std::string paintFile = resolve(entry["paint"]["weights"].get<std::string>());
+            std::string loadError;
+            if (!terrain->LoadPaint(paintFile, loadError)) {
+                warnings.push_back("The painted terrain layers could not be loaded (" + loadError + "): " + paintFile);
+            }
+        }
     } else if (auto* water = dynamic_cast<Water*>(&object)) {
         if (entry.contains("name") && entry["name"].is_string()) water->SetName(entry["name"].get<std::string>());
         WaterSettings loaded = entry.value("settings", WaterSettings{});
@@ -249,9 +259,10 @@ void ApplyGlobals(Scene& scene, const json& root, std::vector<std::string>& warn
 
 }  // namespace
 
-// The file a sculpted terrain's heights are saved in, next to the scene file:
-// "castle.scene.json" -> "castle.terrain.png" (a second terrain would get "castle.terrain2.png").
-static std::string SculptFileName(const fs::path& sceneFile, int index)
+// The file a terrain's hand-made data is saved in, next to the scene file. `kind` says which data:
+// "castle.scene.json" -> "castle.terrain.png" (sculpted heights) or "castle.paint.png" (painted layers). A second terrain
+// would get "castle.terrain2.png".
+static std::string SidecarFileName(const fs::path& sceneFile, const char* kind, int index)
 {
     std::string stem = sceneFile.filename().string();
     for (const char* suffixText : { ".scene.json", ".json" }) {
@@ -261,7 +272,7 @@ static std::string SculptFileName(const fs::path& sceneFile, int index)
             break;
         }
     }
-    return stem + ".terrain" + (index > 0 ? std::to_string(index + 1) : std::string()) + ".png";
+    return stem + "." + kind + (index > 0 ? std::to_string(index + 1) : std::string()) + ".png";
 }
 
 bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::string>& warnings, std::string& error,
@@ -270,6 +281,7 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
     const fs::path file = fs::absolute(fs::path(path));
     const fs::path folder = file.parent_path();
     int sculptedTerrains = 0;   // how many sculpted terrains have been written so far (names their PNG files)
+    int paintedTerrains = 0;    // the same for painted ones
 
     json root;
     root["format"] = kFormatName;
@@ -289,7 +301,7 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
         // file cannot be written the whole save fails: a scene that silently forgets your sculpting is worse.
         if (const auto* terrain = dynamic_cast<const Terrain*>(owned.get()); terrain && terrain->IsSculpted()) {
             const HeightfieldLayout& layout = terrain->GetHeightfield().GetLayout();
-            const std::string heightsName = SculptFileName(file, sculptedTerrains++);
+            const std::string heightsName = SidecarFileName(file, "terrain", sculptedTerrains++);
             std::string pngError;
             if (!WriteGrayscale16Png((folder / heightsName).string(), layout.cellsX + 1, layout.cellsZ + 1,
                                      QuantizeHeights(terrain->GetHeightfield().Samples()), pngError)) {
@@ -297,6 +309,18 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
                 return false;
             }
             entry["sculpt"] = { { "heights", heightsName } };
+        }
+        // Painted layers (lesson 30): an RGBA8 PNG, one texel per grid cell, one channel per layer. Same rule: if it cannot
+        // be written, the save fails.
+        if (const auto* terrain = dynamic_cast<const Terrain*>(owned.get()); terrain && terrain->IsPainted()) {
+            const PaintMap& paint = terrain->GetPaintMap();
+            const std::string paintName = SidecarFileName(file, "paint", paintedTerrains++);
+            std::string pngError;
+            if (!WriteRgba8Png((folder / paintName).string(), paint.width, paint.height, QuantisePaint(paint), pngError)) {
+                error = "Could not save the painted terrain layers: " + pngError;
+                return false;
+            }
+            entry["paint"] = { { "weights", paintName } };
         }
         objects.push_back(std::move(entry));
     }

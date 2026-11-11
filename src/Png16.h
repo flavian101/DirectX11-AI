@@ -14,3 +14,7 @@ std::vector<std::uint16_t> QuantizeHeights(const std::vector<float>& samples);
 // sample (a 1025 x 1025 terrain is ~2 MB).
 bool WriteGrayscale16Png(const std::string& path, int width, int height, const std::vector<std::uint16_t>& values,
                          std::string& error);
+
+// The same for an 8-bit RGBA picture (width * height * 4 bytes, red/green/blue/alpha per pixel): how a terrain's painted
+// layers are saved (lesson 30), one channel per layer. Same temp-file-then-move behaviour and the same stored encoding.
+bool WriteRgba8Png(const std::string& path, int width, int height, const std::vector<std::uint8_t>& rgba, std::string& error);

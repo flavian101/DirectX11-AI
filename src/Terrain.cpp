@@ -646,6 +646,10 @@ bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 	SplatMap splat;
 	splat.Resize(shape.cellsX, shape.cellsZ);
 	BakeSplatAll(field, MakeSplatRules(settings), CurrentSplatPlacement(), splat);
+	// The painted layers (lesson 30) go over the baked ones. They are kept while the grid is the very same one they were
+	// painted on (a noise or rule change keeps it); a different grid has different texels, so the paint is dropped.
+	const bool keepPaint = !paint_.IsEmpty() && paint_.width == shape.cellsX && paint_.height == shape.cellsZ;
+	if (keepPaint) ApplyPaintAll(paint_, splat);
 	ID3D11Texture2D* splatTexture = nullptr;
 	ID3D11ShaderResourceView* splatView = nullptr;
 	if (!CreateSplatTexture(device_, splat, splatTexture, splatView)) return false;
@@ -659,6 +663,12 @@ bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 	sculpted_ = keep;
 	stroke_.Clear();
 	strokeActive_ = false;
+	if (!keepPaint) {
+		paint_.Resize(shape.cellsX, shape.cellsZ);
+		painted_ = false;
+	}
+	paintStroke_.Clear();
+	paintStrokeActive_ = false;
 	settings_ = settings;
 	depth_ = depth;
 	chunks_ = std::move(chunks);
@@ -996,11 +1006,86 @@ SplatPlacement Terrain::CurrentSplatPlacement() const
 	return placement;
 }
 
+// ---- Painting (lesson 30) ----------------------------------------------------------------------------------------------
+
+void Terrain::BeginPaintStroke()
+{
+	paintStroke_.Clear();
+	paintStrokeActive_ = true;
+}
+
+bool Terrain::Paint(const PaintBrush& brush, float worldX, float worldZ, float seconds)
+{
+	if (heightfield_.IsEmpty() || paint_.IsEmpty() || std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return false;
+	// The brush works in the heightfield's local space, where everything is divided by the scale.
+	PaintBrush local = brush;
+	local.radius = brush.radius / scale_.x;
+	const GridRect changed = ApplyPaintBrush(paint_, heightfield_.GetLayout(), local, (worldX - position_.x) / scale_.x,
+											 (worldZ - position_.z) / scale_.z, seconds, paintStrokeActive_ ? &paintStroke_ : nullptr);
+	if (changed.IsEmpty()) return false;
+	painted_ = true;
+	RefreshSplat(changed);   // re-bake those texels, lay the paint over them, upload just that block
+	return true;
+}
+
+HeightfieldPatch Terrain::EndPaintStroke()
+{
+	HeightfieldPatch patch = paintStroke_.Finish(paint_.weights);
+	paintStroke_.Clear();
+	paintStrokeActive_ = false;
+	return patch;
+}
+
+bool Terrain::ApplyPaintPatch(const HeightfieldPatch& patch, bool useAfter)
+{
+	if (paint_.IsEmpty()) return false;
+	const GridRect changed = ::ApplyPaintPatch(paint_, patch, useAfter);   // the free function: same name as this member
+	if (changed.IsEmpty()) return false;
+	if (useAfter) painted_ = true;
+	RefreshSplat(changed);
+	return true;
+}
+
+bool Terrain::ReplacePaint(std::vector<float> weights, bool painted)
+{
+	if (paint_.IsEmpty() || weights.size() != paint_.weights.size()) return false;
+	paint_.weights = std::move(weights);
+	painted_ = painted;
+	paintStroke_.Clear();
+	paintStrokeActive_ = false;
+	RefreshSplatAll();
+	return true;
+}
+
+bool Terrain::LoadPaint(const std::string& path, std::string& error)
+{
+	int width = 0, height = 0, channels = 0;
+	unsigned char* image = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);   // always 4 channels
+	if (!image) {
+		error = "the image could not be read";
+		return false;
+	}
+	if (paint_.IsEmpty() || width != paint_.width || height != paint_.height) {
+		error = "the image is " + std::to_string(width) + " x " + std::to_string(height) + " but this terrain's grid is " +
+				std::to_string(paint_.width) + " x " + std::to_string(paint_.height);
+		stbi_image_free(image);
+		return false;
+	}
+	PaintFromBytes(image, width, height, paint_);
+	stbi_image_free(image);
+	painted_ = true;
+	paintStroke_.Clear();
+	paintStrokeActive_ = false;
+	RefreshSplatAll();
+	return true;
+}
+
 void Terrain::RefreshSplat(const GridRect& cells)
 {
 	if (cells.IsEmpty() || splat_.IsEmpty() || !splatTexture_ || heightfield_.IsEmpty() || !device_) return;
 	if (std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.y) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return;   // a collapsed terrain has no slope to measure
 	BakeSplat(heightfield_, CurrentSplatRules(), CurrentSplatPlacement(), cells, splat_);
+	ApplyPaint(paint_, cells, splat_);   // the baking just overwrote those texels with the rules: lay the paint back over them (lesson 30)
 
 	// Upload only the block that was re-baked (the same clamping BakeSplat did).
 	const int x0 = (std::max)(cells.x0, 0), z0 = (std::max)(cells.z0, 0);

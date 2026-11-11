@@ -45,6 +45,10 @@ struct SplatMap {
     void Resize(int w, int h) { width = w; height = h; rgba.assign(static_cast<size_t>(w) * h * kSplatChannels, 0); }
 };
 
+// Four weights that add up to 1 -> four bytes that add up to EXACTLY 255 (the largest channel absorbs the rounding).
+// The bake uses it, and so does the paint overlay (lesson 30), so a painted texel obeys the same rule.
+void QuantiseSplat(const float weights[kSplatChannels], std::uint8_t* out);
+
 // The block of texels (cells) whose weights can change when the samples in `editedSamples` change: a cell reads its four
 // corner samples AND the neighbours those corners read for their normals, which is two samples further out on the low
 // side and one on the high side. Clamped to the map.

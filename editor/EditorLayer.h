@@ -98,6 +98,9 @@ private:
     void FinishSculptStroke(Terrain* terrain);                    // the mouse button came up: one undo step
     void RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch patch);
     void DiscardSculpt(Terrain* terrain);                         // back to the heightmap and noise (undoable)
+    // --- terrain painting (lesson 30): the same brush tool, aimed at the layers instead of the heights ---
+    void RecordPaintStroke(SceneObjectId terrainId, HeightfieldPatch patch);
+    void ClearPaint(Terrain* terrain);                            // back to the automatic rules (undoable)
     void DrawHistoryPanel();
     void HandleSceneFileRequests(LayerContext& ctx);
     void HandleTerrainFileRequest(LayerContext& ctx);
@@ -127,6 +130,10 @@ private:
     bool sculptMode_ = false;       // left-drag on the terrain shapes it instead of selecting
     bool sculptStroking_ = false;   // a stroke is in progress (the button went down on the terrain)
     BrushSettings brush_;           // brush_.radius is in WORLD units here; Terrain::Sculpt converts it
+    int brushTarget_ = 0;           // what the brush changes: 0 = the shape of the ground, 1 = its painted layers
+    int brushLayer_ = 0;            // the layer being painted (0 grass, 1 rock, 2 sand, 3 snow)
+    bool brushErase_ = false;       // painting: take paint away instead (Shift flips this while you drag)
+    bool strokeIsPaint_ = false;    // the stroke in progress is a paint stroke (fixed when it began)
     bool viewportFocused_ = false;
     bool hierarchyFocused_ = false;
     bool addCubeRequested_ = false;

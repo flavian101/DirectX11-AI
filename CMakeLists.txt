@@ -83,6 +83,7 @@ add_library(Engine STATIC
 	src/Heightfield.cpp
 	src/HeightfieldEdit.cpp
 	src/TerrainSplat.cpp
+	src/TerrainPaint.cpp
 	src/Png16.cpp
 	src/Water.cpp
 	src/Skybox.cpp
@@ -151,6 +152,11 @@ if(BUILD_TESTS)
     find_package(Threads REQUIRED)
     target_link_libraries(TerrainSplatTests PRIVATE Threads::Threads)
     add_test(NAME TerrainSplat COMMAND TerrainSplatTests)
+    # Painted layers (lesson 30): the brush, the overlay on the baked splat, undo patches, saving.
+    add_executable(TerrainPaintTests tests/terrain_paint_test.cpp src/TerrainPaint.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
+    target_include_directories(TerrainPaintTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(TerrainPaintTests PRIVATE Threads::Threads)   # TerrainSplat.cpp bakes on several threads
+    add_test(NAME TerrainPaint COMMAND TerrainPaintTests)
     add_executable(Png16Tests tests/png16_test.cpp src/Png16.cpp src/libs/stb_image.cpp)
     target_include_directories(Png16Tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME Png16 COMMAND Png16Tests)

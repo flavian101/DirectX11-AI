@@ -418,11 +418,11 @@ void EditorLayer::DrawViewportToolbar()
         // Read the mode ONCE, before the click. The click flips sculptMode_, and a push and its pop must agree on it.
         const bool sculptWasOn = sculptMode_;
         if (sculptWasOn) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-        if (ImGui::Button("Sculpt [4]")) ToggleSculptMode();
+        if (ImGui::Button("Brush [4]")) ToggleSculptMode();
         if (sculptWasOn) ImGui::PopStyleColor();
         ImGui::SameLine();
     }
-    ImGui::TextDisabled("%s", sculptMode_ ? "Left-drag sculpts  |  Shift inverts  |  [ ] radius  |  Esc leaves"
+    ImGui::TextDisabled("%s", sculptMode_ ? "Left-drag brushes  |  Shift inverts  |  [ ] radius  |  Esc leaves"
                                           : "Hold Ctrl to snap  |  F frame  |  Del delete  |  Ctrl+D duplicate");
 }
 
@@ -545,19 +545,35 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
                               sculptTerrain->Raycast(MakePickRay(view, projection, ndcX, ndcY), distance, &point);
 
         if (viewportHovered_ && onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            sculptTerrain->BeginSculptStroke();
+            strokeIsPaint_ = (brushTarget_ == 1);   // fixed for the whole stroke, even if the target is changed meanwhile
+            if (strokeIsPaint_) {
+                sculptTerrain->BeginPaintStroke();
+            } else {
+                sculptTerrain->BeginSculptStroke();
+                float level = 0.0f;   // Flatten levels the ground towards the height where the stroke began
+                if (sculptTerrain->SampleNormalizedHeight(point.x, point.z, level)) brush_.targetHeight = level;
+            }
             sculptStroking_ = true;
-            float level = 0.0f;   // Flatten levels the ground towards the height where the stroke began
-            if (sculptTerrain->SampleNormalizedHeight(point.x, point.z, level)) brush_.targetHeight = level;
         }
         if (sculptStroking_) {
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                 if (onGround) {
-                    BrushSettings step = brush_;
-                    if (io.KeyShift && step.mode == BrushMode::Raise) step.mode = BrushMode::Lower;
-                    else if (io.KeyShift && step.mode == BrushMode::Lower) step.mode = BrushMode::Raise;
                     // A long frame (a hitch, a breakpoint) must not make the ground lurch: cap the step.
-                    sculptTerrain->Sculpt(step, point.x, point.z, (std::min)(io.DeltaTime, 0.05f));
+                    const float seconds = (std::min)(io.DeltaTime, 0.05f);
+                    if (strokeIsPaint_) {
+                        PaintBrush paint;
+                        paint.layer = brushLayer_;
+                        paint.erase = (brushErase_ != io.KeyShift);   // Shift flips paint and erase
+                        paint.radius = brush_.radius;
+                        paint.strength = brush_.strength;
+                        paint.falloff = brush_.falloff;
+                        sculptTerrain->Paint(paint, point.x, point.z, seconds);
+                    } else {
+                        BrushSettings step = brush_;
+                        if (io.KeyShift && step.mode == BrushMode::Raise) step.mode = BrushMode::Lower;
+                        else if (io.KeyShift && step.mode == BrushMode::Lower) step.mode = BrushMode::Raise;
+                        sculptTerrain->Sculpt(step, point.x, point.z, seconds);
+                    }
                 }
             } else {
                 FinishSculptStroke(sculptTerrain);
@@ -565,8 +581,9 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
         }
         if (onGround) {
             ImGui::GetWindowDrawList()->PushClipRect(ImVec2(x, y), ImVec2(x + width, y + height), true);
+            const bool paintBrush = sculptStroking_ ? strokeIsPaint_ : (brushTarget_ == 1);   // yellow = shape, blue = paint
             DrawBrushRing(ImGui::GetWindowDrawList(), *sculptTerrain, point.x, point.z, brush_.radius, view, projection,
-                          x, y, width, height, IM_COL32(255, 220, 80, 255));
+                          x, y, width, height, paintBrush ? IM_COL32(90, 200, 255, 255) : IM_COL32(255, 220, 80, 255));
             ImGui::GetWindowDrawList()->PopClipRect();
         }
     }
@@ -1625,8 +1642,13 @@ void EditorLayer::FinishSculptStroke(Terrain* terrain)
 {
     sculptStroking_ = false;
     if (!terrain) return;
-    HeightfieldPatch patch = terrain->EndSculptStroke();
-    if (!patch.IsEmpty()) RecordSculptStroke(terrain->GetId(), std::move(patch));
+    if (strokeIsPaint_) {
+        HeightfieldPatch patch = terrain->EndPaintStroke();
+        if (!patch.IsEmpty()) RecordPaintStroke(terrain->GetId(), std::move(patch));
+    } else {
+        HeightfieldPatch patch = terrain->EndSculptStroke();
+        if (!patch.IsEmpty()) RecordSculptStroke(terrain->GetId(), std::move(patch));
+    }
 }
 
 void EditorLayer::RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch patch)
@@ -1657,25 +1679,72 @@ void EditorLayer::DiscardSculpt(Terrain* terrain)
                                                   [replace, after]() { replace(after, false); }));
 }
 
+void EditorLayer::RecordPaintStroke(SceneObjectId terrainId, HeightfieldPatch patch)
+{
+    // Same shape as a sculpt stroke: the command holds the patch and finds the terrain by id.
+    const auto shared = std::make_shared<HeightfieldPatch>(std::move(patch));
+    auto run = [this, terrainId, shared](bool redo) {
+        if (!scene_) return;
+        if (auto* terrain = dynamic_cast<Terrain*>(scene_->Find(terrainId))) terrain->ApplyPaintPatch(*shared, redo);
+    };
+    history_.Push(std::make_unique<LambdaCommand>("Paint terrain", [run]() { run(false); }, [run]() { run(true); }));
+}
+
+void EditorLayer::ClearPaint(Terrain* terrain)
+{
+    if (!terrain || terrain->GetPaintMap().IsEmpty()) return;
+    const auto before = std::make_shared<std::vector<float>>(terrain->GetPaintMap().weights);
+    const auto after = std::make_shared<std::vector<float>>(before->size(), 0.0f);   // nothing painted: the rules rule again
+    if (!terrain->ReplacePaint(*after, false)) return;
+
+    const SceneObjectId id = terrain->GetId();
+    auto replace = [this, id](const std::shared_ptr<std::vector<float>>& weights, bool painted) {
+        if (!scene_) return;
+        if (auto* target = dynamic_cast<Terrain*>(scene_->Find(id))) target->ReplacePaint(*weights, painted);
+    };
+    history_.Push(std::make_unique<LambdaCommand>("Clear painting", [replace, before]() { replace(before, true); },
+                                                  [replace, after]() { replace(after, false); }));
+}
+
 void EditorLayer::DrawSculptSection(Terrain* terrain)
 {
     // ImGui tells widgets apart by their label, and the noise section below also has a "Strength" slider. Without
     // its own ID scope the two would be ONE widget: dragging either would move both.
     ImGui::PushID("sculpt");
-    ImGui::SeparatorText("Sculpt");
-    ImGui::Checkbox("Sculpt mode  [4]", &sculptMode_);
-    ImGui::SetItemTooltip("Left-drag on the terrain to shape it.\nShift flips Raise and Lower.  [ and ] change the radius.");
+    ImGui::SeparatorText("Brush");
+    ImGui::Checkbox("Brush mode  [4]", &sculptMode_);
+    ImGui::SetItemTooltip("Left-drag on the terrain to use the brush.\nShift inverts it.  [ and ] change the radius.");
 
-    int mode = static_cast<int>(brush_.mode);
-    ImGui::RadioButton("Raise", &mode, 0);
+    // What the brush changes: the SHAPE of the ground, or what it is MADE OF.
+    ImGui::RadioButton("Shape", &brushTarget_, 0);
     ImGui::SameLine();
-    ImGui::RadioButton("Lower", &mode, 1);
-    ImGui::SameLine();
-    ImGui::RadioButton("Smooth", &mode, 2);
-    ImGui::SameLine();
-    ImGui::RadioButton("Flatten", &mode, 3);
-    ImGui::SetItemTooltip("Flatten levels the ground towards the height where the stroke began.");
-    brush_.mode = static_cast<BrushMode>(mode);
+    ImGui::RadioButton("Paint layers", &brushTarget_, 1);
+    ImGui::SetItemTooltip("Shape raises and lowers the ground. Paint layers overrules the automatic slope and height rules.");
+
+    if (brushTarget_ == 0) {
+        int mode = static_cast<int>(brush_.mode);
+        ImGui::RadioButton("Raise", &mode, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("Lower", &mode, 1);
+        ImGui::SameLine();
+        ImGui::RadioButton("Smooth", &mode, 2);
+        ImGui::SameLine();
+        ImGui::RadioButton("Flatten", &mode, 3);
+        ImGui::SetItemTooltip("Flatten levels the ground towards the height where the stroke began.");
+        brush_.mode = static_cast<BrushMode>(mode);
+    } else {
+        // One button per layer; the chosen one is highlighted. As with every push/pop: decide from `chosen`, which is
+        // read BEFORE the click can change brushLayer_.
+        for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+            if (layer > 0) ImGui::SameLine();
+            const bool chosen = (brushLayer_ == layer);
+            if (chosen) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            if (ImGui::Button(kTerrainLayerNames[layer])) brushLayer_ = layer;
+            if (chosen) ImGui::PopStyleColor();
+        }
+        ImGui::Checkbox("Erase", &brushErase_);
+        ImGui::SetItemTooltip("Erase takes painted layers away, and the automatic rules come back.\nShift flips paint and erase while you drag.");
+    }
     ImGui::SliderFloat("Radius", &brush_.radius, kBrushRadiusMin, kBrushRadiusMax, "%.1f", ImGuiSliderFlags_Logarithmic);
     ImGui::SliderFloat("Strength", &brush_.strength, 0.02f, 1.0f, "%.2f");
     ImGui::SliderFloat("Falloff", &brush_.falloff, 0.0f, 1.0f, "%.2f");
@@ -1686,6 +1755,12 @@ void EditorLayer::DrawSculptSection(Terrain* terrain)
         ImGui::TextDisabled("Mesh resolution, noise and the heightmap are locked until you discard.");
         if (ImGui::Button("Discard sculpting")) DiscardSculpt(terrain);
         ImGui::SetItemTooltip("Go back to the heightmap and noise. Undo brings the sculpting back.");
+    }
+    if (terrain->IsPainted()) {
+        ImGui::TextDisabled("Painted by hand. Saved next to the scene file as a PNG.");
+        ImGui::TextDisabled("Mesh resolution and the heightmap are locked until you clear the painting.");
+        if (ImGui::Button("Clear painting")) ClearPaint(terrain);
+        ImGui::SetItemTooltip("Back to the automatic rules everywhere. Undo brings the painting back.");
     }
     ImGui::PopID();
 }
@@ -1725,10 +1800,12 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
     ImGui::SliderFloat("Height scale", &s.heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax, "%.0f m");
     commitOnRelease();
     ImGui::SetItemTooltip("How tall a white heightmap pixel is, in metres.");
-    ImGui::BeginDisabled(terrain->IsSculpted());   // a sculpt replaces what these make, so they are locked (see Sculpt)
+    // A different grid would lose both a sculpt and a painting, so the grid-defining controls lock for either.
+    ImGui::BeginDisabled(terrain->IsSculpted() || terrain->IsPainted());
     ImGui::SliderInt("Mesh resolution", &s.maxCells, TerrainSettings::kCellsMin, TerrainSettings::kCellsMax);
     commitOnRelease();
     ImGui::SetItemTooltip("Grid cells across the terrain. Higher = smoother and slower to rebuild.");
+    ImGui::EndDisabled();
     {
         const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();   // includes the transform's scale
         const int cellsX = terrain->GetHeightfield().GetLayout().cellsX;
@@ -1737,6 +1814,7 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
     }
 
     ImGui::SeparatorText("Noise");
+    ImGui::BeginDisabled(terrain->IsSculpted());   // noise makes the heights, which a sculpt replaces (a painting does not mind)
     ImGui::SliderFloat("Strength", &s.noiseStrength, 0.0f, 1.0f, "%.3f");
     commitOnRelease();
     ImGui::SliderFloat("Scale", &s.noiseScale, TerrainSettings::kNoiseScaleMin, TerrainSettings::kNoiseScaleMax, "%.2f");
@@ -1799,7 +1877,7 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
             }
             ImGui::EndTable();
         }
-        ImGui::BeginDisabled(terrain->IsSculpted());   // a new heightmap would throw the sculpting away
+        ImGui::BeginDisabled(terrain->IsSculpted() || terrain->IsPainted());   // a new heightmap could change the grid, losing a sculpt or a painting
         ImGui::TextUnformatted("Heightmap");
         ImGui::SameLine(90.0f);
         const int heightResult = fileButton("heightmap", terrain->GetHeightmapPath(), Terrain::DefaultHeightmapPath(), 160.0f);

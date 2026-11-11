@@ -52,6 +52,9 @@ public:
     void Remember(int index, float valueBeforeTheStroke);
     // The finished stroke. Samples that ended up where they started (raised, then lowered again) are left out.
     HeightfieldPatch Finish(const Heightfield& field) const;
+    // The same for any flat array of values: the paint map (lesson 30) keeps four floats per texel, and a patch's
+    // "index" is then texel * 4 + channel.
+    HeightfieldPatch Finish(const std::vector<float>& currentValues) const;
 
 private:
     std::unordered_map<int, float> before_;
