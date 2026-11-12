@@ -5,6 +5,7 @@
 #include <dxgi.h>
 #include "Logger.h"
 #include "DepthTarget.h"
+#include "GpuTimer.h"
 #include "PostProcess.h"
 #include "RenderTarget.h"
 #include "Scene.h"
@@ -38,6 +39,9 @@ public:
     bool IsViewOffscreen() const { return m_viewOffscreen; }
     // The finished (tone-mapped) view, or null while drawing straight to the window.
     ID3D11ShaderResourceView* GetViewTexture() const { return m_viewColor.IsValid() ? m_viewColor.GetShaderView() : nullptr; }
+
+    // How long the GPU spent on each pass of recent frames (smoothed). `valid` is false until the first result arrives.
+    const GpuTimings& GetGpuTimings() const { return m_gpuTimer.GetTimings(); }
 
     ID3D11Device* GetDevice() const { return m_device; }
     ID3D11DeviceContext* GetContext() const { return m_context; }
@@ -75,4 +79,5 @@ private:
     DepthTarget m_reflectionDepth[WaterFramePlan::kMaxReflections];
     ID3D11SamplerState* m_clampSampler = nullptr;   // bound to s2: linear filtering, edges clamp
     PostProcess m_post;          // full-screen passes: HDR buffer -> back buffer
+    GpuTimer m_gpuTimer;         // GPU time per pass (timestamp queries); optional, the renderer works without it
 };

@@ -1,4 +1,5 @@
 ﻿#include "Scene.h"
+#include "ModelObject.h"
 #include "Cube.h"
 #include "Logger.h"
 #include "ScatterObject.h"
@@ -149,6 +150,13 @@ void Scene::Update(float dt)
 {
     time_ += dt;
     for (auto& obj : objects_) if (obj) obj->Update(dt);
+    // Floating models read the water under them (the highest body that covers their spot) and follow its waves.
+    for (auto& obj : objects_) {
+        auto* model = dynamic_cast<ModelObject*>(obj.get());
+        if (!model || !model->GetFloatingSettings().enabled) continue;
+        const DirectX::XMFLOAT3 anchor = model->GetFloatAnchor();
+        model->StepFloating(FindWaterAt(anchor.x, 1.0e5f, anchor.z), time_, dt);
+    }
     // Every water body measures the terrain under it (only when something changed: this is a cheap comparison otherwise).
     const Terrain* terrain = GetTerrain();
     for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) water->RefreshShoreDepth(terrain);
@@ -296,7 +304,9 @@ void Scene::PlanWater(WaterFramePlan& plan) const
     std::vector<Wanting> wanting;
     for (const auto& object : objects_) {
         const Water* water = dynamic_cast<const Water*>(object.get());
-        if (!water || !water->IsVisible(frustum)) continue;   // off screen: its mirror would never be seen
+        // Off screen, or only the parts hidden under dry ground are in view: its mirror would never be seen. (A mirror image
+        // is a whole extra draw of the scene, so this is the question that decides whether the frame pays for it.)
+        if (!water || !water->IsWetVisible(frustum)) continue;
         const WaterSettings& settings = water->GetSettings();
         plan.entries.push_back({ water, -1 });
         // From below the surface the water is culled: nothing to mirror or to bend.
@@ -399,6 +409,8 @@ void Scene::RenderReflection(ID3D11DeviceContext* ctx, float planeHeight,
 
     RenderView reflectionView;
     reflectionView.kind = ViewKind::Reflection;
+    reflectionView.clipBelow = true;        // the clip plane drops everything under the water: do not even draw wholly-submerged things
+    reflectionView.clipBelowY = planeHeight;
     XMFLOAT4X4 mirroredViewProj;
     XMStoreFloat4x4(&mirroredViewProj, XMLoadFloat4x4(&frame.view) * XMLoadFloat4x4(&frame.proj));
     reflectionView.frustum = Frustum::FromViewProj(mirroredViewProj);
@@ -407,6 +419,11 @@ void Scene::RenderReflection(ID3D11DeviceContext* ctx, float planeHeight,
 
     // Sky + solid objects only. The water itself (transparent) must not appear in its own mirror.
     RenderPhase(ctx, ScenePhase::Opaque, reflectionView);
+}
+
+void Scene::RenderHullMasks(ID3D11DeviceContext* ctx, const RenderView& view) const
+{
+    for (const auto& obj : objects_) if (const auto* model = dynamic_cast<const ModelObject*>(obj.get())) model->RenderHullMask(ctx, view);
 }
 
 void Scene::RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase, const RenderView& view) const

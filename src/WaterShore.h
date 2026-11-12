@@ -72,6 +72,24 @@ public:
 		return a + (b - a) * tz;
 	}
 
+	// The DEEPEST (largest) value in a rectangle of the map, in LOCAL coordinates (-1..1). Every texel the rectangle touches
+	// counts, plus one texel of border all round (a bilinear read near the edge also mixes in its neighbour), so the answer
+	// is never smaller than what Sample() could return anywhere inside the rectangle. Used to ask "is any of this tile wet?".
+	float MaxDepthIn(float localMinX, float localMaxX, float localMinZ, float localMaxZ) const
+	{
+		if (depth_.empty()) return kDeepWater;
+		auto toTexel = [](float local, int count) { return std::clamp(local * 0.5f + 0.5f, 0.0f, 1.0f) * static_cast<float>(count); };
+		const int x0 = std::clamp(static_cast<int>(std::floor(toTexel(localMinX, width_))) - 1, 0, width_ - 1);
+		const int x1 = std::clamp(static_cast<int>(std::floor(toTexel(localMaxX, width_))) + 1, 0, width_ - 1);
+		const int z0 = std::clamp(static_cast<int>(std::floor(toTexel(localMinZ, height_))) - 1, 0, height_ - 1);
+		const int z1 = std::clamp(static_cast<int>(std::floor(toTexel(localMaxZ, height_))) + 1, 0, height_ - 1);
+		float deepest = -1.0e30f;
+		for (int z = z0; z <= z1; ++z)
+			for (int x = x0; x <= x1; ++x)
+				deepest = std::max(deepest, depth_[static_cast<size_t>(z) * width_ + x]);
+		return deepest;
+	}
+
 private:
 	int width_ = 0;
 	int height_ = 0;

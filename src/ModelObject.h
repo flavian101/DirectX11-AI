@@ -1,4 +1,6 @@
 #pragma once
+#include "Buoyancy.h"
+#include "HullMask.h"
 #include "LodSelect.h"
 #include "ModelImporter.h"
 #include "Renderable.h"
@@ -6,12 +8,15 @@
 #include "SurfaceMaterial.h"
 #include <DirectXMath.h>
 #include <array>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
 
 // One SurfaceMaterial built from an imported material: its textures, colour factors, roughness and metallic. Shared by
 // ModelObject and ScatterObject, so a tree looks the same whether you placed it by hand or scattered a thousand of it.
+class Water;
+
 std::unique_ptr<SurfaceMaterial> BuildSurfaceMaterial(ID3D11Device* device, const ImportedModel& model, const ImportedMaterial& source);
 
 // How a model is culled and simplified while it is drawn (lesson 31). Saved with the scene.
@@ -24,6 +29,22 @@ struct ModelRenderSettings {
 
     static constexpr float kBiasMin = 0.25f, kBiasMax = 4.0f;
     void Clamp();                 // keeps the thresholds in order (biggest first) and in range
+};
+
+// A model that floats (lesson 33): it rides the water under it, and can hide the water inside its hull. Saved with the scene.
+// Lengths are fractions of the model's height (or of the hull's beam), so they stay right when the model is scaled.
+struct FloatingSettings {
+    bool enabled = false;          // ride the water: height and lean follow the waves under the model
+    float draft = 0.15f;           // how deep the keel (the model's bottom) sits below the surface, as a fraction of the model's height
+    float responsiveness = 3.0f;   // how stiff the spring is that follows the water (per second): high = stiff, low = lazy
+    float damping = 0.6f;          // 1 = no bounce; lower = it overshoots and rocks a little
+    float tilt = 1.0f;             // 0 = always level, 1 = leans fully with the waves
+    bool hullMask = false;         // hide the water inside the hull (a lid written into the depth buffer, see HullMask.h)
+    int maskPart = -1;             // which part's outline is the hull: -1 = the part with the biggest outline
+    float maskHeight = -1.0f;      // lid height as a fraction of the model's height; negative = just under the hull part's top
+    float maskInset = 0.03f;       // how far the lid is kept in from the outline, as a fraction of the hull's width
+
+    void Clamp();
 };
 
 // What one view (camera / mirror / sun) drew of a model last frame - shown in the editor.
@@ -58,6 +79,22 @@ public:
     void Update(float) override {}
     void Render(ID3D11DeviceContext* ctx, const RenderView& view) const override;
 
+    // --- floating (lesson 33) ---
+    const FloatingSettings& GetFloatingSettings() const { return floating_; }
+    void SetFloatingSettings(FloatingSettings settings);
+    // World position of the model's base centre: where to look for the water under it.
+    DirectX::XMFLOAT3 GetFloatAnchor() const { return position_; }
+    // One step of the floating spring. `water` is the body under the model (null: there is none, so it stays where it is).
+    // `time` is the scene clock, so the waves read here are the waves on screen. Does nothing unless floating is enabled.
+    void StepFloating(const Water* water, float time, float dt);
+    // Writes the hull's lid into the DEPTH buffer (no colour), so the water drawn after it is hidden inside the hull.
+    // Called by the scene after the opaque phase, before the water.
+    void RenderHullMask(ID3D11DeviceContext* ctx, const RenderView& view) const;
+    // For the Inspector.
+    const std::string& GetPartName(size_t index) const { return parts_[index].name; }
+    int GetAutoHullPart() const { return autoHullPart_; }
+    float GetModelHeight() const { return (boundsMax_.y - boundsMin_.y) * std::fabs(scale_.y); }   // in world units
+
     bool IsValid() const { return !parts_.empty(); }
     // Scales the model uniformly so its longest side is `size` world units. (Files come in any unit:
     // a castle may be 0.01 or 500 units wide.)
@@ -82,6 +119,9 @@ public:
 
 private:
     struct Part {
+        std::string name;                     // from the file: lets the Inspector offer "which part is the hull"
+        std::vector<HullMask::Point2> footprint;   // the part seen from above (x, z), its convex outline, model space
+        float footprintArea = 0.0f;
         std::unique_ptr<Renderable> renderable;
         int material = 0;
         bool doubleSided = false;
@@ -99,6 +139,8 @@ private:
     // shader, or null for the normal lit draw.
     void DrawParts(ID3D11DeviceContext* ctx, const Shader* shader, const RenderView& view) const;
     ID3D11RasterizerState* GetCullNone() const;
+    int ResolveMaskPart() const;                       // the part whose outline is the hull, or -1
+    void EnsureHullMask(int part) const;               // (re)builds the lid when its settings changed
 
     ID3D11Device* device_ = nullptr;
     std::string displayName_;
@@ -108,6 +150,18 @@ private:
     std::vector<std::string> materialNames_;
     std::uint32_t triangleCount_ = 0;
     mutable ID3D11RasterizerState* cullNone_ = nullptr;      // for double-sided materials; created on first use
+
+    // Floating (lesson 33).
+    FloatingSettings floating_;
+    int autoHullPart_ = -1;                       // the part with the biggest outline seen from above
+    bool floatReady_ = false;                     // false until the first step: then the springs start AT the water, not at the author's height
+    Buoyancy::Spring floatHeave_;                 // world height of the keel
+    Buoyancy::Spring floatSlopeX_, floatSlopeZ_;  // how the surface leans under the hull (world x and z)
+    // The lid: a flat fan over the hull's outline, in model space, drawn depth-only. Rebuilt when its key changes.
+    mutable std::unique_ptr<Renderable> maskRenderable_;
+    mutable float maskKey_[3] = { -1.0f, -1.0f, -1.0f };   // part, lid height, inset that the current lid was built with
+    mutable ID3D11BlendState* maskBlend_ = nullptr;        // writes no colour
+    mutable ID3D11DepthStencilState* maskDepth_ = nullptr; // tests and WRITES depth
 
     // Model space: the box around everything, and the pivot (bottom centre) that scale/rotation act around.
     DirectX::XMFLOAT3 boundsMin_ = {}, boundsMax_ = {};

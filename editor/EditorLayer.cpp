@@ -181,6 +181,7 @@ void EditorLayer::OnFrame(LayerContext& ctx)
 {
     if (!attached_) return;
     scene_ = &ctx.scene;
+    gpuTimings_ = ctx.renderer.GetGpuTimings();
 
     // Record whatever the user finished editing in the previous frame, BEFORE this frame's actions change anything.
     TrackEdits(ctx);
@@ -1389,6 +1390,50 @@ void EditorLayer::DrawModelInspector(ModelObject* model)
         ImGui::TextDisabled("Parts per level: %d / %d / %d / %d", camera.partsPerLod[0], camera.partsPerLod[1], camera.partsPerLod[2], camera.partsPerLod[3]);
     }
 
+    // Floating on water, and hiding the water inside the hull (lesson 33).
+    ImGui::SeparatorText("Floating");
+    FloatingSettings floating = model->GetFloatingSettings();
+    bool floatChanged = false;
+    floatChanged |= ImGui::Checkbox("Float on water", &floating.enabled);
+    ImGui::SetItemTooltip("The model rides the highest water body under it: it rises, falls and leans with the waves.\nIts height is then set by the water and the draft, not by the gizmo.");
+    if (floating.enabled) {
+        floatChanged |= ImGui::SliderFloat("Draft", &floating.draft, 0.0f, 0.9f, "%.2f of height");
+        ImGui::SetItemTooltip("How deep the bottom of the model sits below the surface, as a fraction of its height.\nNow %.2f world units.", floating.draft * model->GetModelHeight());
+        floatChanged |= ImGui::SliderFloat("Responsiveness", &floating.responsiveness, 0.3f, 20.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("How stiffly it follows the water. Low = a heavy, lazy boat; high = it sticks to the surface.");
+        floatChanged |= ImGui::SliderFloat("Damping", &floating.damping, 0.1f, 1.5f, "%.2f");
+        ImGui::SetItemTooltip("1 = settles without bouncing. Lower = it overshoots and rocks a little before settling.");
+        floatChanged |= ImGui::SliderFloat("Lean", &floating.tilt, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("0 = stays level; 1 = pitches and rolls fully with the waves.");
+    }
+    floatChanged |= ImGui::Checkbox("Hide water inside hull", &floating.hullMask);
+    ImGui::SetItemTooltip("Writes a lid over the inside of the hull into the depth buffer before the water is drawn,\nso the waves do not show inside the boat. Needs an open hull with a visible rim.");
+    if (floating.hullMask) {
+        const int autoPart = model->GetAutoHullPart();
+        const int shown = floating.maskPart >= 0 ? floating.maskPart : autoPart;
+        const std::string preview = shown >= 0 ? model->GetPartName(static_cast<size_t>(shown)) + (floating.maskPart < 0 ? " (auto)" : "") : "none found";
+        if (ImGui::BeginCombo("Hull part", preview.c_str())) {
+            if (ImGui::Selectable("Auto (biggest outline)", floating.maskPart < 0)) { floating.maskPart = -1; floatChanged = true; }
+            for (size_t i = 0; i < model->GetPartCount(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                const std::string label = std::to_string(i) + ": " + model->GetPartName(i);
+                if (ImGui::Selectable(label.c_str(), floating.maskPart == static_cast<int>(i))) { floating.maskPart = static_cast<int>(i); floatChanged = true; }
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("The part whose outline (seen from above) is the hull. Oars and masts have thin outlines, so\nAuto normally finds the hull; pick it by hand if a rail or a deck is chosen instead.");
+        bool autoHeight = floating.maskHeight < 0.0f;
+        if (ImGui::Checkbox("Auto lid height", &autoHeight)) { floating.maskHeight = autoHeight ? -1.0f : 0.8f; floatChanged = true; }
+        if (!autoHeight) {
+            floatChanged |= ImGui::SliderFloat("Lid height", &floating.maskHeight, 0.0f, 1.5f, "%.2f of height");
+            ImGui::SetItemTooltip("The lid must sit ABOVE the water inside the hull and NOT above the rim:\nhigher than the rim and it hides water behind the boat too.");
+        }
+        floatChanged |= ImGui::SliderFloat("Lid inset", &floating.maskInset, 0.0f, 0.4f, "%.3f of width");
+        ImGui::SetItemTooltip("How far the lid is kept inside the hull's outline. Too small: the lid pokes through the walls\nand cuts a hole in the water beside the boat. Too large: a ring of water shows inside the rim.");
+    }
+    if (floatChanged) model->SetFloatingSettings(floating);
+
     for (size_t i = 0; i < model->GetMaterialCount(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         if (ImGui::TreeNode(model->GetMaterialName(i).c_str())) {
@@ -2336,6 +2381,14 @@ void EditorLayer::DrawWaterInspector(Water* water)
                 if (stats.tilesDrawn == 0) ImGui::TextDisabled("Mirror: not on screen");
                 else if (stats.reflectionSlot >= 0) ImGui::TextDisabled("Mirror: planar image %d (bodies at this level share it)", stats.reflectionSlot + 1);
                 else ImGui::TextDisabled("Mirror: sky only (over the budget of %d planar images, or camera below)", WaterFramePlan::kMaxReflections);
+            }
+            if (stats.tilesDry > 0) ImGui::TextDisabled("%d tiles skipped: under dry ground", stats.tilesDry);
+            if (gpuTimings_.valid) {
+                using P = GpuPass;
+                const float* ms = gpuTimings_.ms;
+                ImGui::TextDisabled("GPU ms: shadows %.2f  mirrors %.2f  opaque %.2f  water %.2f  post %.2f  (frame %.2f)",
+                                    ms[static_cast<int>(P::Shadows)], ms[static_cast<int>(P::Reflections)], ms[static_cast<int>(P::Opaque)],
+                                    ms[static_cast<int>(P::Water)], ms[static_cast<int>(P::PostProcess)], ms[static_cast<int>(P::Total)]);
             }
             ImGui::TreePop();
         }

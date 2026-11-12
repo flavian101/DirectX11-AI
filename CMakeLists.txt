@@ -65,6 +65,7 @@ option(BUILD_EDITOR "Build the editor executable (needs extern/imgui on its dock
 add_library(Engine STATIC
 	src/Window.cpp
 	src/Direct3D11Renderer.cpp
+	src/GpuTimer.cpp
 	src/Logger.cpp
 	src/Shader.cpp
 	src/Model.cpp
@@ -152,6 +153,9 @@ if(BUILD_TESTS)
     add_executable(WaterTests tests/water_test.cpp)
     target_include_directories(WaterTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME Water COMMAND WaterTests)
+    add_executable(BuoyancyTests tests/buoyancy_test.cpp)
+    target_include_directories(BuoyancyTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME Buoyancy COMMAND BuoyancyTests)
     add_executable(ProjectTests tests/project_test.cpp src/Project.cpp)
     target_include_directories(ProjectTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(ProjectTests PRIVATE nlohmann_json::nlohmann_json)

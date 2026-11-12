@@ -116,6 +116,9 @@ public:
     float GetTime() const { return time_; }
     void RenderReflection(ID3D11DeviceContext* ctx, float planeHeight, UINT targetWidth, UINT targetHeight) const;
     void RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase, const RenderView& view) const;
+    // Floating models write the lid of their hull into the depth buffer (colour untouched). Call after the opaque phase and
+    // before the water, so the water is not drawn inside a boat.
+    void RenderHullMasks(ID3D11DeviceContext* ctx, const RenderView& view) const;
     RenderView GetMainView() const;   // the camera's view: its frustum and position
     ShadowMap& GetShadowMap() { return *shadow_; }
     const ShadowMap& GetShadowMap() const { return *shadow_; }

@@ -109,6 +109,7 @@ bool Direct3D11Renderer::Init()
         Release();
         return false;
     }
+    if (!m_gpuTimer.Initialize(m_device)) LOG_WARNING("GPU timestamp queries unavailable: no per-pass GPU times");
 
     m_context->OMSetDepthStencilState(m_depthState, 0);
     BindBackBuffer();
@@ -304,6 +305,9 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
     // Lights first: both passes below read them.
     scene.GetLightSystem().Apply(m_context, scene.GetCamera().GetPosition());
 
+    m_gpuTimer.BeginFrame(m_context);
+    m_gpuTimer.Mark(m_context, GpuPass::Shadows);
+
     // PASS 1 - depth from the sun's point of view, into the shadow map.
     scene.RenderShadows(m_context);
 
@@ -320,6 +324,7 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
     WaterFramePlan waterPlan;
     scene.PlanWater(waterPlan);
 
+    m_gpuTimer.Mark(m_context, GpuPass::Reflections);
     // PASS 2 - the scene seen in the water: drawn from a camera mirrored below each water LEVEL that wants one.
     // Bodies at the same level share an image; a budget caps how many are drawn (see Scene::PlanWater).
     bool reflectionReady = false;
@@ -345,6 +350,7 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
 
     // PASS 3 - the camera's view into the HDR scene buffer (NOT the window any more).
     // OPAQUE phase first: sky, terrain, cube - everything that writes depth.
+    m_gpuTimer.Mark(m_context, GpuPass::Opaque);
     BindSceneTarget(false);
     m_hdrScene.Clear(m_context, clearColor);
     m_sceneDepth.Clear(m_context);
@@ -352,10 +358,12 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
     RenderView mainView = scene.GetMainView();   // the camera's frustum, for culling
     mainView.waterPlan = &waterPlan;             // each water body picks its own mirror image from this
     scene.RenderPhase(m_context, ScenePhase::Opaque, mainView);
+    scene.RenderHullMasks(m_context, mainView);   // depth only: the water is not drawn inside a floating boat's hull
     if (refractionReady) m_context->CopyResource(m_sceneColorCopy.GetTexture(), m_hdrScene.GetTexture());
 
     // TRANSPARENT phase (the water). Depth is now complete, so make it read-only and hand it to
     // the shaders as a texture, together with the reflection image.
+    m_gpuTimer.Mark(m_context, GpuPass::Water);
     BindSceneTarget(true);
     ID3D11ShaderResourceView* sceneDepth = m_sceneDepth.GetShaderView();
     m_context->PSSetShaderResources(Slots::kSrvSceneDepth, 1, &sceneDepth);
@@ -371,6 +379,7 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
     // PASS 4 - turn the HDR buffer into the finished image. Normally that goes straight to the
     // window. In the editor it goes into a texture (shown by the Viewport panel) and the window
     // itself only receives the UI.
+    m_gpuTimer.Mark(m_context, GpuPass::PostProcess);
     if (m_viewOffscreen && m_viewColor.IsValid()) {
         m_post.Resolve(m_context, m_hdrScene.GetShaderView(), m_viewColor.GetRenderView(),
                        m_viewWidth, m_viewHeight, scene.GetPostSettings());
@@ -381,6 +390,7 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
         m_post.Resolve(m_context, m_hdrScene.GetShaderView(), m_renderTargetView, m_width, m_height,
                        scene.GetPostSettings());
     }
+    m_gpuTimer.EndFrame(m_context);   // the UI below is not counted: this measures the 3D view
     // The UI (if there is one) draws after this, straight onto the back buffer, because it is
     // already designed for display colours. The renderer does not know what the layer draws.
     if (layer) layer->OnRenderOverlay(m_context);
@@ -390,6 +400,7 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
 
 void Direct3D11Renderer::Release()
 {
+    m_gpuTimer.Release();
     m_post.Release();
     if (m_clampSampler) { m_clampSampler->Release(); m_clampSampler = nullptr; }
     if (m_linearSampler) { m_linearSampler->Release(); m_linearSampler = nullptr; }

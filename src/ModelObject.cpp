@@ -2,8 +2,10 @@
 #include "Logger.h"
 #include "Mesh.h"
 #include "MeshLod.h"
+#include "Water.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <numeric>
 
 using namespace DirectX;
@@ -65,6 +67,17 @@ void ModelRenderSettings::Clamp()
     cullScreen = std::clamp(cullScreen, 0.0f, lodScreen[2]);
 }
 
+void FloatingSettings::Clamp()
+{
+    draft = std::clamp(draft, 0.0f, 0.9f);
+    responsiveness = std::clamp(responsiveness, 0.3f, 20.0f);
+    damping = std::clamp(damping, 0.1f, 1.5f);
+    tilt = std::clamp(tilt, 0.0f, 1.0f);
+    maskPart = (std::max)(maskPart, -1);
+    if (maskHeight >= 0.0f) maskHeight = std::clamp(maskHeight, 0.0f, 1.5f);
+    maskInset = std::clamp(maskInset, 0.0f, 0.4f);
+}
+
 ModelObject::ModelObject(ID3D11Device* device, ImportedModel&& imported)
     : device_(device), displayName_(imported.name), sourcePath_(imported.sourcePath),
       triangleCount_(imported.triangleCount), boundsMin_(imported.boundsMin), boundsMax_(imported.boundsMax)
@@ -97,7 +110,18 @@ ModelObject::ModelObject(ID3D11Device* device, ImportedModel&& imported)
     for (const size_t index : order) {
         const ImportedPart& part = imported.parts[index];
         Part built;
+        built.name = part.name;
         built.lodGroup = groupOf[index];
+
+        // The part seen from above: its convex outline. Only the hull mask uses it (lesson 33), and only for the part the
+        // user calls the hull, so it is kept small: a handful of points instead of every vertex.
+        {
+            std::vector<HullMask::Point2> flat;
+            flat.reserve(part.vertices.size());
+            for (const Vertex& v : part.vertices) flat.push_back({ v.position.x, v.position.z });
+            built.footprint = HullMask::ConvexHull(std::move(flat));
+            built.footprintArea = HullMask::Area(built.footprint);
+        }
 
         // The part's own box (model space): what per-part culling and level of detail measure.
         if (!part.vertices.empty()) {
@@ -133,12 +157,18 @@ ModelObject::ModelObject(ID3D11Device* device, ImportedModel&& imported)
         }
         parts_.push_back(std::move(built));
     }
+    // The hull, unless the user says otherwise: the part with the biggest outline (oars and masts have thin ones).
+    for (size_t i = 0; i < parts_.size(); ++i) {
+        if (parts_[i].footprint.size() >= 3 && (autoHullPart_ < 0 || parts_[i].footprintArea > parts_[autoHullPart_].footprintArea)) autoHullPart_ = static_cast<int>(i);
+    }
     UpdateWorldTransform();
 }
 
 ModelObject::~ModelObject()
 {
     if (cullNone_) cullNone_->Release();
+    if (maskBlend_) maskBlend_->Release();
+    if (maskDepth_) maskDepth_->Release();
 }
 
 ID3D11RasterizerState* ModelObject::GetCullNone() const
@@ -165,6 +195,7 @@ void ModelObject::FitToSize(float size)
 bool ModelObject::GetEditorTransform(XMFLOAT3& position, XMFLOAT3& rotation, XMFLOAT3& scale) const
 {
     position = position_;
+    if (floating_.enabled && floatReady_) position.y = floatHeave_.value;   // the gizmo sits where the boat is, not where it was put
     rotation = rotation_;
     scale = scale_;
     return true;
@@ -183,10 +214,22 @@ void ModelObject::UpdateWorldTransform()
 {
     // Move the pivot (bottom centre of the model) to the origin, THEN scale and rotate, THEN move to `position`:
     // scaling and turning happen around the model's own base, and "position" is where its base sits.
+    // A floating model also leans with the water: a turn that takes "up" to the surface's normal, applied in WORLD axes
+    // (after the model's own rotation, around its base), and its height comes from the spring instead of from `position`.
+    XMFLOAT3 position = position_;
+    XMMATRIX lean = XMMatrixIdentity();
+    if (floating_.enabled && floatReady_) {
+        position.y = floatHeave_.value;
+        float normal[3], m[9];
+        Buoyancy::Normal(floatSlopeX_.value, floatSlopeZ_.value, floating_.tilt, normal);
+        Buoyancy::RotationFromUp(normal, m);
+        lean = XMMATRIX(m[0], m[1], m[2], 0.0f, m[3], m[4], m[5], 0.0f, m[6], m[7], m[8], 0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+    }
     const XMMATRIX transform = XMMatrixTranslation(-pivot_.x, -pivot_.y, -pivot_.z) *
         XMMatrixScaling(scale_.x, scale_.y, scale_.z) *
         XMMatrixRotationX(rotation_.x) * XMMatrixRotationY(rotation_.y) * XMMatrixRotationZ(rotation_.z) *
-        XMMatrixTranslation(position_.x, position_.y, position_.z);
+        lean *
+        XMMatrixTranslation(position.x, position.y, position.z);
     XMStoreFloat4x4(&world_, transform);
     for (Part& part : parts_) part.renderable->SetWorld(world_);
 
@@ -268,7 +311,8 @@ void ModelObject::DrawParts(ID3D11DeviceContext* ctx, const Shader* shadowShader
     const ModelRenderSettings& settings = renderSettings_;
 
     // 1. The whole model first: one box test can save looking at every part (a castle off to the side).
-    if (settings.frustumCulling && !view.frustum.IntersectsAABB(worldMin_, worldMax_)) {
+    if ((settings.frustumCulling && !view.frustum.IntersectsAABB(worldMin_, worldMax_)) ||
+        (view.clipBelow && worldMax_.y < view.clipBelowY)) {   // (or wholly under the mirror's clip plane)
         partLod_[kind].assign(parts_.size(), 255);
         modelLod_[kind] = 255;
         return;
@@ -308,6 +352,7 @@ void ModelObject::DrawParts(ID3D11DeviceContext* ctx, const Shader* shadowShader
         if (authoredGroup >= 0 && part.lodGroup >= 0 && part.lodGroup != authoredGroup) { remembered[i] = 255; continue; }
         // 3. Can this view see the part?
         if (settings.frustumCulling && !view.frustum.IntersectsAABB(part.worldMin, part.worldMax)) { remembered[i] = 255; continue; }
+        if (view.clipBelow && part.worldMax.y < view.clipBelowY) { remembered[i] = 255; continue; }   // wholly under the mirror's clip plane
 
         // 4. How much detail does it deserve? (Only generated levels: authored ones were chosen above.)
         int lod = 0;
@@ -348,4 +393,159 @@ void ModelObject::DrawParts(ID3D11DeviceContext* ctx, const Shader* shadowShader
         ctx->RSSetState(previousRaster);       // put back whatever was set (null = the default)
         if (previousRaster) previousRaster->Release();   // RSGetState added a reference
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Floating (lesson 33)
+// ---------------------------------------------------------------------------------------------------------------------
+
+void ModelObject::SetFloatingSettings(FloatingSettings settings)
+{
+    settings.Clamp();
+    const bool wasEnabled = floating_.enabled;
+    floating_ = settings;
+    if (!floating_.enabled && (wasEnabled || floatReady_)) {
+        floatReady_ = false;   // back to the author's transform
+        UpdateWorldTransform();
+    }
+}
+
+void ModelObject::StepFloating(const Water* water, float time, float dt)
+{
+    if (!floating_.enabled) return;
+    const float height = GetModelHeight();
+
+    float targetHeave = position_.y;   // no water here: stay at the height the model already has
+    float slopeX = 0.0f, slopeZ = 0.0f;
+    if (water) {
+        // Where to read the water: a 3 x 3 grid over the hull's footprint (its box, pulled in a little), turned and scaled
+        // like the model's own heading. The lean must not feed back into where we look, so the lean is left out here.
+        const int part = ResolveMaskPart();
+        const XMFLOAT3 lo = part >= 0 ? parts_[part].boundsMin : boundsMin_;
+        const XMFLOAT3 hi = part >= 0 ? parts_[part].boundsMax : boundsMax_;
+        const XMMATRIX heading = XMMatrixTranslation(-pivot_.x, -pivot_.y, -pivot_.z) *
+            XMMatrixScaling(scale_.x, scale_.y, scale_.z) *
+            XMMatrixRotationX(rotation_.x) * XMMatrixRotationY(rotation_.y) * XMMatrixRotationZ(rotation_.z) *
+            XMMatrixTranslation(position_.x, position_.y, position_.z);
+        const float cx = (lo.x + hi.x) * 0.5f, cz = (lo.z + hi.z) * 0.5f;
+        const float hx = (hi.x - lo.x) * 0.5f * 0.7f, hz = (hi.z - lo.z) * 0.5f * 0.7f;
+        std::vector<Buoyancy::Sample> samples;
+        samples.reserve(9);
+        for (int gx = -1; gx <= 1; ++gx) {
+            for (int gz = -1; gz <= 1; ++gz) {
+                XMFLOAT3 world;
+                XMStoreFloat3(&world, XMVector3Transform(XMVectorSet(cx + gx * hx, boundsMin_.y, cz + gz * hz, 1.0f), heading));
+                samples.push_back({ world.x, world.z, water->SampleHeight(world.x, world.z, time) });
+            }
+        }
+        const Buoyancy::Plane plane = Buoyancy::FitPlane(samples);
+        targetHeave = plane.mean - floating_.draft * height;
+        slopeX = plane.slopeX;
+        slopeZ = plane.slopeZ;
+    }
+
+    if (!floatReady_) {   // the first step: begin at the water, do not fall or rise to it from the author's height
+        floatHeave_.Snap(targetHeave);
+        floatSlopeX_.Snap(slopeX);
+        floatSlopeZ_.Snap(slopeZ);
+        floatReady_ = true;
+    } else {
+        floatHeave_.Step(targetHeave, floating_.responsiveness, floating_.damping, dt);
+        floatSlopeX_.Step(slopeX, floating_.responsiveness, floating_.damping, dt);
+        floatSlopeZ_.Step(slopeZ, floating_.responsiveness, floating_.damping, dt);
+    }
+    UpdateWorldTransform();
+}
+
+int ModelObject::ResolveMaskPart() const
+{
+    if (floating_.maskPart >= 0 && floating_.maskPart < static_cast<int>(parts_.size()) && parts_[floating_.maskPart].footprint.size() >= 3) return floating_.maskPart;
+    return autoHullPart_;
+}
+
+void ModelObject::EnsureHullMask(int part) const
+{
+    const Part& hull = parts_[part];
+    const float modelHeight = boundsMax_.y - boundsMin_.y;
+    // Lid height: what the user set, or just under the hull part's own top (so the lid never pokes out above the rim).
+    const float lidY = floating_.maskHeight >= 0.0f ? boundsMin_.y + floating_.maskHeight * modelHeight
+                                                   : hull.boundsMax.y - 0.02f * modelHeight;
+    const float key[3] = { static_cast<float>(part), lidY, floating_.maskInset };
+    if (maskRenderable_ && std::memcmp(key, maskKey_, sizeof(key)) == 0) return;
+
+    // The outline, pulled in by a fraction of the hull's width so the lid stays inside the walls.
+    float minX = hull.footprint[0].x, maxX = minX, minZ = hull.footprint[0].z, maxZ = minZ;
+    for (const HullMask::Point2& p : hull.footprint) {
+        minX = (std::min)(minX, p.x); maxX = (std::max)(maxX, p.x);
+        minZ = (std::min)(minZ, p.z); maxZ = (std::max)(maxZ, p.z);
+    }
+    const float beam = (std::min)(maxX - minX, maxZ - minZ);
+    const std::vector<HullMask::Point2> outline = HullMask::InsetConvex(hull.footprint, floating_.maskInset * beam);
+
+    // A fan around the middle: vertex 0 is the centre, then the outline, closing back to its first point.
+    const HullMask::Point2 centre = HullMask::Centroid(outline);
+    std::vector<Vertex> vertices(outline.size() + 1);
+    vertices[0].position = XMFLOAT3(centre.x, lidY, centre.z);
+    for (size_t i = 0; i < outline.size(); ++i) vertices[i + 1].position = XMFLOAT3(outline[i].x, lidY, outline[i].z);
+    for (Vertex& v : vertices) v.normal = XMFLOAT3(0.0f, 1.0f, 0.0f);
+    std::vector<std::uint32_t> indices;
+    for (size_t i = 0; i < outline.size(); ++i) {
+        indices.push_back(0);
+        indices.push_back(static_cast<std::uint32_t>(i + 1));
+        indices.push_back(static_cast<std::uint32_t>((i + 1) % outline.size() + 1));
+    }
+
+    // Same vertex shader as every model (the vertex layout is shared); NO pixel shader: only depth is written. The shader
+    // comes from the shader cache, so rebuilding the lid while a slider moves costs a small buffer, not a compile.
+    maskRenderable_ = std::make_unique<Renderable>(device_, new Model({ new Mesh(device_, vertices, indices) }), L"shaders/vs.hlsl", nullptr);
+    std::memcpy(maskKey_, key, sizeof(key));
+}
+
+void ModelObject::RenderHullMask(ID3D11DeviceContext* ctx, const RenderView& view) const
+{
+    if (!floating_.hullMask || !ctx || view.kind != ViewKind::Main) return;
+    const int part = ResolveMaskPart();
+    if (part < 0) return;
+    if (renderSettings_.frustumCulling && !view.frustum.IntersectsAABB(worldMin_, worldMax_)) return;
+    EnsureHullMask(part);
+    if (!maskRenderable_ || !maskRenderable_->IsValid()) return;
+
+    if (!maskBlend_) {
+        D3D11_BLEND_DESC blend{};
+        blend.RenderTarget[0].RenderTargetWriteMask = 0;   // colour untouched
+        device_->CreateBlendState(&blend, &maskBlend_);
+    }
+    if (!maskDepth_) {
+        D3D11_DEPTH_STENCIL_DESC depth{};
+        depth.DepthEnable = TRUE;
+        depth.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;   // the whole point: leave the lid in the depth buffer
+        depth.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+        device_->CreateDepthStencilState(&depth, &maskDepth_);
+    }
+    if (!maskBlend_ || !maskDepth_) return;
+
+    // Remember the states we change and put them back: whatever draws next must find the pipeline as it left it.
+    ID3D11BlendState* oldBlend = nullptr;
+    FLOAT oldFactor[4] = {};
+    UINT oldSampleMask = 0;
+    ctx->OMGetBlendState(&oldBlend, oldFactor, &oldSampleMask);
+    ID3D11DepthStencilState* oldDepth = nullptr;
+    UINT oldStencilRef = 0;
+    ctx->OMGetDepthStencilState(&oldDepth, &oldStencilRef);
+    ID3D11RasterizerState* oldRaster = nullptr;
+    ctx->RSGetState(&oldRaster);
+
+    const FLOAT factor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    ctx->OMSetBlendState(maskBlend_, factor, 0xFFFFFFFFu);
+    ctx->OMSetDepthStencilState(maskDepth_, 0);
+    ctx->RSSetState(GetCullNone());   // the lid is flat: either side may face the camera
+    maskRenderable_->SetWorld(world_);
+    maskRenderable_->Render(ctx);
+
+    ctx->OMSetBlendState(oldBlend, oldFactor, oldSampleMask);
+    ctx->OMSetDepthStencilState(oldDepth, oldStencilRef);
+    ctx->RSSetState(oldRaster);
+    if (oldBlend) oldBlend->Release();
+    if (oldDepth) oldDepth->Release();
+    if (oldRaster) oldRaster->Release();
 }

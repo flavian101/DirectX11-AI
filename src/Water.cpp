@@ -94,6 +94,7 @@ void Water::ReleaseShoreMap()
 	if (depthView_) { depthView_->Release(); depthView_ = nullptr; }
 	if (depthTexture_) { depthTexture_->Release(); depthTexture_ = nullptr; }
 	depthField_.Clear();
+	tileDry_.assign(tiles_.size(), 0);   // no ground information: every tile counts as wet
 }
 
 void Water::CreateRenderStates(ID3D11Device* device)
@@ -269,11 +270,15 @@ WaterWaves::Params WaterSettings::WaveParams() const
 
 void Water::SetSettings(const WaterSettings& settings)
 {
+	// Level and size decide which ground lies under which tile: until the shore map is measured again (next frame), the
+	// "dry" flags describe the OLD placement, so show every tile rather than hide one that is no longer dry.
+	const bool groundMoved = settings_.height != settings.height || settings_.size != settings.size || settings_.sizeZ != settings.sizeZ;
 	settings_ = settings;
 	settings_.Clamp();
 	position_.y = settings_.height;
 	EnsureMesh();
 	RebuildWaves();
+	if (groundMoved) tileDry_.assign(tiles_.size(), 0);
 	UpdateWorldTransform();
 	UploadMaterial(false);
 }
@@ -340,6 +345,8 @@ void Water::RebuildMesh(const WaterMesh::TileGrid& grid)
 	builtMeshDetail_ = settings_.meshDetail;
 	for (int lod = 0; lod < kWaterLodCount; ++lod) trianglesPerLod_[lod] = triangles[lod];
 	tileLod_.assign(tiles_.size(), Model::kSkipMesh);   // "no level chosen yet": the first frame picks without hysteresis
+	tileDry_.clear();
+	UpdateDryTiles();
 }
 
 float Water::GetTravelDegrees() const
@@ -366,6 +373,7 @@ WaterWaves::Params Water::CurrentWaveParams() const
 void Water::RebuildWaves()
 {
 	waves_ = WaterWaves::Build(CurrentWaveParams());
+	UpdateDryTiles();   // how high the surface can reach decides which tiles are safely under the ground
 }
 
 void Water::UploadMaterial(bool mirrored) const
@@ -431,7 +439,11 @@ void Water::ChooseTiles(const RenderView& view) const
 	const float hysteresis = 0.10f;
 
 	drawList_.assign(tiles_.size(), Model::kSkipMesh);
+	const bool dryKnown = tileDry_.size() == tiles_.size();
 	for (size_t i = 0; i < tiles_.size(); ++i) {
+		// Under dry ground: the terrain would hide every pixel of this tile. Skip it before any other work.
+		if (dryKnown && tileDry_[i]) { ++stats.tilesDry; continue; }
+
 		XMFLOAT3 worldMin, worldMax;
 		TransformBounds(world, tiles_[i].localMin, tiles_[i].localMax, worldMin, worldMax);
 		worldMin = { worldMin.x - margin, worldMin.y - margin, worldMin.z - margin };
@@ -440,13 +452,7 @@ void Water::ChooseTiles(const RenderView& view) const
 		if (settings_.frustumCulling && !view.frustum.IntersectsAABB(worldMin, worldMax)) continue;
 
 		// A round body only fills the middle of its square: tiles in the corners lie wholly outside the ellipse.
-		if (round) {
-			const XMFLOAT3& lo = tiles_[i].localMin;
-			const XMFLOAT3& hi = tiles_[i].localMax;
-			const float nearestX = (lo.x <= 0.0f && hi.x >= 0.0f) ? 0.0f : (std::min)(std::abs(lo.x), std::abs(hi.x));
-			const float nearestZ = (lo.z <= 0.0f && hi.z >= 0.0f) ? 0.0f : (std::min)(std::abs(lo.z), std::abs(hi.z));
-			if (nearestX * nearestX + nearestZ * nearestZ > 1.0f) continue;
-		}
+		if (round && TileOutsideOutline(i)) continue;
 
 		// Distance is measured from the REAL camera even for the mirror view, so every view draws the same level.
 		const float distance = DistanceToBox(view.lodOrigin, worldMin, worldMax);
@@ -495,6 +501,54 @@ void Water::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 		material_.Apply(ctx);
 		renderable_->Render(ctx, &drawList_);
 	}
+}
+
+bool Water::TileOutsideOutline(size_t index) const
+{
+	const XMFLOAT3& lo = tiles_[index].localMin;
+	const XMFLOAT3& hi = tiles_[index].localMax;
+	const float nearestX = (lo.x <= 0.0f && hi.x >= 0.0f) ? 0.0f : (std::min)(std::abs(lo.x), std::abs(hi.x));
+	const float nearestZ = (lo.z <= 0.0f && hi.z >= 0.0f) ? 0.0f : (std::min)(std::abs(lo.z), std::abs(hi.z));
+	return nearestX * nearestX + nearestZ * nearestZ > 1.0f;
+}
+
+// A tile is DRY when the ground under all of it (and a little around it, because the waves push the surface sideways too)
+// stands higher above the water level than the surface can ever rise: tallest wave, plus the swash run-up, plus a margin.
+// Then no pixel of the tile can show: the terrain is in front of all of it. Decided once per change, not once per frame.
+void Water::UpdateDryTiles()
+{
+	tileDry_.assign(tiles_.size(), 0);
+	if (depthField_.IsEmpty() || tiles_.empty()) return;
+	const float firstAmplitude = waves_.count > 0 ? waves_.waves[0].amplitude : 0.0f;
+	const float rise = waves_.heightBound + settings_.swash * firstAmplitude + 0.5f;
+	const float padX = 2.0f * rise / (std::max)(ExtentX(), 0.01f);   // the same distance in the plane's own -1..1 space
+	const float padZ = 2.0f * rise / (std::max)(ExtentZ(), 0.01f);
+	for (size_t i = 0; i < tiles_.size(); ++i) {
+		const Tile& tile = tiles_[i];
+		const float deepest = depthField_.MaxDepthIn(tile.localMin.x - padX, tile.localMax.x + padX,
+													 tile.localMin.z - padZ, tile.localMax.z + padZ);
+		tileDry_[i] = deepest < -rise ? 1 : 0;   // depth = level - ground: below -rise means the ground is more than `rise` above the level
+	}
+}
+
+bool Water::IsWetVisible(const Frustum& frustum) const
+{
+	if (!IsVisible(frustum)) return false;   // the whole body is off screen: the cheap test first
+	if (tileDry_.size() != tiles_.size()) return true;   // nothing known about the ground: assume the water shows
+	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
+	const float margin = waves_.heightBound + 0.25f;
+	const bool round = settings_.shape == WaterShape::Ellipse;
+	for (size_t i = 0; i < tiles_.size(); ++i) {
+		if (tileDry_[i]) continue;
+		if (round && TileOutsideOutline(i)) continue;
+		if (!settings_.frustumCulling) return true;
+		XMFLOAT3 worldMin, worldMax;
+		TransformBounds(world, tiles_[i].localMin, tiles_[i].localMax, worldMin, worldMax);
+		worldMin = { worldMin.x - margin, worldMin.y - margin, worldMin.z - margin };
+		worldMax = { worldMax.x + margin, worldMax.y + margin, worldMax.z + margin };
+		if (frustum.IntersectsAABB(worldMin, worldMax)) return true;
+	}
+	return false;
 }
 
 bool Water::IsVisible(const Frustum& frustum) const
@@ -570,6 +624,7 @@ bool Water::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotatio
 	settings_.height = position_.y;   // one source of truth: otherwise the next SetSettings() snaps Y back
 	if (settings_.bodyType == WaterBodyType::River) RebuildWaves();   // a river's flow follows the way the body is turned
 	EnsureMesh();                      // scaling can change the body's proportions: a river needs a different grid than a pond
+	tileDry_.assign(tiles_.size(), 0);   // moving or scaling changes which ground is under each tile: show all until the map is re-measured
 	UpdateWorldTransform();
 	UploadMaterial(false);             // the grid cell size depends on the scale
 	return true;
@@ -659,4 +714,5 @@ void Water::RefreshShoreDepth(const Terrain* terrain)
 	depthTexture_ = texture;
 	depthView_ = view;
 	depthField_ = std::move(field);
+	UpdateDryTiles();
 }

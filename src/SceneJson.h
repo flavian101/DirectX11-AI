@@ -55,6 +55,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpe
                                                 meshDetail, lodDistance, frustumCulling)
 // Culling and level of detail of a model (lesson 31), and the scatter that grows trees and rocks on the terrain.
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ModelRenderSettings, frustumCulling, lodEnabled, lodBias, lodScreen, cullScreen)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FloatingSettings, enabled, draft, responsiveness, damping, tilt, hullMask, maskPart, maskHeight, maskInset)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterSpeciesSettings, name, model, enabled, spacing, minDistance, density, layerDensity,
                                                 minSlope, maxSlope, minHeight, maxHeight, clusterStrength, clusterScale, scaleMin,
                                                 scaleMax, alignToNormal, tilt, sink, seed, lodScreen, cullScreen, castShadows,

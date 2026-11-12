@@ -1,6 +1,7 @@
 #pragma once
 #include "AssetBrowserPanel.h"
 #include "ConsolePanel.h"
+#include "GpuTimer.h"
 #include "Layer.h"
 #include "HeightfieldEdit.h"
 #include "ModelObject.h"
@@ -112,6 +113,7 @@ private:
     bool attached_ = false;
     HWND hwnd_ = nullptr;
     Scene* scene_ = nullptr;   // non-owning; refreshed from the LayerContext every frame
+    GpuTimings gpuTimings_;    // a copy of the renderer's per-pass GPU times, refreshed every frame (shown in the Performance panels)
     SelectionKind selectionKind_ = SelectionKind::Object;
     SceneObjectId selectedId_ = 0;   // 0 = nothing; an id (not an index) survives adds and deletes
     TerrainSettings pendingTerrainSettings_;

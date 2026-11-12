@@ -566,6 +566,7 @@ void ScatterObject::Draw(ID3D11DeviceContext* ctx, const RenderView& view, bool 
             const float screen = ScreenFraction(lodRadius, distance, view.projScale) * lodScale;
             if (BelowCullSize(screen, cfg.cullScreen)) { state[static_cast<size_t>(i)] = 255; continue; }   // too small to matter
             if (settings_.frustumCulling && !view.frustum.IntersectsAABB(cell.boundsMin, cell.boundsMax)) { state[static_cast<size_t>(i)] = 255; continue; }
+            if (view.clipBelow && cell.boundsMax.y < view.clipBelowY) { state[static_cast<size_t>(i)] = 255; continue; }   // wholly under the mirror's clip plane
             int lod = 0;
             if (settings_.lodEnabled && levels > 1) {
                 const unsigned char previous = state[static_cast<size_t>(i)];

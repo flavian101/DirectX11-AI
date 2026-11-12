@@ -303,6 +303,35 @@ static void TestShoreMap()
 	CHECK(20.0f / pondW < 2000.0f / lakeW);   // a pond's texels are finer than a lake's
 }
 
+// MaxDepthIn must never report less than the map holds anywhere in the rectangle (it decides which tiles are skipped).
+static void TestMaxDepthIn()
+{
+	// A 16 x 16 map of dry land (-5) with one wet texel (+3) at texel (12, 4).
+	std::vector<float> depth(16 * 16, -5.0f);
+	depth[4 * 16 + 12] = 3.0f;
+	WaterShore::DepthField field;
+	CHECK(field.Reset(16, 16, depth));
+	// The whole map sees the wet texel.
+	CHECK(field.MaxDepthIn(-1.0f, 1.0f, -1.0f, 1.0f) == 3.0f);
+	// The far corner (left, back) is dry.
+	CHECK(field.MaxDepthIn(-1.0f, -0.6f, 0.6f, 1.0f) == -5.0f);
+	// A rectangle that only touches the wet texel's neighbour still reports it (one texel of border: bilinear reads blend it in).
+	CHECK(field.MaxDepthIn(0.55f, 0.70f, -0.62f, -0.55f) == 3.0f);
+	// Whatever rectangle we ask about, no sampled value inside it may exceed the answer.
+	std::uint32_t state = 12345u;
+	for (int i = 0; i < 500; ++i) {
+		const float ax = Random01(state) * 2.0f - 1.0f, bx = Random01(state) * 2.0f - 1.0f;
+		const float az = Random01(state) * 2.0f - 1.0f, bz = Random01(state) * 2.0f - 1.0f;
+		const float x0 = std::min(ax, bx), x1 = std::max(ax, bx), z0 = std::min(az, bz), z1 = std::max(az, bz);
+		const float bound = field.MaxDepthIn(x0, x1, z0, z1);
+		for (int j = 0; j < 20; ++j) {
+			const float x = x0 + (x1 - x0) * Random01(state), z = z0 + (z1 - z0) * Random01(state);
+			CHECK(field.Sample(x, z) <= bound + 1e-4f);
+		}
+	}
+	CHECK(WaterShore::DepthField().MaxDepthIn(-1.0f, 1.0f, -1.0f, 1.0f) == WaterShore::kDeepWater);   // no map: deep
+}
+
 int main()
 {
 	TestTileIndices();
@@ -311,6 +340,7 @@ int main()
 	TestRiverFlow();
 	TestShoaling();
 	TestShoreMap();
+	TestMaxDepthIn();
 	if (g_failures == 0) std::printf("water tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;
 }

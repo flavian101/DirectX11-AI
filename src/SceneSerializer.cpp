@@ -121,6 +121,7 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
         }
         entry["materials"] = materials;
         entry["render"] = model->GetRenderSettings();   // culling and level of detail
+        entry["floating"] = model->GetFloatingSettings();   // rides the water; hull mask (lesson 33)
     } else if (const auto* scatter = dynamic_cast<const ScatterObject*>(&object)) {
         entry["type"] = "Scatter";
         ScatterSettings settings = scatter->GetSettings();
@@ -227,6 +228,7 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
             model->GetMaterial(i).Settings() = materials[i].value("surface", model->GetMaterial(i).Settings());
         }
         model->SetRenderSettings(entry.value("render", ModelRenderSettings{}));
+        model->SetFloatingSettings(entry.value("floating", FloatingSettings{}));
     } else if (auto* scatter = dynamic_cast<ScatterObject*>(&object)) {
         ScatterSettings loaded = entry.value("settings", ScatterSettings{});
         for (ScatterSpeciesSettings& species : loaded.species) {

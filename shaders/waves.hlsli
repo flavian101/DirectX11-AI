@@ -45,6 +45,7 @@ float3 WaveDisplacement(float2 restXZ, float time, float maxK, float depth)
         const float4 dirK = waterWaveDirK[i];
         const float4 motion = waterWaveMotion[i];
         const float fade = saturate(2.0f - 2.0f * dirK.z / maxK);
+        if (fade <= 0.0f) continue;   // too short for this part of the grid to hold: skip its sin/cos altogether
         const float a = ShoalAmplitude(dirK.w, dirK.z, depth, waterShore.y) * fade;
         const float aSide = min(a, dirK.w * fade);   // the sideways pull never exceeds the open-water wave: no folding
         const float phase = dirK.z * dot(dirK.xy, restXZ) + motion.x * time + motion.z;
@@ -72,6 +73,7 @@ void EvaluateWaveShading(float2 restXZ, float time, float pixelsPerUnit, float d
         const float k = dirK.z;
         const float wavelengthPixels = (kTwoPi / k) * pixelsPerUnit;
         const float fade = saturate((wavelengthPixels - 2.0f) * 0.25f);
+        if (fade <= 0.0f) continue;   // under 2 pixels long: invisible, and the far sea is mostly such waves
         const float a = ShoalAmplitude(dirK.w, k, depth, waterShore.y) * fade;
         const float aSide = min(a, dirK.w * fade);
         const float phase = k * dot(dirK.xy, restXZ) + motion.x * time + motion.z;

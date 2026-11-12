@@ -738,6 +738,8 @@ void Terrain::DrawChunks(ID3D11DeviceContext* ctx, const Shader* shaderOverride,
 
 		// 1. Can this view see the tile at all?
 		if (settings_.frustumCulling && !view.frustum.IntersectsAABB(worldMin, worldMax)) continue;
+		// 1b. The mirror view clips everything below the water: a chunk wholly under it would be drawn, then discarded pixel by pixel.
+		if (view.clipBelow && worldMax.y < view.clipBelowY) continue;
 
 		// 2. How much detail does it deserve? Distance is measured from the REAL camera even for the
 		//    mirror and sun views, so all three draw the same level and the shapes agree.

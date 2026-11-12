@@ -18,4 +18,8 @@ struct RenderView {
     float projScale = 1.7320508f;          // cot(fov / 2) of the REAL camera: turns a size and a distance into "how much of the
                                            // screen" (LodSelect.h). The default is a 60 degree lens.
     const WaterFramePlan* waterPlan = nullptr;   // the camera view only: which mirror image each water body reads
+    // The mirror view throws away (clip plane) everything below the water. So anything whose box lies wholly below this
+    // height cannot show a single pixel there, and the draw code may skip it before it costs a vertex.
+    bool clipBelow = false;
+    float clipBelowY = 0.0f;
 };

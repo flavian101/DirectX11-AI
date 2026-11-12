@@ -126,6 +126,7 @@ struct WaterSettings {
 struct WaterViewStats {
 	int tilesTotal = 0;
 	int tilesDrawn = 0;
+	int tilesDry = 0;          // tiles skipped because the ground under them stands above the water (nothing to show)
 	int tilesPerLod[kWaterLodCount] = {};
 	int trianglesDrawn = 0;
 	int reflectionSlot = -1;   // which planar reflection image this body read (-1 = the sky cubemap)
@@ -175,6 +176,9 @@ public:
 	// --- for the scene and the renderer ---
 	// True if any part of the water (including its tallest waves) can be inside this frustum.
 	bool IsVisible(const Frustum& frustum) const;
+	// True if some tile that is not hidden under dry ground can be inside this frustum. The scene asks this before paying for
+	// a mirror image: a body whose only visible tiles lie under the terrain has nothing to reflect.
+	bool IsWetVisible(const Frustum& frustum) const;
 
 	// --- the ground under the water (src/WaterShore.h) ---
 	// The scene calls this every frame. It measures the terrain under this body (depth = level - ground height) into a
@@ -198,6 +202,8 @@ private:
 	float ExtentX() const { return settings_.size * std::abs(scale_.x); }   // world size along X
 	float ExtentZ() const { return settings_.sizeZ * std::abs(scale_.z); }
 	void ChooseTiles(const RenderView& view) const;
+	void UpdateDryTiles();                // flags the tiles that lie wholly under dry ground (needs the shore map and the wave table)
+	bool TileOutsideOutline(size_t index) const;   // a corner tile of a round body: wholly outside the ellipse
 
 	struct Tile {
 		DirectX::XMFLOAT3 localMin, localMax;   // the tile's box in the plane's own space ([-1, 1] across)
@@ -223,6 +229,7 @@ private:
 	const Terrain* shoreTerrain_ = nullptr;
 	bool shoreKeyValid_ = false;
 	std::vector<Tile> tiles_;
+	std::vector<unsigned char> tileDry_;   // per tile: 1 = ground stands above the highest the surface can reach, nothing to draw
 	int builtMeshDetail_ = -1;
 	WaterMesh::TileGrid builtGrid_;
 	bool gridBuilt_ = false;
