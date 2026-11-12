@@ -16,6 +16,12 @@
 //      priority loses (a "Matern type II" thinning). Because priorities come from the same hash, the winner is the same
 //      from either side of a cell border: no seams.
 // The survivors become ScatterInstances: a position, a size and a rotation, 32 bytes each, exactly what the GPU reads.
+//
+// VARIANTS (lesson 36). One species can have several looks: three pines, a dead pine, a mossy and a plain boulder. Every
+// surviving candidate also rolls for WHICH look it gets: a weighted pick among the variants that the ground allows (a
+// cliff fragment only on steep ground, a mossy rock mostly on grass). The roll is one more hash of the same square, so it
+// is as repeatable as everything else. The GPU instance stays 32 bytes: the variant number travels in a parallel array
+// that the caller uses to sort instances into one buffer range per variant.
 #include "Heightfield.h"
 #include "TerrainSplat.h"
 #include <cstdint>
@@ -28,6 +34,19 @@ struct ScatterInstance {
     float qx = 0.0f, qy = 0.0f, qz = 0.0f, qw = 1.0f;   // rotation, a unit quaternion
 };
 static_assert(sizeof(ScatterInstance) == 32, "the GPU instance layout (INSTPOS + INSTROT) is exactly 32 bytes");
+
+// The most looks one species can have. More than this is what a second species is for.
+constexpr int kMaxScatterVariants = 8;
+
+// What distinguishes one variant of a species FOR THE PLACEMENT (its mesh and textures are not the placement's business).
+struct ScatterVariantRules {
+    float weight = 1.0f;                                   // relative chance among the variants the ground allows; 0 = never
+    float layerBias[kSplatChannels] = { 1.0f, 1.0f, 1.0f, 1.0f };   // multiplies the weight where the ground is grass / rock / sand / snow
+    float minSlope = 0.0f;                                 // degrees: this variant only grows on ground in this slope band
+    float maxSlope = 90.0f;
+    float scaleMul = 1.0f;                                 // multiplies the species' scale range ("large" granite = 2)
+    float modelHeight = -1.0f;                             // this variant's mesh height in metres; < 0 = use ScatterRules::modelHeight
+};
 
 // What one species asks of the ground. Plain data, no model and no paths: the editor edits it, the placement reads it.
 struct ScatterRules {
@@ -51,6 +70,9 @@ struct ScatterRules {
     float sink = 0.0f;           // fraction of the model's height buried in the ground (rocks sit IN the ground)
     float modelHeight = 1.0f;    // the model's height at scale 1, in metres (only used by `sink`)
     std::uint32_t seed = 1;      // a different seed is a different forest
+    // 4. which look each one gets. variantCount 1 with the default variant is exactly the species of lesson 31.
+    int variantCount = 1;
+    ScatterVariantRules variants[kMaxScatterVariants];
 };
 
 // Puts every value into a range the placement can work with (a spacing of 0 would mean infinitely many objects).
@@ -82,10 +104,18 @@ struct ScatterSample {
 // False if (x, z) is off the terrain.
 bool SampleScatterGround(const ScatterGround& ground, float x, float z, ScatterSample& out);
 
+// Which variant does a candidate on this ground get? `slopeDegrees` is the ground's slope there and `roll` a uniform random
+// number in [0, 1). Returns an index below rules.variantCount, or -1 when no variant allows this ground (the candidate is
+// then dropped: a species made only of cliff fragments grows nothing on a meadow). Exposed so tests and tools ask the
+// same question the placement does.
+int ChooseScatterVariant(const ScatterRules& rules, const ScatterSample& ground, float slopeDegrees, float roll);
+
 // Makes the instances of ONE species inside ONE rectangle, appends them to `out` and returns how many were added.
 // Deterministic: the same rules and the same ground always give the same instances, and the instances of a big
 // rectangle are exactly the union of the instances of any tiling of it (no seams, nothing doubled).
-int GenerateScatter(const ScatterGround& ground, const ScatterRules& rules, const ScatterRect& area, std::vector<ScatterInstance>& out);
+// If `variantOut` is given, one byte per appended instance is appended to it: that instance's variant number.
+int GenerateScatter(const ScatterGround& ground, const ScatterRules& rules, const ScatterRect& area, std::vector<ScatterInstance>& out,
+                    std::vector<std::uint8_t>* variantOut = nullptr);
 
 // --- The scatter grid: the unit of CULLING, of regeneration and of drawing -------------------------------------------
 // Square cells of `cellSize` metres laid over the terrain, starting at its lower corner. A cell is regenerated alone

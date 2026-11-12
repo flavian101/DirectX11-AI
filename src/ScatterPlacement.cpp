@@ -97,6 +97,7 @@ struct Candidate {
     float x = 0.0f, z = 0.0f;
     std::uint32_t priority = 0;
     bool accepted = false;
+    int variant = 0;
     ScatterSample ground;
 };
 
@@ -124,9 +125,42 @@ void Evaluate(const ScatterGround& ground, const ScatterRules& rules, const Scat
         chance *= Lerp(1.0f, SmoothStep(0.30f, 0.70f, noise), rules.clusterStrength);
     }
     if (Unit(Hash(i, j, rules.seed, 4u)) >= chance) return;
+    // Which look? (salt 9: a new stream, so adding variants never changes where anything stands or how it is rotated.)
+    c.variant = ChooseScatterVariant(rules, c.ground, slope, Unit(Hash(i, j, rules.seed, 9u)));
+    if (c.variant < 0) return;
     c.accepted = true;
 }
 }  // namespace
+
+int ChooseScatterVariant(const ScatterRules& rules, const ScatterSample& ground, float slopeDegrees, float roll)
+{
+    const int count = (std::min)((std::max)(rules.variantCount, 1), kMaxScatterVariants);
+    float weight[kMaxScatterVariants];
+    float total = 0.0f;
+    for (int v = 0; v < count; ++v) {
+        const ScatterVariantRules& variant = rules.variants[v];
+        float w = 0.0f;
+        if (slopeDegrees >= variant.minSlope && slopeDegrees <= variant.maxSlope) {
+            float layers = 0.0f;   // the same weighted vote of the terrain layers that the species' density uses
+            for (int k = 0; k < kSplatChannels; ++k) layers += ground.weights[k] * variant.layerBias[k];
+            w = (std::max)(variant.weight, 0.0f) * layers;
+        }
+        weight[v] = w;
+        total += w;
+    }
+    if (!(total > 1e-6f)) return -1;
+    // Walk the cumulative weights. `last` remembers the final variant that can be chosen, so rounding at the top end of the
+    // roll can never land on a variant whose weight is zero.
+    float target = Saturate(roll) * total, run = 0.0f;
+    int last = -1;
+    for (int v = 0; v < count; ++v) {
+        if (weight[v] <= 0.0f) continue;
+        last = v;
+        run += weight[v];
+        if (target < run) return v;
+    }
+    return last;
+}
 
 void ClampScatterRules(ScatterRules& r)
 {
@@ -145,6 +179,17 @@ void ClampScatterRules(ScatterRules& r)
     r.tilt = (std::min)((std::max)(r.tilt, 0.0f), 45.0f);
     r.sink = Saturate(r.sink);
     r.modelHeight = (std::max)(r.modelHeight, 0.0f);
+    r.variantCount = (std::min)((std::max)(r.variantCount, 1), kMaxScatterVariants);
+    for (int v = 0; v < kMaxScatterVariants; ++v) {
+        ScatterVariantRules& variant = r.variants[v];
+        variant.weight = (std::min)((std::max)(variant.weight, 0.0f), 1000.0f);
+        for (float& bias : variant.layerBias) bias = (std::min)((std::max)(bias, 0.0f), 4.0f);
+        variant.minSlope = (std::min)((std::max)(variant.minSlope, 0.0f), 90.0f);
+        variant.maxSlope = (std::min)((std::max)(variant.maxSlope, variant.minSlope), 90.0f);
+        variant.scaleMul = (std::min)((std::max)(variant.scaleMul, 0.05f), 20.0f);
+        if (variant.modelHeight >= 0.0f) variant.modelHeight = (std::min)(variant.modelHeight, 10000.0f);
+        else variant.modelHeight = -1.0f;
+    }
 }
 
 bool ScatterGroundIsValid(const ScatterGround& g)
@@ -180,7 +225,8 @@ bool SampleScatterGround(const ScatterGround& g, float x, float z, ScatterSample
     return true;
 }
 
-int GenerateScatter(const ScatterGround& ground, const ScatterRules& requested, const ScatterRect& wanted, std::vector<ScatterInstance>& out)
+int GenerateScatter(const ScatterGround& ground, const ScatterRules& requested, const ScatterRect& wanted, std::vector<ScatterInstance>& out,
+                    std::vector<std::uint8_t>* variantOut)
 {
     if (!ScatterGroundIsValid(ground)) return 0;
     ScatterRules rules = requested;
@@ -209,7 +255,6 @@ int GenerateScatter(const ScatterGround& ground, const ScatterRules& requested, 
     // Is another accepted candidate closer than minDistance with a higher rank? Only the 8 neighbouring squares can be:
     // two squares apart, candidates are at least one pitch away, and minDistance never exceeds the pitch.
     const float minDistanceSquared = rules.minDistance * rules.minDistance;
-    const float height = rules.modelHeight;
     const int before = static_cast<int>(out.size());
     for (int tj = 1; tj < depth - 1; ++tj) {
         for (int ti = 1; ti < width - 1; ++ti) {
@@ -238,7 +283,9 @@ int GenerateScatter(const ScatterGround& ground, const ScatterRules& requested, 
 
             // Survivor: give it a size and a rotation (more hashes of the same square, so also repeatable).
             const int i = i0 - 1 + ti, j = j0 - 1 + tj;
-            const float scale = Lerp(rules.scaleMin, rules.scaleMax, Unit(Hash(i, j, rules.seed, 5u)));
+            const ScatterVariantRules& variant = rules.variants[c.variant];
+            const float height = variant.modelHeight >= 0.0f ? variant.modelHeight : rules.modelHeight;
+            const float scale = Lerp(rules.scaleMin, rules.scaleMax, Unit(Hash(i, j, rules.seed, 5u))) * variant.scaleMul;
             const float yaw = Unit(Hash(i, j, rules.seed, 6u)) * 2.0f * kPi;
 
             // The direction the plant's "up" points: between straight up and the ground normal, plus a random lean.
@@ -263,6 +310,7 @@ int GenerateScatter(const ScatterGround& ground, const ScatterRules& requested, 
             instance.scale = scale;
             instance.qx = q.x; instance.qy = q.y; instance.qz = q.z; instance.qw = q.w;
             out.push_back(instance);
+            if (variantOut) variantOut->push_back(static_cast<std::uint8_t>(c.variant));
         }
     }
     return static_cast<int>(out.size()) - before;

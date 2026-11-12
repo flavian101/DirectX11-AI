@@ -7,6 +7,8 @@
 //   5. Slope and height limits are obeyed, measured with the same ground query the placement uses.
 //   6. Rotation: upright when asked, leaning with the ground when asked (the quaternion turns "up" into the normal).
 //   7. Sinking, the stretched/moved terrain, the grid helpers, and a timing for a 1 km terrain.
+//   8. Variants (lesson 36): weighted picks, seam-free and repeatable with variants, adding variants never moves anything,
+//      slope bands and layer biases steer the pick, a species with no variant allowed grows nothing, per-variant size and sink.
 #include "ScatterPlacement.h"
 #include <algorithm>
 #include <chrono>
@@ -14,6 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 static int g_failures = 0;
@@ -380,6 +383,203 @@ static void TestClampAndTiming()
     CHECK(ms < 3000.0);
 }
 
+// ---- Variants (lesson 36) -----------------------------------------------------------------------------------------------
+static ScatterRules ThreeLooks()
+{
+    ScatterRules r; r.spacing = 4.0f; r.minDistance = 2.0f; r.density = 1.0f;
+    r.variantCount = 3;
+    r.variants[0].weight = 1.0f; r.variants[1].weight = 2.0f; r.variants[2].weight = 1.0f;
+    return r;
+}
+
+static void TestVariantChoiceFunction()
+{
+    ScatterRules rules = ThreeLooks();
+    ScatterSample grass;   // all grass, default
+    // The cumulative walk: weights 1 : 2 : 1 split [0,1) at 0.25 and 0.75.
+    CHECK(ChooseScatterVariant(rules, grass, 0.0f, 0.00f) == 0);
+    CHECK(ChooseScatterVariant(rules, grass, 0.0f, 0.24f) == 0);
+    CHECK(ChooseScatterVariant(rules, grass, 0.0f, 0.26f) == 1);
+    CHECK(ChooseScatterVariant(rules, grass, 0.0f, 0.74f) == 1);
+    CHECK(ChooseScatterVariant(rules, grass, 0.0f, 0.76f) == 2);
+    CHECK(ChooseScatterVariant(rules, grass, 0.0f, 0.99999f) == 2);
+
+    // A variant with weight 0 is never chosen, not even by a roll at the very top or bottom.
+    rules.variants[2].weight = 0.0f;
+    CHECK(ChooseScatterVariant(rules, grass, 0.0f, 0.99999f) == 1);
+    rules.variants[0].weight = 0.0f;
+    CHECK(ChooseScatterVariant(rules, grass, 0.0f, 0.0f) == 1);
+
+    // Nothing allowed: -1 (all weights zero, or every slope band excludes this ground).
+    rules.variants[1].weight = 0.0f;
+    CHECK(ChooseScatterVariant(rules, grass, 0.0f, 0.5f) == -1);
+    ScatterRules cliffs; cliffs.variantCount = 1; cliffs.variants[0].minSlope = 50.0f;
+    CHECK(ChooseScatterVariant(cliffs, grass, 10.0f, 0.5f) == -1);
+    CHECK(ChooseScatterVariant(cliffs, grass, 60.0f, 0.5f) == 0);
+
+    // Layer bias: this variant only likes rock, and the ground is grass.
+    ScatterRules rocky; rocky.variantCount = 1;
+    rocky.variants[0].layerBias[0] = 0.0f;
+    CHECK(ChooseScatterVariant(rocky, grass, 0.0f, 0.5f) == -1);
+    ScatterSample rock; rock.weights[0] = 0.0f; rock.weights[1] = 1.0f;
+    CHECK(ChooseScatterVariant(rocky, rock, 0.0f, 0.5f) == 0);
+    // The default single variant accepts any ground (this is what keeps lesson 31's species unchanged).
+    ScatterRules plain;
+    CHECK(ChooseScatterVariant(plain, rock, 0.0f, 0.5f) == 0);
+}
+
+static void TestVariantsAreWeightedRepeatableAndSeamFree()
+{
+    const Heightfield field = MakeField(100, 200.0f, 60.0f, Hills);
+    SplatMap splat; FillSplat(splat, 100, 100, AllGrass);
+    const ScatterGround ground = MakeGround(field, &splat);
+    const ScatterRect extent = ScatterGroundExtent(ground);
+    const ScatterRules rules = ThreeLooks();
+
+    std::vector<ScatterInstance> whole; std::vector<std::uint8_t> wholeVariant;
+    GenerateScatter(ground, rules, extent, whole, &wholeVariant);
+    CHECK(whole.size() > 800);
+    CHECK(wholeVariant.size() == whole.size());
+
+    // Proportions follow the weights (1 : 2 : 1) within sampling noise.
+    size_t n[3] = {};
+    for (std::uint8_t v : wholeVariant) { CHECK(v < 3); if (v < 3) ++n[v]; }
+    const double total = static_cast<double>(whole.size());
+    CHECK(n[0] / total > 0.20 && n[0] / total < 0.30);
+    CHECK(n[1] / total > 0.44 && n[1] / total < 0.56);
+    CHECK(n[2] / total > 0.20 && n[2] / total < 0.30);
+
+    // Repeatable.
+    std::vector<ScatterInstance> again; std::vector<std::uint8_t> againVariant;
+    GenerateScatter(ground, rules, extent, again, &againVariant);
+    CHECK(again.size() == whole.size() && againVariant == wholeVariant);
+
+    // No seams: the cells (with their variants) are exactly the whole. Compare as sets of (instance, variant).
+    std::vector<std::pair<ScatterInstance, std::uint8_t>> a, b;
+    for (size_t i = 0; i < whole.size(); ++i) a.push_back({ whole[i], wholeVariant[i] });
+    const ScatterGrid grid = MakeScatterGrid(extent, 32.0f);
+    for (int cz = 0; cz < grid.cellsZ; ++cz)
+        for (int cx = 0; cx < grid.cellsX; ++cx) {
+            std::vector<ScatterInstance> part; std::vector<std::uint8_t> partVariant;
+            GenerateScatter(ground, rules, ScatterCellRect(grid, cx, cz), part, &partVariant);
+            for (size_t i = 0; i < part.size(); ++i) b.push_back({ part[i], partVariant[i] });
+        }
+    auto order = [](const auto& l, const auto& r) { return Less(l.first, r.first); };
+    std::sort(a.begin(), a.end(), order); std::sort(b.begin(), b.end(), order);
+    bool same = a.size() == b.size();
+    for (size_t i = 0; same && i < a.size(); ++i) same = SameInstance(a[i].first, b[i].first) && a[i].second == b[i].second;
+    CHECK(same);
+
+    // Without the optional array nothing else changes.
+    std::vector<ScatterInstance> bare;
+    GenerateScatter(ground, rules, extent, bare);
+    CHECK(bare.size() == whole.size());
+}
+
+static void TestAddingVariantsMovesNothing()
+{
+    // The variant roll uses its own hash stream, so one look or five, every instance stands exactly where it did.
+    const Heightfield field = MakeField(100, 200.0f, 60.0f, Hills);
+    SplatMap splat; FillSplat(splat, 100, 100, AllGrass);
+    const ScatterGround ground = MakeGround(field, &splat);
+    const ScatterRect extent = ScatterGroundExtent(ground);
+    ScatterRules one = ThreeLooks(); one.variantCount = 1;
+    ScatterRules five = ThreeLooks(); five.variantCount = 5; five.variants[3].weight = 1.0f; five.variants[4].weight = 3.0f;
+    std::vector<ScatterInstance> a, b;
+    GenerateScatter(ground, one, extent, a);
+    GenerateScatter(ground, five, extent, b);
+    CHECK(a.size() == b.size() && a.size() > 800);
+    bool samePlaces = a.size() == b.size();
+    for (size_t i = 0; samePlaces && i < a.size(); ++i) samePlaces = a[i].x == b[i].x && a[i].z == b[i].z && a[i].qy == b[i].qy && a[i].scale == b[i].scale;
+    CHECK(samePlaces);
+}
+
+static void TestVariantsFollowTheGround()
+{
+    // x < 0 is grass, x > 0 is rock. Variant 0 (mossy) hates rock, variant 1 (granite) hates grass.
+    const Heightfield field = MakeField(100, 200.0f, 10.0f, Flat);
+    SplatMap splat; FillSplat(splat, 100, 100, GrassLeftRockRight);
+    const ScatterGround ground = MakeGround(field, &splat);
+    ScatterRules rules; rules.spacing = 4.0f; rules.minDistance = 2.0f; rules.layerDensity[0] = 1.0f; rules.layerDensity[1] = 1.0f;
+    rules.variantCount = 2;
+    rules.variants[0].layerBias[1] = 0.0f;
+    rules.variants[1].layerBias[0] = 0.0f;
+    std::vector<ScatterInstance> out; std::vector<std::uint8_t> variant;
+    GenerateScatter(ground, rules, ScatterGroundExtent(ground), out, &variant);
+    CHECK(out.size() > 400);
+    bool mossyOnGrass = true, graniteOnRock = true;
+    for (size_t i = 0; i < out.size(); ++i) {
+        if (variant[i] == 0 && out[i].x > 1.0f + 1e-3f) mossyOnGrass = false;    // bilinear blending spreads the border over +-1 m
+        if (variant[i] == 1 && out[i].x < -1.0f - 1e-3f) graniteOnRock = false;
+    }
+    CHECK(mossyOnGrass);
+    CHECK(graniteOnRock);
+
+    // Slope band: the ground is flat for u < 0.5 and steep after it. A cliff-only species grows only on the steep half;
+    // a species of cliff fragments AND a plain rock grows everywhere, but cliffs only on the steep half.
+    const Heightfield ramp = MakeField(100, 200.0f, 100.0f, FlatThenSteep);
+    SplatMap grass; FillSplat(grass, 100, 100, AllGrass);
+    const ScatterGround slope = MakeGround(ramp, &grass);
+    ScatterRules cliffsOnly; cliffsOnly.spacing = 4.0f; cliffsOnly.minDistance = 2.0f; cliffsOnly.maxSlope = 90.0f;
+    cliffsOnly.variants[0].minSlope = 30.0f;
+    std::vector<ScatterInstance> steep;
+    GenerateScatter(slope, cliffsOnly, ScatterGroundExtent(slope), steep);
+    CHECK(steep.size() > 100);
+    float westmost = 1e9f;
+    for (const ScatterInstance& i : steep) westmost = (std::min)(westmost, i.x);
+    CHECK(westmost > -3.0f);   // nothing on the flat half (x < 0)
+
+    ScatterRules mixed = cliffsOnly; mixed.variantCount = 2;
+    mixed.variants[0].minSlope = 30.0f;                    // cliff fragment
+    mixed.variants[1].minSlope = 0.0f; mixed.variants[1].maxSlope = 25.0f;   // plain rock on gentle ground
+    std::vector<ScatterInstance> both; std::vector<std::uint8_t> which;
+    GenerateScatter(slope, mixed, ScatterGroundExtent(slope), both, &which);
+    bool cliffsOnlySteep = true, plainOnlyFlat = true;
+    for (size_t i = 0; i < both.size(); ++i) {
+        if (which[i] == 0 && both[i].x < -3.0f) cliffsOnlySteep = false;
+        if (which[i] == 1 && both[i].x > 3.0f && both[i].x < 95.0f) plainOnlyFlat = false;   // (the last metres are the terrain's edge, where the normal is one-sided)
+    }
+    CHECK(both.size() > steep.size());
+    CHECK(cliffsOnlySteep);
+    CHECK(plainOnlyFlat);
+}
+
+static void TestVariantScaleSinkAndClamp()
+{
+    const Heightfield field = MakeField(100, 200.0f, 10.0f, Flat);
+    SplatMap splat; FillSplat(splat, 100, 100, AllGrass);
+    const ScatterGround ground = MakeGround(field, &splat);
+    ScatterRules rules; rules.spacing = 4.0f; rules.minDistance = 2.0f; rules.scaleMin = 1.0f; rules.scaleMax = 1.0f;
+    rules.sink = 0.5f; rules.modelHeight = 2.0f; rules.variantCount = 2;
+    rules.variants[0].weight = 1.0f; rules.variants[0].scaleMul = 1.0f;                                     // inherits the model height (2 m)
+    rules.variants[1].weight = 1.0f; rules.variants[1].scaleMul = 3.0f; rules.variants[1].modelHeight = 1.0f;   // 3x larger, 1 m tall mesh
+    std::vector<ScatterInstance> out; std::vector<std::uint8_t> variant;
+    GenerateScatter(ground, rules, ScatterGroundExtent(ground), out, &variant);
+    CHECK(out.size() > 400);
+    const float groundY = 10.0f * 0.1f;   // Flat() is 0.1 of the height scale
+    bool scalesRight = true, sinksRight = true; size_t counts[2] = {};
+    for (size_t i = 0; i < out.size(); ++i) {
+        const int v = variant[i]; ++counts[v];
+        const float wantScale = v == 0 ? 1.0f : 3.0f, wantSink = 0.5f * (v == 0 ? 2.0f : 1.0f) * wantScale;
+        if (std::fabs(out[i].scale - wantScale) > 1e-4f) scalesRight = false;
+        if (std::fabs((groundY - out[i].y) - wantSink) > 1e-3f) sinksRight = false;
+    }
+    CHECK(counts[0] > 100 && counts[1] > 100);
+    CHECK(scalesRight);
+    CHECK(sinksRight);
+
+    ScatterRules wild; wild.variantCount = 99;
+    wild.variants[0].weight = -5.0f; wild.variants[0].scaleMul = 0.0f; wild.variants[0].minSlope = 80.0f; wild.variants[0].maxSlope = 10.0f;
+    wild.variants[0].layerBias[2] = 99.0f;
+    ClampScatterRules(wild);
+    CHECK(wild.variantCount == kMaxScatterVariants);
+    CHECK(wild.variants[0].weight == 0.0f && wild.variants[0].scaleMul >= 0.05f);
+    CHECK(wild.variants[0].maxSlope >= wild.variants[0].minSlope && wild.variants[0].layerBias[2] <= 4.0f);
+    wild.variantCount = 0;
+    ClampScatterRules(wild);
+    CHECK(wild.variantCount == 1);
+}
+
 int main()
 {
     TestDeterministicAndSeamFree();
@@ -391,6 +591,11 @@ int main()
     TestMovedAndStretchedGround();
     TestGridHelpers();
     TestClampAndTiming();
+    TestVariantChoiceFunction();
+    TestVariantsAreWeightedRepeatableAndSeamFree();
+    TestAddingVariantsMovesNothing();
+    TestVariantsFollowTheGround();
+    TestVariantScaleSinkAndClamp();
     if (g_failures == 0) std::printf("ScatterPlacementTests: all passed\n");
     else std::printf("ScatterPlacementTests: %d FAILED\n", g_failures);
     return g_failures == 0 ? 0 : 1;
