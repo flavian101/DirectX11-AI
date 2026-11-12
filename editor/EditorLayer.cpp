@@ -1449,6 +1449,201 @@ void EditorLayer::DrawModelInspector(ModelObject* model)
     }
 }
 
+namespace {
+// A material override with nothing replaced is no override at all: it is not saved.
+bool IsPlainOverride(const ScatterMaterialOverride& o)
+{
+    return o.albedo.empty() && o.normal.empty() && o.orm.empty() && o.emissive.empty() && o.roughness < 0.0f &&
+           o.baseColor[0] == 1.0f && o.baseColor[1] == 1.0f && o.baseColor[2] == 1.0f && o.baseColor[3] == 1.0f;
+}
+
+// One image slot of a material override: the file's name, a "..." to choose one and an "x" to go back to the model's own.
+bool DrawImageSlot(HWND owner, const char* label, std::string& path)
+{
+    bool changed = false;
+    ImGui::PushID(label);
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine(88.0f);
+    const std::string shown = path.empty() ? std::string("(model's own)") : std::filesystem::path(path).filename().string();
+    ImGui::TextDisabled("%s", shown.c_str());
+    ImGui::SetItemTooltip("%s", path.empty() ? "The map that comes with the model is used." : path.c_str());
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 34.0f);
+    if (ImGui::SmallButton("...")) {
+        const std::string picked = PickImageFile(owner);
+        if (!picked.empty()) { path = picked; changed = true; }
+    }
+    if (!path.empty()) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) { path.clear(); changed = true; }
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+// The looks (variants) of one species: add, remove, weights, where each one grows, and per-material texture replacements.
+// Returns true if anything changed. `scatter` is only read, for what the loaded models are (their material names, counts).
+bool DrawVariantEditor(HWND owner, const ScatterObject* scatter, size_t speciesIndex, ScatterSpeciesSettings& sp)
+{
+    bool changed = false;
+    if (sp.variants.empty()) {
+        // The one-look species of before: `model` is its only look. Offer the same model buttons as always.
+        ImGui::TextDisabled("%s", sp.model.c_str());
+        if (ImGui::SmallButton("Pine##builtin")) { sp.model = kBuiltinPine; changed = true; }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Rock##builtin")) { sp.model = kBuiltinRock; changed = true; }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Model file...##species")) {
+            const std::string path = PickModelFile(owner);
+            if (!path.empty()) { sp.model = path; changed = true; }
+        }
+        ImGui::SetItemTooltip("Any glTF / FBX / OBJ. Its base centre is where it stands.\nMeshes named Name_LOD0, Name_LOD1... are used as levels of detail; otherwise they are generated.");
+        if (!scatter->IsSpeciesReady(speciesIndex)) {
+            const std::string& error = scatter->GetSpeciesError(speciesIndex);
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", error.empty() ? "Loading..." : error.c_str());
+        } else {
+            ImGui::TextDisabled("%zu placed, %d levels of detail", scatter->GetInstanceCount(speciesIndex), scatter->GetSpeciesLodLevels(speciesIndex));
+        }
+        if (ImGui::Button("Several looks...##variants")) {
+            sp.variants = sp.EffectiveVariants();   // the model becomes the first look; add more below
+            changed = true;
+        }
+        ImGui::SetItemTooltip("Give this species more than one model or texture set. Each plant picks one at random,\nby weight, among the looks the ground allows.");
+        return changed;
+    }
+
+    ImGui::TextDisabled("%zu placed in all", scatter->GetInstanceCount(speciesIndex));
+    float totalWeight = 0.0f;
+    for (const ScatterVariantSettings& v : sp.variants) if (v.enabled) totalWeight += v.weight;
+    int removeIndex = -1;
+    for (size_t vi = 0; vi < sp.variants.size(); ++vi) {
+        ScatterVariantSettings& v = sp.variants[vi];
+        ImGui::PushID(static_cast<int>(vi));
+        const float share = v.enabled && totalWeight > 0.0f ? 100.0f * v.weight / totalWeight : 0.0f;
+        const bool open = ImGui::TreeNodeEx("##variant", ImGuiTreeNodeFlags_AllowOverlap, "%s  (%.0f%%)", v.name.c_str(), share);
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 40.0f);
+        if (ImGui::SmallButton("Remove##variant")) removeIndex = static_cast<int>(vi);
+        if (open) {
+            char nameBuffer[64];
+            std::snprintf(nameBuffer, sizeof(nameBuffer), "%s", v.name.c_str());
+            if (ImGui::InputText("Name##variant", nameBuffer, sizeof(nameBuffer))) { v.name = nameBuffer; changed = true; }
+            changed |= ImGui::Checkbox("Enabled##variant", &v.enabled);
+
+            ImGui::TextDisabled("%s", v.model.c_str());
+            auto builtin = [&](const char* label, const char* id) {
+                if (ImGui::SmallButton(label)) { v.model = id; changed = true; }
+                ImGui::SameLine();
+            };
+            builtin("Pine##v", kBuiltinPine); builtin("Rock##v", kBuiltinRock); builtin("Flat##v", kBuiltinRockFlat);
+            builtin("Tall##v", kBuiltinRockTall); builtin("Mossy##v", kBuiltinRockMossy);
+            if (ImGui::SmallButton("Model file...##variant")) {
+                const std::string path = PickModelFile(owner);
+                if (!path.empty()) { v.model = path; v.materials.clear(); changed = true; }   // other model, other material slots
+            }
+            if (!scatter->IsVariantReady(speciesIndex, vi)) {
+                if (v.enabled) {
+                    const std::string& error = scatter->GetVariantError(speciesIndex, vi);
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", error.empty() ? "Loading..." : error.c_str());
+                }
+            } else {
+                ImGui::TextDisabled("%zu placed", scatter->GetVariantInstanceCount(speciesIndex, vi));
+            }
+
+            changed |= ImGui::SliderFloat("Weight", &v.weight, 0.0f, 10.0f, "%.2f");
+            ImGui::SetItemTooltip("How often this look is chosen, relative to the others that the ground allows.\n0 = never.");
+            ImGui::TextDisabled("Likes the terrain layer (x weight):");
+            for (int k = 0; k < kSplatChannels; ++k) changed |= ImGui::SliderFloat(kTerrainLayerNames[k], &v.layerBias[k], 0.0f, 4.0f, "%.2f");
+            ImGui::SetItemTooltip("A mossy rock: high on grass, near 0 on rock and snow.\nThe species' own layer table decides IF something grows; this decides WHICH look it gets.");
+            changed |= ImGui::DragFloatRange2("Slope", &v.minSlope, &v.maxSlope, 0.5f, 0.0f, 90.0f, "%.0f deg", "%.0f deg");
+            ImGui::SetItemTooltip("This look only grows on ground in this band. A cliff fragment: 50 to 90.");
+            changed |= ImGui::SliderFloat("Size x", &v.scaleMul, 0.1f, 5.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SetItemTooltip("Multiplies the species' scale range. A large granite rock: 2.");
+
+            const size_t materialCount = scatter->GetVariantMaterialCount(speciesIndex, vi);
+            if (materialCount > 0 && ImGui::TreeNode("Textures##variant")) {
+                ImGui::TextDisabled("Replace the maps of a material. Empty = the model's own.\nORM = occlusion (R), roughness (G), metallic (B) in one image.");
+                for (size_t slot = 0; slot < materialCount; ++slot) {
+                    ImGui::PushID(static_cast<int>(slot));
+                    ScatterMaterialOverride* existing = nullptr;
+                    for (ScatterMaterialOverride& o : v.materials) if (o.slot == static_cast<int>(slot)) existing = &o;
+                    ScatterMaterialOverride edit;
+                    edit.slot = static_cast<int>(slot);
+                    if (existing) edit = *existing;
+                    const std::string title = scatter->GetVariantMaterialName(speciesIndex, vi, slot);
+                    bool slotChanged = false;
+                    if (ImGui::TreeNodeEx("##material", ImGuiTreeNodeFlags_DefaultOpen, "%s", title.c_str())) {
+                        slotChanged |= DrawImageSlot(owner, "Diffuse", edit.albedo);
+                        slotChanged |= DrawImageSlot(owner, "Normal", edit.normal);
+                        slotChanged |= DrawImageSlot(owner, "ORM", edit.orm);
+                        slotChanged |= DrawImageSlot(owner, "Emissive", edit.emissive);
+                        if (!edit.normal.empty()) slotChanged |= ImGui::Checkbox("Flip green (OpenGL normal map)", &edit.flipGreen);
+                        slotChanged |= ImGui::ColorEdit3("Tint", edit.baseColor.data(), ImGuiColorEditFlags_Float);
+                        ImGui::SetItemTooltip("Multiplies the albedo (linear). Grey it down, or push it towards green for moss.");
+                        bool overrideRoughness = edit.roughness >= 0.0f;
+                        if (ImGui::Checkbox("Set roughness", &overrideRoughness)) { edit.roughness = overrideRoughness ? 0.7f : -1.0f; slotChanged = true; }
+                        if (overrideRoughness) {
+                            slotChanged |= ImGui::SliderFloat("Roughness", &edit.roughness, 0.0f, 1.0f, "%.2f");
+                            ImGui::SetItemTooltip("0 = mirror, 1 = chalk. With an ORM map this scales the map's roughness instead.");
+                        }
+                        ImGui::TreePop();
+                    }
+                    if (slotChanged) {
+                        changed = true;
+                        if (existing) {
+                            if (IsPlainOverride(edit)) v.materials.erase(v.materials.begin() + (existing - v.materials.data()));
+                            else *existing = edit;
+                        } else if (!IsPlainOverride(edit)) {
+                            v.materials.push_back(edit);
+                        }
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::TreePop();
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+    if (removeIndex >= 0) {
+        sp.variants.erase(sp.variants.begin() + removeIndex);
+        if (sp.variants.size() == 1) sp.model = sp.variants[0].model;   // back to a plain one-look species: keep its model
+        if (sp.variants.size() == 1 && sp.variants[0].materials.empty() && sp.variants[0].layerBias == std::array<float, 4>{ 1, 1, 1, 1 } &&
+            sp.variants[0].minSlope == 0.0f && sp.variants[0].maxSlope == 90.0f && sp.variants[0].scaleMul == 1.0f) sp.variants.clear();
+        changed = true;
+    }
+
+    if (sp.variants.size() < static_cast<size_t>(kMaxScatterVariants)) {
+        if (ImGui::Button("Add look...##variants")) ImGui::OpenPopup("AddVariant");
+        if (ImGui::BeginPopup("AddVariant")) {
+            auto add = [&](const char* name, const std::string& model) {
+                ScatterVariantSettings fresh;
+                fresh.name = name; fresh.model = model;
+                sp.variants.push_back(fresh);
+                changed = true;
+            };
+            if (ImGui::MenuItem("Pine (built-in)")) add("Pine", kBuiltinPine);
+            if (ImGui::MenuItem("Boulder (built-in)")) add("Boulder", kBuiltinRock);
+            if (ImGui::MenuItem("Flat rock (built-in)")) add("Slab", kBuiltinRockFlat);
+            if (ImGui::MenuItem("Tall rock (built-in)")) add("Block", kBuiltinRockTall);
+            if (ImGui::MenuItem("Mossy rock (built-in)")) add("Mossy boulder", kBuiltinRockMossy);
+            if (ImGui::MenuItem("From a model file...")) {
+                const std::string path = PickModelFile(owner);
+                if (!path.empty()) add(std::filesystem::path(path).stem().string().c_str(), path);
+            }
+            if (!sp.variants.empty() && ImGui::MenuItem("Copy of the last look")) {
+                ScatterVariantSettings copy = sp.variants.back();
+                copy.name += " copy";
+                sp.variants.push_back(copy);   // same model and textures: change the textures to make a different stone
+                changed = true;
+            }
+            ImGui::EndPopup();
+        }
+    } else {
+        ImGui::TextDisabled("A species has at most %d looks. Add another species for more.", kMaxScatterVariants);
+    }
+    return changed;
+}
+}  // namespace
+
 void EditorLayer::DrawScatterInspector(ScatterObject* scatter)
 {
     // Like water, every value here applies live: read the settings, edit, write back if anything moved. What actually has to
@@ -1503,23 +1698,8 @@ void EditorLayer::DrawScatterInspector(ScatterObject* scatter)
             if (ImGui::InputText("Name", nameBuffer, sizeof(nameBuffer))) { sp.name = nameBuffer; changed = true; }
             changed |= ImGui::Checkbox("Enabled##species", &sp.enabled);
 
-            // The model: a built-in one or any file the importer reads.
-            ImGui::TextDisabled("%s", sp.model.c_str());
-            if (ImGui::SmallButton("Pine##builtin")) { sp.model = kBuiltinPine; changed = true; }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Rock##builtin")) { sp.model = kBuiltinRock; changed = true; }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Model file...##species")) {
-                const std::string path = PickModelFile(hwnd_);
-                if (!path.empty()) { sp.model = path; changed = true; }
-            }
-            ImGui::SetItemTooltip("Any glTF / FBX / OBJ. Its base centre is where it stands.\nMeshes named Name_LOD0, Name_LOD1... are used as levels of detail; otherwise they are generated.");
-            if (!scatter->IsSpeciesReady(i)) {
-                const std::string& error = scatter->GetSpeciesError(i);
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", error.empty() ? "Loading..." : error.c_str());
-            } else {
-                ImGui::TextDisabled("%zu placed, %d levels of detail", scatter->GetInstanceCount(i), scatter->GetSpeciesLodLevels(i));
-            }
+            // The looks: one model (as before), or several variants (lesson 36).
+            changed |= DrawVariantEditor(hwnd_, scatter, i, sp);
 
             ImGui::SeparatorText("Where");
             changed |= ImGui::SliderFloat("Spacing (m)", &sp.spacing, 0.5f, 100.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
