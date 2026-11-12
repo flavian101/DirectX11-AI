@@ -26,6 +26,7 @@ struct WaterMaterialCB {
 	XMFLOAT4 shape;          // x = a mirror image is bound for this body this frame, y = shape (0 rect, 1 ellipse), z = ellipse edge softness
 	XMFLOAT4 flow;           // x = ripple drift multiplier (1 = wind-blown), y = sideways ripple drift (1 on, 0 river), z = body type, w = flow speed
 	XMFLOAT4 shore;          // x = a depth map is bound (t15), y = shore wave strength, z = swash, w = unused
+	XMFLOAT4 groupInfo;      // wave groups: strength (0 = off), k of the pattern, its speed
 	XMFLOAT4 waveDirK[WaterWaves::kMaxWaves];     // xy = direction, z = k, w = amplitude
 	XMFLOAT4 waveMotion[WaterWaves::kMaxWaves];   // x = omega, y = steepness, z = phase offset
 };
@@ -169,6 +170,13 @@ void WaterSettings::Clamp()
 	directionalSpread = clamp01(directionalSpread);
 	choppiness = clamp01(choppiness);
 	waveCount = std::clamp(waveCount, kWaveCountMin, kWaveCountMax);
+	waveStyle = static_cast<WaterWaves::Style>(std::clamp(static_cast<int>(waveStyle), 0, 1));
+	waveRoughness = clamp01(waveRoughness);
+	swell = clamp01(swell);
+	swellAngle = std::clamp(swellAngle, -90.0f, 90.0f);
+	swellLength = std::clamp(swellLength, kSwellLengthMin, kSwellLengthMax);
+	waveGroups = std::clamp(waveGroups, 0.0f, kWaveGroupsMax);
+	waveSeed = std::clamp(waveSeed, 0, 9999);
 	detailNormal = std::clamp(detailNormal, 0.0f, kDetailMax);
 	detailScale = std::clamp(detailScale, kDetailScaleMin, kDetailScaleMax);
 	detailDistance = std::clamp(detailDistance, kDetailDistanceMin, kDetailDistanceMax);
@@ -185,9 +193,9 @@ void WaterSettings::Clamp()
 void WaterSettings::ApplyWavePreset(WavePreset preset)
 {
 	switch (preset) {
-	case WavePreset::Calm:   waveAmplitude = 0.12f; waveSpeed = 0.6f; waveFrequency = 0.45f; choppiness = 0.25f; break;
-	case WavePreset::Choppy: waveAmplitude = 0.35f; waveSpeed = 1.0f; waveFrequency = 0.6f;  choppiness = 0.5f;  break;
-	case WavePreset::Stormy: waveAmplitude = 0.6f;  waveSpeed = 1.8f; waveFrequency = 0.5f;  choppiness = 0.8f;  break;
+	case WavePreset::Calm:   waveAmplitude = 0.12f; waveSpeed = 0.6f; waveFrequency = 0.45f; choppiness = 0.25f; waveRoughness = 0.3f; swell = 0.5f; waveGroups = 0.25f; break;
+	case WavePreset::Choppy: waveAmplitude = 0.35f; waveSpeed = 1.0f; waveFrequency = 0.6f;  choppiness = 0.5f;  waveRoughness = 0.5f; swell = 0.3f; waveGroups = 0.35f; break;
+	case WavePreset::Stormy: waveAmplitude = 0.6f;  waveSpeed = 1.8f; waveFrequency = 0.5f;  choppiness = 0.8f;  waveRoughness = 0.7f; swell = 0.6f; waveGroups = 0.5f;  break;
 	}
 }
 
@@ -226,6 +234,7 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 	case WaterBodyType::Ocean:
 		ApplyLook(WaterLook::Ocean);
 		waveAmplitude = 0.45f; waveSpeed = 1.0f; waveFrequency = 0.5f; directionalSpread = 0.7f; choppiness = 0.55f; waveCount = 7;
+		waveRoughness = 0.5f; swell = 0.5f; swellAngle = 35.0f; swellLength = 2.5f; waveGroups = 0.4f;
 		detailNormal = 0.5f; detailScale = 0.8f; crestFoam = 0.5f; crestFoamThreshold = 0.25f;
 		shoreWaves = 1.0f; swash = 0.6f;   // swells shoal, break and wash up the beach
 		break;
@@ -233,6 +242,7 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 		// Short wind chop that hardly ever breaks: wavelengths a third of the ocean's, a fraction of its height.
 		ApplyLook(WaterLook::Lake);
 		waveAmplitude = 0.12f; waveSpeed = 0.7f; waveFrequency = 0.9f; directionalSpread = 1.0f; choppiness = 0.2f; waveCount = 5;
+		waveRoughness = 0.55f; swell = 0.1f; swellAngle = 25.0f; swellLength = 2.0f; waveGroups = 0.3f;
 		detailNormal = 0.6f; detailScale = 1.2f; crestFoam = 0.1f; crestFoamThreshold = 0.4f;
 		shoreWaves = 0.8f; swash = 0.3f;
 		break;
@@ -241,6 +251,7 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 		ApplyLook(WaterLook::Lake);
 		foamDistance = 0.5f; absorption = 0.45f;
 		waveAmplitude = 0.05f; waveSpeed = 1.0f; waveFrequency = 1.2f; directionalSpread = 0.1f; choppiness = 0.1f; waveCount = 4;
+		waveRoughness = 0.5f; swell = 0.0f; waveGroups = 0.2f;   // a current has one direction: no cross swell
 		detailNormal = 1.2f; detailScale = 1.6f; crestFoam = 0.0f; crestFoamThreshold = 0.5f;
 		flowSpeed = 2.5f; flowAngle = 0.0f;
 		shoreWaves = 0.5f; swash = 0.1f;   // a current laps at its banks; it does not surf
@@ -249,6 +260,7 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 		ApplyLook(WaterLook::Lake);
 		alpha = 0.85f; foamStrength = 0.3f;
 		waveAmplitude = 0.03f; waveSpeed = 0.5f; waveFrequency = 1.4f; directionalSpread = 1.0f; choppiness = 0.05f; waveCount = 3;
+		waveRoughness = 0.4f; swell = 0.0f; waveGroups = 0.2f;
 		detailNormal = 0.7f; detailScale = 1.8f; crestFoam = 0.0f; crestFoamThreshold = 0.5f;
 		shoreWaves = 0.5f; swash = 0.15f;
 		break;
@@ -265,6 +277,13 @@ WaterWaves::Params WaterSettings::WaveParams() const
 	p.spread = directionalSpread;
 	p.choppiness = choppiness;
 	p.count = waveCount;
+	p.style = waveStyle;
+	p.roughness = waveRoughness;
+	p.swell = swell;
+	p.swellAngle = swellAngle;
+	p.swellLength = swellLength;
+	p.groups = waveGroups;
+	p.seed = static_cast<std::uint32_t>(waveSeed);
 	return p;
 }
 
@@ -287,7 +306,11 @@ void Water::SetSettings(const WaterSettings& settings)
 // setting. Both change rarely: only then is the mesh rebuilt.
 void Water::EnsureMesh()
 {
-	const WaterMesh::TileGrid grid = WaterMesh::ChooseTileGrid(ExtentX(), ExtentZ(), gridBuilt_ ? builtGrid_.shapeClass : -1);
+	// The finest cell should be small enough to show waves up to about 2.5 times the base frequency (3 cells per wavelength),
+	// or the shader fades them out: so a bigger body gets more tiles, not bigger cells (WaterMesh::ChooseTileGrid).
+	const float targetCell = std::clamp(6.2831853f / (3.0f * 2.5f * (std::max)(settings_.waveFrequency, 0.05f)), 0.5f, 2.0f);
+	const WaterMesh::TileGrid grid = WaterMesh::ChooseTileGrid(ExtentX(), ExtentZ(), gridBuilt_ ? builtGrid_.shapeClass : -1,
+																			   kCellsPerTile[std::clamp(settings_.meshDetail, 0, 2)], targetCell);
 	if (gridBuilt_ && grid == builtGrid_ && settings_.meshDetail == builtMeshDetail_ && renderable_) return;
 	RebuildMesh(grid);
 }
@@ -404,6 +427,7 @@ void Water::UploadMaterial(bool mirrored) const
 	// instead: the shader drifts layer 1 by 0.35 NOISE units per second, and one world unit is `detailScale` noise units,
 	// so asking for flowSpeed world units per second means a multiplier of flowSpeed * detailScale / 0.35.
 	block.shore = { depthView_ ? 1.0f : 0.0f, settings_.shoreWaves, settings_.swash, 0.0f };
+	block.groupInfo = { waves_.groupStrength, waves_.groupK, waves_.groupSpeed, 0.0f };
 	block.flow = { river ? settings_.flowSpeed * settings_.detailScale / 0.35f : 1.0f, river ? 0.0f : 1.0f,
 				   static_cast<float>(static_cast<int>(settings_.bodyType)), river ? settings_.flowSpeed : 0.0f };
 	// The rim of a round body fades over about 40 cm (as a fraction of its radius; the plane's own space is -1..1).

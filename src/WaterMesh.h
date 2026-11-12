@@ -24,9 +24,44 @@ struct TileGrid {
 	bool operator!=(const TileGrid& o) const { return !(*this == o); }
 };
 
+// How the tile count grows with the body's size (lesson 34).
+//
+// A tile always has the same number of cells, so on a bigger body the cells get bigger too. The shader fades out every wave
+// that a cell is too coarse to show, so on a big plane only the longest waves survive and the sea goes flat. To keep the
+// finest cells near `targetCell` world units, big bodies are cut into MORE tiles.
+//
+//  * The count is quantised (kSteps) so that dragging a size slider rebuilds the mesh a few times, not every frame.
+//  * Every tile costs memory, so the total is capped by a vertex budget: finer tiles (more cells each) allow fewer of them.
+constexpr int kSteps[] = { 1, 2, 3, 4, 6, 8, 12, 16, 20, 24 };
+constexpr int kMaxTilesPerAxis = 24;
+constexpr int kVertexBudget = 450000;   // vertices over all tiles at the finest level (about 14 MB with 32-byte vertices)
+
+inline int MaxTiles(int cellsPerTile)
+{
+	const int row = cellsPerTile + 1;
+	return std::clamp(kVertexBudget / (row * row), 64, 400);
+}
+
+// The smallest step that is at least `wanted` (and at least `atLeast`), never above the per-axis limit.
+inline int StepAtLeast(int wanted, int atLeast)
+{
+	wanted = (std::max)(wanted, atLeast);
+	for (int step : kSteps) if (step >= wanted) return (std::min)(step, kMaxTilesPerAxis);
+	return kMaxTilesPerAxis;
+}
+
+// The step below `count` (but not below `floor`), or `count` itself if there is none.
+inline int StepBelow(int count, int floor)
+{
+	int best = count;
+	for (int step : kSteps) if (step < count && step >= floor) best = step;
+	return best;
+}
+
 // `previousClass`: the class of the grid that is built now (-1 = none). The class only changes once the shape has clearly
 // moved past a boundary, so dragging a size slider near a boundary does not rebuild the mesh every frame.
-inline TileGrid ChooseTileGrid(float extentX, float extentZ, int previousClass = -1)
+// `cellsPerTile` > 0 turns on the growth with size described above; 0 keeps the base grid (the shape table alone).
+inline TileGrid ChooseTileGrid(float extentX, float extentZ, int previousClass = -1, int cellsPerTile = 0, float targetCell = 1.0f)
 {
 	static const int kLong[5]  = { 8, 12, 16, 16, 16 };
 	static const int kShort[5] = { 8, 6, 4, 2, 1 };
@@ -40,6 +75,26 @@ inline TileGrid ChooseTileGrid(float extentX, float extentZ, int previousClass =
 	const bool alongX = extentX >= extentZ;
 	grid.x = alongX ? kLong[shapeClass] : kShort[shapeClass];
 	grid.z = alongX ? kShort[shapeClass] : kLong[shapeClass];
+	if (cellsPerTile <= 0) return grid;
+
+	// Tiles needed along each side so that one cell is about `targetCell` wide.
+	const float tileWorld = static_cast<float>(cellsPerTile) * (std::max)(targetCell, 0.05f);
+	const int baseX = grid.x, baseZ = grid.z;
+	grid.x = StepAtLeast(static_cast<int>(std::ceil(extentX / tileWorld)), baseX);
+	grid.z = StepAtLeast(static_cast<int>(std::ceil(extentZ / tileWorld)), baseZ);
+	// Over the budget: take sides down a step at a time, never below the base grid, and always the side whose cells are the
+	// FINEST (the one that can best afford it), so a square body stays square instead of ending up 8 x 12.
+	const int budget = MaxTiles(cellsPerTile);
+	while (grid.x * grid.z > budget) {
+		const bool canX = grid.x > baseX, canZ = grid.z > baseZ;
+		if (!canX && !canZ) break;   // already the base grid
+		const float cellX = extentX / static_cast<float>(grid.x), cellZ = extentZ / static_cast<float>(grid.z);
+		if (canX && canZ && std::fabs(cellX - cellZ) <= 1e-3f * (std::max)(cellX, cellZ)) {   // equally fine: a square stays square
+			grid.x = StepBelow(grid.x, baseX);
+			grid.z = StepBelow(grid.z, baseZ);
+		} else if (canX && (!canZ || cellX < cellZ)) grid.x = StepBelow(grid.x, baseX);
+		else grid.z = StepBelow(grid.z, baseZ);
+	}
 	return grid;
 }
 

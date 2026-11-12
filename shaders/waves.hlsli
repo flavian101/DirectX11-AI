@@ -32,6 +32,20 @@ float ShoalAmplitude(float amplitude, float k, float depth, float strength)
     return amplitude + (limited - amplitude) * min(strength, 1.0f);
 }
 
+// Wave groups: a slow pattern, two crossing waves much longer than the sea's own, that turns the waves DOWN in places so the
+// sea is calm in some patches and rough in others, and the patches drift. The factor is between 1 - strength and 1 (never
+// above 1, so the height bound and the no-fold-over limit still hold). Same formula as WaterWaves::GroupFactor (src/WaterWaves.h).
+float WaveGroupFactor(float2 restXZ, float time)
+{
+    const float strength = waterGroupInfo.x;
+    if (strength <= 0.0f) return 1.0f;
+    const float k = waterGroupInfo.y;
+    const float speed = waterGroupInfo.z;
+    const float p1 = k * dot(float2(0.8f, 0.6f), restXZ) + speed * time + 0.7f;
+    const float p2 = 1.37f * k * dot(float2(-0.6f, 0.8f), restXZ) + 1.37f * speed * time + 2.1f;
+    return 1.0f - strength * (0.5f + 0.5f * sin(p1) * sin(p2));
+}
+
 // Vertex stage. `maxK`: waves with a higher k (shorter wavelength) are faded out, because the grid is too coarse
 // out there to show them (they would turn into noisy lumps instead of waves).
 // `depth`: how deep the water is under restXZ (WaterDepthAt), for the shore effect.
@@ -40,14 +54,16 @@ float3 WaveDisplacement(float2 restXZ, float time, float maxK, float depth)
 {
     float3 d = float3(0.0f, 0.0f, 0.0f);
     const int count = (int)waterWaveInfo.x;
+    const float group = WaveGroupFactor(restXZ, time);
     [loop]
     for (int i = 0; i < count; ++i) {
         const float4 dirK = waterWaveDirK[i];
         const float4 motion = waterWaveMotion[i];
         const float fade = saturate(2.0f - 2.0f * dirK.z / maxK);
         if (fade <= 0.0f) continue;   // too short for this part of the grid to hold: skip its sin/cos altogether
-        const float a = ShoalAmplitude(dirK.w, dirK.z, depth, waterShore.y) * fade;
-        const float aSide = min(a, dirK.w * fade);   // the sideways pull never exceeds the open-water wave: no folding
+        const float shoaled = ShoalAmplitude(dirK.w, dirK.z, depth, waterShore.y);
+        const float a = shoaled * fade * group;
+        const float aSide = min(shoaled, dirK.w) * fade * group;   // the sideways pull never exceeds the open-water wave: no folding
         const float phase = dirK.z * dot(dirK.xy, restXZ) + motion.x * time + motion.z;
         float s, c;
         sincos(phase, s, c);
@@ -66,6 +82,7 @@ void EvaluateWaveShading(float2 restXZ, float time, float pixelsPerUnit, float d
 {
     float cx = 0.0f, cz = 0.0f, sxx = 0.0f, sxz = 0.0f, szz = 0.0f;
     const int count = (int)waterWaveInfo.x;
+    const float group = WaveGroupFactor(restXZ, time);
     [loop]
     for (int i = 0; i < count; ++i) {
         const float4 dirK = waterWaveDirK[i];
@@ -74,8 +91,9 @@ void EvaluateWaveShading(float2 restXZ, float time, float pixelsPerUnit, float d
         const float wavelengthPixels = (kTwoPi / k) * pixelsPerUnit;
         const float fade = saturate((wavelengthPixels - 2.0f) * 0.25f);
         if (fade <= 0.0f) continue;   // under 2 pixels long: invisible, and the far sea is mostly such waves
-        const float a = ShoalAmplitude(dirK.w, k, depth, waterShore.y) * fade;
-        const float aSide = min(a, dirK.w * fade);
+        const float shoaled = ShoalAmplitude(dirK.w, k, depth, waterShore.y);
+        const float a = shoaled * fade * group;
+        const float aSide = min(shoaled, dirK.w) * fade * group;
         const float phase = k * dot(dirK.xy, restXZ) + motion.x * time + motion.z;
         float s, c;
         sincos(phase, s, c);

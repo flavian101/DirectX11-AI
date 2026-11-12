@@ -2306,6 +2306,34 @@ void EditorLayer::DrawWaterInspector(Water* water)
         ImGui::SetItemTooltip("0 = rounded sine waves. 1 = sharp crests and wide troughs (Gerstner waves). Never folds over.");
         changed |= ImGui::SliderInt("Wave count", &s.waveCount, WaterSettings::kWaveCountMin, WaterSettings::kWaveCountMax);
         ImGui::SetItemTooltip("How many waves are added together. Fewer = cheaper and simpler. Each costs a little in the\nvertex AND pixel shader.");
+        {   // the sea model (lesson 34)
+            int style = static_cast<int>(s.waveStyle);
+            static const char* const kStyleNames[] = { "Classic (fixed waves)", "Spectrum (sea model)" };
+            if (ImGui::Combo("Wave model", &style, kStyleNames, IM_ARRAYSIZE(kStyleNames))) { s.waveStyle = static_cast<WaterWaves::Style>(style); changed = true; }
+            ImGui::SetItemTooltip("Classic: the original eight fixed waves. Spectrum: waves built from a sea model: they get finer and lower\ntogether, with an optional swell and patches of calmer and rougher water.");
+            if (s.waveStyle == WaterWaves::Style::Spectrum) {
+                changed |= ImGui::SliderFloat("Roughness", &s.waveRoughness, 0.0f, 1.0f);
+                ImGui::SetItemTooltip("0 = glassy: the small waves die away fast. 1 = rough: the small waves stay almost as tall.");
+                if (!river) {   // a current has one direction: there is no cross swell on a river
+                    changed |= ImGui::SliderFloat("Swell", &s.swell, 0.0f, 1.0f);
+                    ImGui::SetItemTooltip("Long, low waves from their own direction under the small ones. This is what a boat heaves on.");
+                    if (s.swell > 0.0f) {
+                        changed |= ImGui::SliderFloat("Swell angle", &s.swellAngle, -90.0f, 90.0f, "%.0f deg from wind");
+                        changed |= ImGui::SliderFloat("Swell length", &s.swellLength, WaterSettings::kSwellLengthMin, WaterSettings::kSwellLengthMax, "x %.1f");
+                        ImGui::SetItemTooltip("The swell's wavelength as a multiple of the biggest wind wave's.");
+                    }
+                }
+                changed |= ImGui::SliderFloat("Wave groups", &s.waveGroups, 0.0f, WaterSettings::kWaveGroupsMax);
+                ImGui::SetItemTooltip("The sea breathes: patches of calm and rough water that drift. Only ever turns waves DOWN,\nso the Amplitude above is the average and the roughest patches are a little taller.");
+                changed |= ImGui::SliderInt("Seed", &s.waveSeed, 0, 9999);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Re-roll")) { s.waveSeed = (s.waveSeed * 7919 + 104729) % 10000; changed = true; }
+                ImGui::SetItemTooltip("Another seed is another sea with the same character: different angles, wavelengths and phases.");
+                ImGui::TextDisabled("Biggest wind wave %.1f units long", 6.2831853f / (std::max)(s.waveFrequency, 0.001f));
+                if (!river && s.swell > 0.0f)
+                    ImGui::TextDisabled("Swell %.1f units long", 6.2831853f / (std::max)(s.waveFrequency, 0.001f) * s.swellLength);
+            }
+        }
         ImGui::SeparatorText("Ripples");
         changed |= ImGui::SliderFloat("Ripple strength", &s.detailNormal, 0.0f, WaterSettings::kDetailMax);
         ImGui::SetItemTooltip("Small ripples on top of the waves. 0 turns them off and skips their cost.");

@@ -69,7 +69,16 @@ struct WaterSettings {
 	float windDirection = 20.0f;  // degrees: the direction the waves travel toward (0 = +X, 90 = +Z)
 	float directionalSpread = 0.7f;   // 0 = all waves run with the wind (a clean swell), 1 = waves from every which way
 	float choppiness = 0.5f;      // 0 = rounded sine waves, 1 = sharp crests and wide troughs
-	int waveCount = 6;            // 2..8 waves summed. Fewer = cheaper and simpler
+	int waveCount = 6;            // 2..12 waves summed. Fewer = cheaper and simpler
+	// The sea model (lesson 34). Classic = the original fixed waves (the five values below are ignored); Spectrum = a wind sea
+	// built from a spectrum, plus a swell, plus wave groups. Scenes saved before this existed load as Spectrum with these defaults.
+	WaterWaves::Style waveStyle = WaterWaves::Style::Spectrum;
+	float waveRoughness = 0.5f;   // 0 = glassy (small waves die away fast), 1 = rough (many small waves)
+	float swell = 0.3f;           // 0 = none; 1 = a swell nearly as tall as the biggest wind wave. A river has none
+	float swellAngle = 35.0f;     // degrees from the wind: where the swell comes from
+	float swellLength = 2.5f;     // the swell's wavelength as a multiple of the biggest wind wave's
+	float waveGroups = 0.35f;     // 0 = the same waves everywhere; 1 = patches of calm and rough water that drift
+	int waveSeed = 1;             // another seed = another sea with the same character
 	float detailNormal = 0.5f;    // strength of the small ripples on top of the waves (0 = off, saves pixel work)
 	float detailScale = 0.8f;     // ripples per world unit
 	float detailDistance = 90.0f; // ripples fade out by this distance from the camera
@@ -101,6 +110,7 @@ struct WaterSettings {
 	static constexpr float kAmplitudeMax = 2.0f, kSpeedMax = 5.0f;
 	static constexpr float kFrequencyMin = 0.05f, kFrequencyMax = 2.0f;
 	static constexpr int kWaveCountMin = 2, kWaveCountMax = WaterWaves::kMaxWaves;
+	static constexpr float kSwellLengthMin = 1.5f, kSwellLengthMax = 6.0f, kWaveGroupsMax = 0.9f;
 	static constexpr float kDetailMax = 2.0f, kDetailScaleMin = 0.1f, kDetailScaleMax = 4.0f;
 	static constexpr float kDetailDistanceMin = 10.0f, kDetailDistanceMax = 500.0f;
 	static constexpr float kGlintMax = 3.0f;

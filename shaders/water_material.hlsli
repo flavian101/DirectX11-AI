@@ -4,7 +4,7 @@
 #ifndef WATER_MATERIAL_HLSLI
 #define WATER_MATERIAL_HLSLI
 
-#define WATER_MAX_WAVES 8
+#define WATER_MAX_WAVES 12   // must equal WaterWaves::kMaxWaves (src/WaterWaves.h)
 
 cbuffer WaterMaterial : register(b4) {
     float4 waterDeepColor;      // rgb = deep-water colour (linear), a = opacity of deep water
@@ -18,6 +18,7 @@ cbuffer WaterMaterial : register(b4) {
     float4 waterShape;          // x = 1 when this body has a mirror image bound to t3 this frame, y = shape (0 rectangle, 1 ellipse), z = ellipse edge softness
     float4 waterFlow;           // x = ripple drift multiplier (1 = wind-blown, river = rides the current), y = sideways ripple drift (1 on, 0 river), z = body type (0 ocean, 1 lake, 2 river, 3 pond), w = flow speed
     float4 waterShore;          // x = 1 when this body's depth map is bound to t15, y = shore wave strength (0 = waves identical everywhere), z = swash, w = unused
+    float4 waterGroupInfo;      // wave groups (WaveGroupFactor): x = strength (0 = off), y = k of the pattern, z = its speed (radians per second)
     float4 waterWaveDirK[WATER_MAX_WAVES];     // xy = unit direction, z = k (radians per unit), w = amplitude
     float4 waterWaveMotion[WATER_MAX_WAVES];   // x = omega (radians per second), y = steepness Q, z = phase offset
 };

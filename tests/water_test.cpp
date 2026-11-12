@@ -332,6 +332,162 @@ static void TestMaxDepthIn()
 	CHECK(WaterShore::DepthField().MaxDepthIn(-1.0f, 1.0f, -1.0f, 1.0f) == WaterShore::kDeepWater);   // no map: deep
 }
 
+// The spectrum sea (lesson 34): whatever the settings, the table must be safe (no fold-over, bounds that hold), repeatable,
+// and shaped as promised (wind waves first, swell longer, groups only turn waves down).
+static void TestSpectrum()
+{
+	std::uint32_t seed = 777;
+	for (int round = 0; round < 300; ++round) {
+		WaterWaves::Params p;
+		p.amplitude = 0.02f + Random01(seed) * 1.5f;
+		p.frequency = 0.2f + Random01(seed) * 1.6f;
+		p.speed = 0.3f + Random01(seed) * 2.0f;
+		p.windDegrees = Random01(seed) * 360.0f;
+		p.spread = Random01(seed);
+		p.choppiness = Random01(seed);
+		p.count = 2 + static_cast<int>(Random01(seed) * 10.99f);
+		p.roughness = Random01(seed);
+		p.swell = Random01(seed) < 0.3f ? 0.0f : Random01(seed);
+		p.swellAngle = Random01(seed) * 180.0f - 90.0f;
+		p.swellLength = 1.5f + Random01(seed) * 4.0f;
+		p.groups = Random01(seed) < 0.3f ? 0.0f : Random01(seed) * 0.9f;
+		p.seed = static_cast<std::uint32_t>(Random01(seed) * 1000.0f);
+		p.shoreWaves = Random01(seed) < 0.5f ? 0.0f : Random01(seed);
+		if (Random01(seed) < 0.2f) p.flowSpeed = 0.5f + Random01(seed) * 4.0f;   // a river
+		const WaterWaves::Table t = WaterWaves::Build(p);
+
+		CHECK(t.count == std::clamp(p.count, 1, WaterWaves::kMaxWaves));
+		// Every wave is well formed.
+		float sumQKA = 0.0f, tallest = 0.0f;
+		for (int i = 0; i < t.count; ++i) {
+			const auto& w = t.waves[i];
+			CHECK(std::fabs(w.dirX * w.dirX + w.dirZ * w.dirZ - 1.0f) < 1e-4f);
+			CHECK(w.k > 0.0f && w.amplitude > 0.0f && w.omega > 0.0f);
+			CHECK(w.steepness >= 0.0f && w.steepness <= 1.0f + 1e-6f);
+			if (p.flowSpeed > 0.0f) CHECK(std::fabs(w.omega / w.k - p.flowSpeed) < 1e-3f);   // a river carries every wave at the current's speed
+			sumQKA += w.steepness * w.k * w.amplitude;
+			tallest += w.amplitude;
+		}
+		// No fold-over: the sum of Q*k*a never passes the choppiness setting.
+		CHECK(sumQKA <= p.choppiness + 1e-4f);
+		CHECK(t.heightBound >= tallest - 1e-4f);
+		// The bounds hold, wave groups included, at random places and times.
+		for (int n = 0; n < 40; ++n) {
+			const float x = Random01(seed) * 400.0f - 200.0f, z = Random01(seed) * 400.0f - 200.0f, time = Random01(seed) * 200.0f;
+			float dx, dy, dz;
+			WaterWaves::Displacement(t, x, z, time, dx, dy, dz);
+			CHECK(std::fabs(dy) <= t.heightBound + 1e-4f);
+			CHECK(std::hypot(dx, dz) <= t.heightBound + 1e-4f);
+			const float group = WaterWaves::GroupFactor(t, x, z, time);
+			CHECK(group <= 1.0f + 1e-6f && group >= 1.0f - t.groupStrength - 1e-6f);
+		}
+		// Repeatable: the same settings make the same sea; another seed makes another one (unless there is a single wave).
+		const WaterWaves::Table again = WaterWaves::Build(p);
+		CHECK(again.count == t.count && again.waves[0].k == t.waves[0].k && again.waves[t.count - 1].phase0 == t.waves[t.count - 1].phase0);
+		// Shape: wind waves come first and get finer and lower; the swell (if any) comes after and is longer than the biggest wind wave.
+		const bool hasSwell = p.swell > 0.0f && p.flowSpeed <= 0.0f && t.count >= 2;
+		int longer = 0;
+		for (int i = 0; i < t.count; ++i) if (t.waves[i].k < p.frequency * 0.9999f) ++longer;
+		CHECK(hasSwell ? (longer >= 1 && longer <= 3) : longer == 0);
+		CHECK(std::fabs(t.waves[0].k - p.frequency) < 1e-5f);
+		const float boost = 1.0f / (1.0f - 0.5f * std::clamp(p.groups, 0.0f, 0.9f));
+		CHECK(std::fabs(t.waves[0].amplitude - p.amplitude * boost) < 1e-4f * std::max(1.0f, p.amplitude));
+	}
+	{
+		WaterWaves::Params a, b;
+		b.seed = 2;
+		CHECK(WaterWaves::Build(a).waves[1].phase0 != WaterWaves::Build(b).waves[1].phase0);
+	}
+	// Wind waves: finer and lower, one after another.
+	{
+		WaterWaves::Params p;
+		p.count = 6;
+		const WaterWaves::Table t = WaterWaves::Build(p);
+		for (int i = 1; i < t.count; ++i) {
+			CHECK(t.waves[i].k > t.waves[i - 1].k * 1.1f);
+			CHECK(t.waves[i].amplitude < t.waves[i - 1].amplitude);
+		}
+	}
+	// Wave groups: with the strength at 0 the factor is exactly 1; otherwise it averages about 1 - strength / 2.
+	{
+		WaterWaves::Params p;
+		p.groups = 0.6f;
+		const WaterWaves::Table t = WaterWaves::Build(p);
+		double sum = 0.0;
+		const int n = 20000;
+		for (int i = 0; i < n; ++i) sum += WaterWaves::GroupFactor(t, Random01(seed) * 2000.0f, Random01(seed) * 2000.0f, Random01(seed) * 500.0f);
+		CHECK(std::fabs(sum / n - (1.0 - 0.6 / 2.0)) < 0.03);
+		p.groups = 0.0f;
+		CHECK(WaterWaves::GroupFactor(WaterWaves::Build(p), 12.0f, 34.0f, 5.0f) == 1.0f);
+	}
+	// The classic table is exactly the original one.
+	{
+		WaterWaves::Params p;
+		p.style = WaterWaves::Style::Classic;
+		p.groups = 0.5f; p.swell = 1.0f;   // ignored by Classic
+		const WaterWaves::Table t = WaterWaves::Build(p);
+		CHECK(t.groupStrength == 0.0f);
+		CHECK(std::fabs(t.waves[1].k - p.frequency * 1.7f) < 1e-6f);
+		CHECK(std::fabs(t.waves[1].amplitude - p.amplitude * 0.55f) < 1e-6f);
+		CHECK(std::fabs(t.waves[3].phase0 - 4.1f) < 1e-6f);
+	}
+	// The CPU height still inverts correctly with groups and a swell on, at the sharpest choppiness.
+	{
+		WaterWaves::Params p;
+		p.choppiness = 0.9f; p.amplitude = 0.6f; p.count = 8; p.swell = 0.7f; p.groups = 0.5f;
+		const WaterWaves::Table t = WaterWaves::Build(p);
+		for (int n = 0; n < 1000; ++n) {
+			const float x = Random01(seed) * 200.0f - 100.0f, z = Random01(seed) * 200.0f - 100.0f, time = Random01(seed) * 100.0f;
+			const float height = WaterWaves::HeightAt(t, x, z, time);
+			float rx = x, rz = z, dx, dy, dz;
+			for (int it = 0; it < 200; ++it) { WaterWaves::Displacement(t, rx, rz, time, dx, dy, dz); rx = x - dx; rz = z - dz; }
+			WaterWaves::Displacement(t, rx, rz, time, dx, dy, dz);
+			CHECK(std::fabs(dy - height) < 0.02f);
+		}
+	}
+}
+
+// The tile count grows with the body so the finest cell stays small (lesson 34); the old behaviour stays the default.
+static void TestTileGrowth()
+{
+	// Small bodies: unchanged.
+	auto g = WaterMesh::ChooseTileGrid(180, 180, -1, 32);       CHECK(g.x == 8 && g.z == 8);
+	g = WaterMesh::ChooseTileGrid(400, 50, -1, 32);             CHECK(g.x == 16 && g.z == 2);
+	// Bigger: more tiles, in steps.
+	g = WaterMesh::ChooseTileGrid(300, 300, -1, 32);            CHECK(g.x == 12 && g.z == 12);     // 300 / 32 = 9.4 tiles -> 12
+	g = WaterMesh::ChooseTileGrid(640, 640, -1, 32);            CHECK(g.x == 20 && g.z == 20);
+	// Over the per-axis cap and the vertex budget: 20 x 20 (400 tiles) is the most.
+	g = WaterMesh::ChooseTileGrid(2000, 2000, -1, 32);          CHECK(g.x == 20 && g.z == 20);
+	// Finer tiles (64 cells) allow fewer of them: this stays at the base grid.
+	g = WaterMesh::ChooseTileGrid(1000, 1000, -1, 64);          CHECK(g.x == 8 && g.z == 8);
+	// A long river grows along its length only.
+	g = WaterMesh::ChooseTileGrid(2000, 50, -1, 32);            CHECK(g.x == 24 && g.z == 2);
+	// Without cellsPerTile nothing changes (the old table).
+	g = WaterMesh::ChooseTileGrid(2000, 2000);                  CHECK(g.x == 8 && g.z == 8);
+	// Always at least the base grid, never more than the budget, steps only; and the finest cell is on target when not capped.
+	std::uint32_t seed = 4242;
+	for (int i = 0; i < 2000; ++i) {
+		const float ex = 5.0f + Random01(seed) * 1500.0f, ez = 5.0f + Random01(seed) * 1500.0f;
+		const int cells = (Random01(seed) < 0.5f) ? 32 : (Random01(seed) < 0.5f ? 16 : 64);
+		const float target = 0.5f + Random01(seed) * 1.5f;
+		const auto base = WaterMesh::ChooseTileGrid(ex, ez);
+		const auto grown = WaterMesh::ChooseTileGrid(ex, ez, -1, cells, target);
+		CHECK(grown.x >= base.x && grown.z >= base.z);
+		CHECK(grown.x * grown.z <= (std::max)(WaterMesh::MaxTiles(cells), base.x * base.z));
+		CHECK(grown.x <= WaterMesh::kMaxTilesPerAxis && grown.z <= WaterMesh::kMaxTilesPerAxis);
+		// When the grid that the sizes call for fits the budget, that is exactly what is built, and its cells are on target
+		// (the tile count is rounded UP to a step, so cells are never coarser than asked, unless the per-axis cap was hit).
+		const float tileWorld = cells * target;
+		const int needX = WaterMesh::StepAtLeast(static_cast<int>(std::ceil(ex / tileWorld)), base.x);
+		const int needZ = WaterMesh::StepAtLeast(static_cast<int>(std::ceil(ez / tileWorld)), base.z);
+		if (needX * needZ <= WaterMesh::MaxTiles(cells)) {
+			CHECK(grown.x == needX && grown.z == needZ);
+			if (needX < WaterMesh::kMaxTilesPerAxis) CHECK(ex / (grown.x * cells) <= target + 1e-3f);
+			if (needZ < WaterMesh::kMaxTilesPerAxis) CHECK(ez / (grown.z * cells) <= target + 1e-3f);
+		}
+	}
+}
+
 int main()
 {
 	TestTileIndices();
@@ -340,6 +496,8 @@ int main()
 	TestRiverFlow();
 	TestShoaling();
 	TestShoreMap();
+	TestSpectrum();
+	TestTileGrowth();
 	TestMaxDepthIn();
 	if (g_failures == 0) std::printf("water tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;

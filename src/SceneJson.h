@@ -49,7 +49,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SurfaceSettings, baseColor, alph
 // (WaterSettings::debugView and ::wireframe are debug-only and deliberately not listed.)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpeed, flowAngle, shoreWaves, swash, height, size, sizeZ, shape, color, alpha, shallowColor, absorption, fadeDistance,
                                                 foamDistance, foamStrength, waveAmplitude, waveSpeed, waveFrequency, windDirection,
-                                                directionalSpread, choppiness, waveCount, detailNormal, detailScale, detailDistance,
+                                                directionalSpread, choppiness, waveCount, waveStyle, waveRoughness, swell, swellAngle, swellLength, waveGroups, waveSeed, detailNormal, detailScale, detailDistance,
                                                 reflectivity, reflectionMode, reflectionDistortion, refraction, scatter,
                                                 glintStrength, glintSharpness, crestFoam, crestFoamThreshold,
                                                 meshDetail, lodDistance, frustumCulling)
