@@ -9,6 +9,7 @@
 //   7. Sinking, the stretched/moved terrain, the grid helpers, and a timing for a 1 km terrain.
 //   8. Variants (lesson 36): weighted picks, seam-free and repeatable with variants, adding variants never moves anything,
 //      slope bands and layer biases steer the pick, a species with no variant allowed grows nothing, per-variant size and sink.
+//   9. The buffer bookkeeping of variants: grouping one cell's instances by variant, and the variant-major layout (with a cap).
 #include "ScatterPlacement.h"
 #include <algorithm>
 #include <chrono>
@@ -580,6 +581,59 @@ static void TestVariantScaleSinkAndClamp()
     CHECK(wild.variantCount == 1);
 }
 
+static void TestGroupingAndLayout()
+{
+    // Five instances, tagged by x, variants 1 0 2 0 1: grouped they read (x = 2, 4) (x = 1, 5) (x = 3), order kept inside a group.
+    std::vector<ScatterInstance> inst(5);
+    for (int i = 0; i < 5; ++i) inst[i].x = static_cast<float>(i + 1);
+    const std::vector<std::uint8_t> variants = { 1, 0, 2, 0, 1 };
+    std::uint32_t off[kMaxScatterVariants + 1];
+    GroupScatterByVariant(inst, variants, 3, off);
+    CHECK(off[0] == 0 && off[1] == 2 && off[2] == 4 && off[3] == 5);
+    CHECK(inst[0].x == 2 && inst[1].x == 4 && inst[2].x == 1 && inst[3].x == 5 && inst[4].x == 3);
+
+    // One variant: untouched. A variant number out of range is treated as 0. A size mismatch changes nothing.
+    std::vector<ScatterInstance> one(3); one[0].x = 7; one[1].x = 8; one[2].x = 9;
+    GroupScatterByVariant(one, { 0, 0, 0 }, 1, off);
+    CHECK(off[0] == 0 && off[1] == 3 && one[0].x == 7 && one[2].x == 9);
+    std::vector<ScatterInstance> odd(2); odd[0].x = 1; odd[1].x = 2;
+    GroupScatterByVariant(odd, { 5, 1 }, 2, off);
+    CHECK(off[0] == 0 && off[1] == 1 && off[2] == 2 && odd[0].x == 1 && odd[1].x == 2);   // the 5 became 0
+    std::vector<ScatterInstance> wrong(2);
+    GroupScatterByVariant(wrong, { 0 }, 2, off);
+    CHECK(off[0] == 0 && off[1] == 2 && off[2] == 2);
+    std::vector<ScatterInstance> none;
+    GroupScatterByVariant(none, {}, 3, off);
+    CHECK(off[0] == 0 && off[3] == 0);
+
+    // Layout: two cells, two variants. Variant-major: v0 of cell 0, v0 of cell 1, then v1 of cell 0, v1 of cell 1.
+    std::vector<ScatterCellCounts> cells(2);
+    cells[0].count[0] = 3; cells[0].count[1] = 2;
+    cells[1].count[0] = 4; cells[1].count[1] = 5;
+    std::vector<ScatterCellLayout> layout;
+    CHECK(PlanScatterLayout(cells, 2, 1000, layout) == 14);
+    CHECK(layout[0].start[0] == 0 && layout[0].count[0] == 3);
+    CHECK(layout[1].start[0] == 3 && layout[1].count[0] == 4);    // neighbours of one variant touch: AppendRun merges them
+    CHECK(layout[0].start[1] == 7 && layout[0].count[1] == 2);
+    CHECK(layout[1].start[1] == 9 && layout[1].count[1] == 5);
+    // The cap cuts the tail: 10 fit, so variant 1 of cell 0 gets 2 and of cell 1 gets 1.
+    CHECK(PlanScatterLayout(cells, 2, 10, layout) == 10);
+    CHECK(layout[0].count[0] == 3 && layout[1].count[0] == 4 && layout[0].count[1] == 2 && layout[1].count[1] == 1);
+    // Nothing fits: all empty, and variants past variantCount are ignored.
+    CHECK(PlanScatterLayout(cells, 1, 0, layout) == 0 && layout[0].count[0] == 0);
+    CHECK(PlanScatterLayout(cells, 1, 1000, layout) == 7 && layout[0].count[1] == 0);
+    // A cell's slices never overlap and stay inside the buffer.
+    std::vector<ScatterCellCounts> many(40);
+    for (size_t c = 0; c < many.size(); ++c) for (int v = 0; v < kMaxScatterVariants; ++v) many[c].count[v] = static_cast<std::uint32_t>((c * 7 + v * 3) % 11);
+    const std::uint32_t total = PlanScatterLayout(many, kMaxScatterVariants, 1000000, layout);
+    std::vector<int> hits(total, 0);
+    for (const ScatterCellLayout& l : layout)
+        for (int v = 0; v < kMaxScatterVariants; ++v) for (std::uint32_t k = 0; k < l.count[v]; ++k) { CHECK(l.start[v] + k < total); ++hits[l.start[v] + k]; }
+    bool exactlyOnce = true;
+    for (int h : hits) if (h != 1) exactlyOnce = false;
+    CHECK(exactlyOnce);
+}
+
 int main()
 {
     TestDeterministicAndSeamFree();
@@ -596,6 +650,7 @@ int main()
     TestAddingVariantsMovesNothing();
     TestVariantsFollowTheGround();
     TestVariantScaleSinkAndClamp();
+    TestGroupingAndLayout();
     if (g_failures == 0) std::printf("ScatterPlacementTests: all passed\n");
     else std::printf("ScatterPlacementTests: %d FAILED\n", g_failures);
     return g_failures == 0 ? 0 : 1;

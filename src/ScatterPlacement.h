@@ -24,6 +24,7 @@
 // that the caller uses to sort instances into one buffer range per variant.
 #include "Heightfield.h"
 #include "TerrainSplat.h"
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -131,3 +132,27 @@ ScatterGrid MakeScatterGrid(const ScatterRect& extent, float cellSize);
 ScatterRect ScatterCellRect(const ScatterGrid& grid, int cx, int cz);
 // The block of cells (inclusive) that a world rectangle touches, clamped to the grid. False if it touches none.
 bool ScatterCellsTouching(const ScatterGrid& grid, const ScatterRect& rect, int& cx0, int& cz0, int& cx1, int& cz1);
+
+// --- Variants in the instance buffer ------------------------------------------------------------------------------------
+// One species draws several meshes, but they all read ONE instance buffer. The buffer is laid out VARIANT-MAJOR: first all
+// the instances of variant 0, cell after cell in grid order, then all those of variant 1, and so on. Neighbouring visible
+// cells of one variant are then neighbours in the buffer too, so a whole stretch of forest stays one draw call per variant
+// and level of detail (see AppendRun in LodSelect.h). These two functions are the index bookkeeping of that, kept free of
+// Direct3D so they can be tested.
+
+// Reorders one cell's instances so those of variant 0 come first, then variant 1, ... (stable: the order inside a variant
+// is kept). `variants` has one entry per instance. On return offsets[v] .. offsets[v + 1] is variant v's slice, for
+// v < variantCount; offsets[variantCount] is the instance count. Entries of `variants` that are >= variantCount count as 0.
+void GroupScatterByVariant(std::vector<ScatterInstance>& instances, const std::vector<std::uint8_t>& variants, int variantCount,
+                           std::uint32_t offsets[kMaxScatterVariants + 1]);
+
+// How many instances of each variant a cell holds, and where those go in the shared buffer.
+struct ScatterCellCounts { std::uint32_t count[kMaxScatterVariants] = {}; };
+struct ScatterCellLayout {
+    std::uint32_t start[kMaxScatterVariants] = {};   // first instance of this cell's slice of variant v, in the buffer
+    std::uint32_t count[kMaxScatterVariants] = {};   // how many of its instances fit (the cap can cut the tail short)
+};
+// Fills `layout` (one entry per cell, same order as `cells`) and returns the number of instances the buffer holds.
+// The buffer never holds more than `cap`: past it, the remaining slices are empty.
+std::uint32_t PlanScatterLayout(const std::vector<ScatterCellCounts>& cells, int variantCount, std::uint32_t cap,
+                                std::vector<ScatterCellLayout>& layout);

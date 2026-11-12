@@ -343,3 +343,46 @@ bool ScatterCellsTouching(const ScatterGrid& grid, const ScatterRect& rect, int&
     cz1 = (std::min)(grid.cellsZ - 1, static_cast<int>(std::floor((rect.maxZ - grid.originZ) / grid.cellSize)));
     return cx1 >= cx0 && cz1 >= cz0;
 }
+
+void GroupScatterByVariant(std::vector<ScatterInstance>& instances, const std::vector<std::uint8_t>& variants, int variantCount,
+                           std::uint32_t offsets[kMaxScatterVariants + 1])
+{
+    const int count = (std::min)((std::max)(variantCount, 1), kMaxScatterVariants);
+    const size_t n = instances.size();
+    for (int v = 0; v <= kMaxScatterVariants; ++v) offsets[v] = 0;
+    if (variants.size() != n) {   // a caller bug: keep the order, call it all variant 0
+        offsets[0] = 0;
+        for (int v = 1; v <= count; ++v) offsets[v] = static_cast<std::uint32_t>(n);
+        return;
+    }
+    auto variantOf = [&](size_t i) { return static_cast<int>(variants[i]) < count ? static_cast<int>(variants[i]) : 0; };
+    std::uint32_t tally[kMaxScatterVariants] = {};
+    for (size_t i = 0; i < n; ++i) ++tally[variantOf(i)];
+    std::uint32_t run = 0;
+    for (int v = 0; v < count; ++v) { offsets[v] = run; run += tally[v]; }
+    offsets[count] = run;
+    if (count == 1) return;   // already in order
+    std::vector<ScatterInstance> sorted(n);
+    std::uint32_t next[kMaxScatterVariants];
+    for (int v = 0; v < count; ++v) next[v] = offsets[v];
+    for (size_t i = 0; i < n; ++i) sorted[next[variantOf(i)]++] = instances[i];
+    instances.swap(sorted);
+}
+
+std::uint32_t PlanScatterLayout(const std::vector<ScatterCellCounts>& cells, int variantCount, std::uint32_t cap,
+                                std::vector<ScatterCellLayout>& layout)
+{
+    const int count = (std::min)((std::max)(variantCount, 1), kMaxScatterVariants);
+    layout.assign(cells.size(), ScatterCellLayout{});
+    std::uint64_t used = 0;
+    for (int v = 0; v < count; ++v) {
+        for (size_t c = 0; c < cells.size(); ++c) {
+            const std::uint64_t room = cap > used ? cap - used : 0;
+            const std::uint32_t n = static_cast<std::uint32_t>((std::min<std::uint64_t>)(cells[c].count[v], room));
+            layout[c].start[v] = static_cast<std::uint32_t>(used);
+            layout[c].count[v] = n;
+            used += n;
+        }
+    }
+    return static_cast<std::uint32_t>(used);
+}
