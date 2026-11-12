@@ -5,30 +5,59 @@
 //   1. PLACE.   ScatterPlacement.h decides every position from the terrain's heights and its layer weights (the baked rules
 //               plus the paint). The terrain is cut into square CELLS; each cell is generated on its own, nearest to the
 //               camera first, a few milliseconds per frame, so even a huge forest never freezes the editor.
-//   2. UPLOAD.  All the instances of a species go into ONE vertex buffer, 32 bytes each, sorted by cell. A cell is a range
-//               of that buffer. When you sculpt or paint, only the cells under the brush are generated again.
+//   2. UPLOAD.  All the instances of a species go into ONE vertex buffer, 32 bytes each, grouped by VARIANT and then by
+//               cell (a variant is one look of the species: its own mesh and textures). A cell's instances of one variant
+//               are a range of that buffer. When you sculpt or paint, only the cells under the brush are generated again.
 //   3. CULL.    Every frame, every cell is tested: too small to matter? outside the view? That is a few hundred box tests,
 //               not a few hundred thousand.
 //   4. DETAIL.  Each surviving cell picks a level of detail from how big its trees look on screen (LodSelect.h).
-//   5. DRAW.    Neighbouring cells that picked the same level are merged into one range, and each range is ONE
-//               DrawIndexedInstanced call: the GPU draws thousands of copies of the mesh, each placed by its 32 bytes.
+//   5. DRAW.    For each variant, neighbouring cells that picked the same level are merged into one range, and each range
+//               is ONE DrawIndexedInstanced call: the GPU draws thousands of copies of the mesh, each placed by its 32 bytes.
 #include "LodSelect.h"
 #include "ModelObject.h"
 #include "ScatterPlacement.h"
 #include "SceneObject.h"
 #include "Shader.h"
 #include <array>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 class Terrain;
 
+// The artist's replacements for ONE material of a variant's model (lesson 36). Empty file = keep what the model says.
+// This is how three rocks can share one mesh and still look like three different stones.
+struct ScatterMaterialOverride {
+    int slot = 0;                                       // which material of the model (the editor lists them by name)
+    std::string albedo, normal, orm, emissive;          // image files. ORM: R = occlusion, G = roughness, B = metallic
+    std::array<float, 4> baseColor = { 1.0f, 1.0f, 1.0f, 1.0f };   // linear tint: multiplies the model's base colour
+    float roughness = -1.0f;                            // >= 0 replaces the roughness (scales an ORM map's, or is the constant); < 0 keeps it
+    bool flipGreen = true;                              // only for a replaced normal map: OpenGL-style (true, glTF) or DirectX-style (false)
+};
+
+// One look of a species: its own mesh and materials, and how often and where it is chosen (lesson 36).
+struct ScatterVariantSettings {
+    std::string name = "Variant";
+    std::string model = "builtin:rock";   // a model file or a "builtin:..." name (ProceduralModels.h)
+    bool enabled = true;
+    float weight = 1.0f;                  // relative chance among the variants the ground allows
+    std::array<float, 4> layerBias = { 1.0f, 1.0f, 1.0f, 1.0f };   // x the weight on grass / rock / sand / snow
+    float minSlope = 0.0f;                // degrees: only on ground in this band
+    float maxSlope = 90.0f;
+    float scaleMul = 1.0f;                // multiplies the species' scale range
+    std::vector<ScatterMaterialOverride> materials;
+    void Clamp();
+};
+
 // What one species (pine, birch, boulder...) needs. Plain data: the editor edits it, the scene file stores it.
+// A species with no `variants` is the one-look species of lesson 31: `model` is its only variant. As soon as `variants`
+// has an entry, those are the looks and `model` is ignored (the editor moves `model` into the list when you add a second).
 struct ScatterSpeciesSettings {
     std::string name = "Species";
     std::string model = "builtin:pine";   // a model file, or "builtin:pine" / "builtin:rock"
     bool enabled = true;
+    std::vector<ScatterVariantSettings> variants;   // up to kMaxScatterVariants
 
     // WHERE it grows (ScatterRules in ScatterPlacement.h)
     float spacing = 6.0f;                 // metres: at most one plant per spacing x spacing square
@@ -57,7 +86,15 @@ struct ScatterSpeciesSettings {
     float shadowDistance = 120.0f;        // metres from the camera; farther cells cast no shadow
 
     void Clamp();
+    // The looks the scatter actually uses: `variants`, or a single one made from `model` when there are none.
+    std::vector<ScatterVariantSettings> EffectiveVariants() const;
 };
+
+// The placement rules of one species, made from its settings (ScatterSettings.cpp: no Direct3D, tested).
+// `looks` are EffectiveVariants(); `modelHeights` and `usable` say, per look, how tall its loaded mesh is and whether it can be drawn at all.
+// A look that is switched off or whose model did not load gets weight 0: it is never chosen, so the others take its place.
+ScatterRules MakeScatterRules(const ScatterSpeciesSettings& species, const std::vector<ScatterVariantSettings>& looks,
+                              const std::vector<float>& modelHeights, const std::vector<char>& usable, int speciesIndex, int globalSeed);
 
 struct ScatterSettings {
     bool enabled = true;
@@ -120,15 +157,25 @@ public:
     const std::string& GetSpeciesError(size_t index) const;
     size_t GetInstanceCount(size_t index) const;
     int GetSpeciesLodLevels(size_t index) const;
+    // Per variant (index = its place in ScatterSpeciesSettings::EffectiveVariants()).
+    size_t GetVariantCount(size_t species) const;
+    bool IsVariantReady(size_t species, size_t variant) const;
+    const std::string& GetVariantError(size_t species, size_t variant) const;
+    size_t GetVariantInstanceCount(size_t species, size_t variant) const;
+    size_t GetVariantMaterialCount(size_t species, size_t variant) const;
+    std::string GetVariantMaterialName(size_t species, size_t variant, size_t slot) const;
     int GetPendingCells() const { return pendingCells_; }
     bool HasGround() const { return hasGround_; }
     const ScatterViewStats& GetViewStats(ViewKind kind) const { return stats_[static_cast<int>(kind)]; }
 
 private:
+    struct ModelAsset;   // a loaded model file: meshes and levels of detail, shared by every variant that uses the file
+    struct Variant;      // one look: a ModelAsset plus its own materials
     struct Species;
     void Draw(ID3D11DeviceContext* ctx, const RenderView& view, bool shadowPass) const;
     void SyncSpecies();
-    bool LoadModel(Species& species, const ScatterSpeciesSettings& settings);
+    std::shared_ptr<ModelAsset> AcquireModel(const std::string& model, std::string& error);
+    void LoadVariant(Variant& variant, const ScatterVariantSettings& settings);
     void ResetGrid(const ScatterRect& extent);
     void MarkDirty(const ScatterRect& rect);
     void GenerateCells(const struct ScatterGround& ground, const DirectX::XMFLOAT3& cameraPosition, double budgetMs);
@@ -140,6 +187,8 @@ private:
     std::vector<std::unique_ptr<Species>> species_;
     std::shared_ptr<Shader> litShader_, shadowShader_, shadowAlphaShader_;
     mutable ID3D11RasterizerState* cullNone_ = nullptr;
+    std::vector<std::vector<ScatterVariantSettings>> looks_;   // per species: EffectiveVariants(), made once in SetSettings
+    std::map<std::string, std::shared_ptr<ModelAsset>> modelCache_;   // by model name; dropped when no variant uses it any more
 
     // The ground this was generated for.
     SceneObjectId terrainId_ = 0;

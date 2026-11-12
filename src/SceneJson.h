@@ -60,10 +60,15 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpe
 // Culling and level of detail of a model (lesson 31), and the scatter that grows trees and rocks on the terrain.
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ModelRenderSettings, frustumCulling, lodEnabled, lodBias, lodScreen, cullScreen)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FloatingSettings, enabled, draft, responsiveness, damping, tilt, hullMask, maskPart, maskHeight, maskInset)
+// Variants of a scatter species (lesson 36). Scene files from before it have no "variants" key: the species' own "model" is then
+// its one look, exactly as before.
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterMaterialOverride, slot, albedo, normal, orm, emissive, baseColor, roughness, flipGreen)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterVariantSettings, name, model, enabled, weight, layerBias, minSlope, maxSlope,
+                                                scaleMul, materials)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterSpeciesSettings, name, model, enabled, spacing, minDistance, density, layerDensity,
                                                 minSlope, maxSlope, minHeight, maxHeight, clusterStrength, clusterScale, scaleMin,
                                                 scaleMax, alignToNormal, tilt, sink, seed, lodScreen, cullScreen, castShadows,
-                                                shadowDistance)
+                                                shadowDistance, variants)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterSettings, enabled, cellSize, seed, lodBias, frustumCulling, lodEnabled, shadows,
                                                 reflectionDetail, generationBudgetMs, maxInstancesPerSpecies, species)
 

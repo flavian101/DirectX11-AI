@@ -78,6 +78,7 @@ add_library(Engine STATIC
 	src/MeshLod.cpp
 	src/ProceduralModels.cpp
 	src/ScatterPlacement.cpp
+	src/ScatterSettings.cpp
 	src/ScatterObject.cpp
 	src/ModelObject.cpp
 	src/RayPicking.cpp
@@ -182,6 +183,11 @@ if(BUILD_TESTS)
     add_executable(ScatterPlacementTests tests/scatter_placement_test.cpp src/ScatterPlacement.cpp src/Heightfield.cpp)
     target_include_directories(ScatterPlacementTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME ScatterPlacement COMMAND ScatterPlacementTests)
+    # The scatter settings (lesson 36): variants, their limits, the translation into placement rules, old scene files.
+    add_executable(ScatterSettingsTests tests/scatter_settings_test.cpp src/ScatterSettings.cpp src/ScatterPlacement.cpp src/Heightfield.cpp)
+    target_include_directories(ScatterSettingsTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(ScatterSettingsTests PRIVATE nlohmann_json::nlohmann_json)
+    add_test(NAME ScatterSettings COMMAND ScatterSettingsTests)
     add_executable(LodSelectTests tests/lod_select_test.cpp)
     target_include_directories(LodSelectTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME LodSelect COMMAND LodSelectTests)

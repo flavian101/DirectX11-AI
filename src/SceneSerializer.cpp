@@ -126,13 +126,24 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
         entry["type"] = "Scatter";
         ScatterSettings settings = scatter->GetSettings();
         if (!snapshot) {
-            for (ScatterSpeciesSettings& species : settings.species) {
-                if (species.model.empty() || IsBuiltinModel(species.model)) continue;   // the built-in ones are not files
+            // Every file a species or one of its variants names: models, and the replacement textures of their materials.
+            auto store = [&](std::string& path, const std::string& owner) {
+                if (path.empty() || IsBuiltinModel(path)) return;   // the built-in models are not files
                 bool outside = false;
-                species.model = MakeStoredPath(fs::path(species.model), *folder, assetsRoot, outside);
+                path = MakeStoredPath(fs::path(path), *folder, assetsRoot, outside);
                 if (outside) {
-                    warn("The scatter species \"" + species.name + "\" uses a model outside the assets folder (" + species.model +
-                         "). It will not be shipped with the game: copy its folder into assets/ and choose it again.");
+                    warn("The scatter \"" + owner + "\" uses a file outside the assets folder (" + path +
+                         "). It will not be shipped with the game: copy it into assets/ and choose it again.");
+                }
+            };
+            for (ScatterSpeciesSettings& species : settings.species) {
+                store(species.model, species.name);
+                for (ScatterVariantSettings& variant : species.variants) {
+                    const std::string owner = species.name + " / " + variant.name;
+                    store(variant.model, owner);
+                    for (ScatterMaterialOverride& o : variant.materials) {
+                        store(o.albedo, owner); store(o.normal, owner); store(o.orm, owner); store(o.emissive, owner);
+                    }
                 }
             }
         }
@@ -235,8 +246,13 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
         model->SetFloatingSettings(entry.value("floating", FloatingSettings{}));
     } else if (auto* scatter = dynamic_cast<ScatterObject*>(&object)) {
         ScatterSettings loaded = entry.value("settings", ScatterSettings{});
+        auto resolveFile = [&](std::string& path) { if (!path.empty() && !IsBuiltinModel(path)) path = resolve(path); };
         for (ScatterSpeciesSettings& species : loaded.species) {
-            if (!species.model.empty() && !IsBuiltinModel(species.model)) species.model = resolve(species.model);
+            resolveFile(species.model);
+            for (ScatterVariantSettings& variant : species.variants) {
+                resolveFile(variant.model);
+                for (ScatterMaterialOverride& o : variant.materials) { resolveFile(o.albedo); resolveFile(o.normal); resolveFile(o.orm); resolveFile(o.emissive); }
+            }
         }
         scatter->SetSettings(loaded);
     }
