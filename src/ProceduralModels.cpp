@@ -183,12 +183,22 @@ ImportedModel MakePine()
 }
 
 // ---- A boulder: an icosphere (20 triangles, split four times over) pushed around by noise and squashed -----------------
-ImportedModel MakeRock()
+// What makes one built-in boulder different from another. The default is the original "builtin:rock", unchanged.
+struct RockStyle {
+    const char* id = kBuiltinRock;
+    const char* label = "Rock (built-in)";
+    float lumpShift = 0.0f, chipShift = 0.0f;                  // moves the noise so the lumps fall elsewhere
+    float sx = 1.05f, sy = 0.65f, sz = 0.85f;                  // the squash of the unit sphere
+    float chipAmount = 0.16f;                                  // more chips = more angular
+    float r = 0.16f, g = 0.15f, b = 0.14f, roughness = 0.9f;   // linear stone colour
+};
+
+ImportedModel MakeRock(const RockStyle& style = RockStyle{})
 {
     ImportedModel model;
-    model.name = "Rock (built-in)";
-    model.sourcePath = kBuiltinRock;
-    model.materials.push_back(MakeMaterial("Stone", 0.16f, 0.15f, 0.14f, 0.9f));
+    model.name = style.label;
+    model.sourcePath = style.id;
+    model.materials.push_back(MakeMaterial("Stone", style.r, style.g, style.b, style.roughness));
 
     // The 12 corners and 20 faces of an icosahedron.
     const float t = (1.0f + std::sqrt(5.0f)) * 0.5f;
@@ -217,10 +227,10 @@ ImportedModel MakeRock()
     Builder rock;
     for (const XMFLOAT3& p : points) {
         // Two octaves of noise move each point along its own direction: lumps and smaller chips.
-        const float lump = Noise3(p.x * 1.6f + 3.0f, p.y * 1.6f, p.z * 1.6f) - 0.5f;
-        const float chip = Noise3(p.x * 4.5f, p.y * 4.5f + 7.0f, p.z * 4.5f) - 0.5f;
-        const float radius = 1.0f + 0.55f * lump + 0.16f * chip;
-        rock.Add(p.x * radius * 1.05f, p.y * radius * 0.65f, p.z * radius * 0.85f, 0.5f + 0.5f * p.x, 0.5f + 0.5f * p.z);
+        const float lump = Noise3(p.x * 1.6f + 3.0f + style.lumpShift, p.y * 1.6f, p.z * 1.6f) - 0.5f;
+        const float chip = Noise3(p.x * 4.5f, p.y * 4.5f + 7.0f + style.chipShift, p.z * 4.5f) - 0.5f;
+        const float radius = 1.0f + 0.55f * lump + style.chipAmount * chip;
+        rock.Add(p.x * radius * style.sx, p.y * radius * style.sy, p.z * radius * style.sz, 0.5f + 0.5f * p.x, 0.5f + 0.5f * p.z);
     }
     for (const auto& f : faces) {
         const XMFLOAT3 &a = rock.vertices[f[0]].position, &b = rock.vertices[f[1]].position, &c = rock.vertices[f[2]].position;
@@ -236,5 +246,20 @@ bool MakeBuiltinModel(const std::string& id, ImportedModel& out)
 {
     if (id == kBuiltinPine) { out = MakePine(); return true; }
     if (id == kBuiltinRock) { out = MakeRock(); return true; }
+    if (id == kBuiltinRockFlat) {
+        RockStyle style; style.id = kBuiltinRockFlat; style.label = "Flat rock (built-in)"; style.lumpShift = 11.0f; style.chipShift = 5.0f;
+        style.sx = 1.35f; style.sy = 0.38f; style.sz = 1.05f; style.r = 0.19f; style.g = 0.18f; style.b = 0.165f;
+        out = MakeRock(style); return true;
+    }
+    if (id == kBuiltinRockTall) {
+        RockStyle style; style.id = kBuiltinRockTall; style.label = "Tall rock (built-in)"; style.lumpShift = 23.0f; style.chipShift = 13.0f;
+        style.sx = 0.7f; style.sy = 1.25f; style.sz = 0.62f; style.chipAmount = 0.26f; style.r = 0.12f; style.g = 0.115f; style.b = 0.115f; style.roughness = 0.85f;
+        out = MakeRock(style); return true;
+    }
+    if (id == kBuiltinRockMossy) {
+        RockStyle style; style.id = kBuiltinRockMossy; style.label = "Mossy rock (built-in)"; style.lumpShift = 37.0f; style.chipShift = 29.0f;
+        style.r = 0.07f; style.g = 0.13f; style.b = 0.05f; style.roughness = 0.95f;
+        out = MakeRock(style); return true;
+    }
     return false;
 }

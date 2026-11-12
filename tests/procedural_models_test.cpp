@@ -34,4 +34,4 @@ static void Check(const char* id, int expectParts)
     CHECK(volume > 0);
     CHECK(m.triangleCount==tris);
 }
-int main(){ Check("builtin:pine",2); Check("builtin:rock",1); ImportedModel m; CHECK(!MakeBuiltinModel("builtin:nope",m)); printf(fails?"FAILED\n":"ok\n"); return fails; }
+int main(){ Check("builtin:pine",2); Check("builtin:rock",1); Check("builtin:rock_flat",1); Check("builtin:rock_tall",1); Check("builtin:rock_mossy",1); ImportedModel m; CHECK(!MakeBuiltinModel("builtin:nope",m)); printf(fails?"FAILED\n":"ok\n"); return fails; }

@@ -8,6 +8,11 @@
 
 constexpr const char* kBuiltinPine = "builtin:pine";
 constexpr const char* kBuiltinRock = "builtin:rock";
+// Three more boulders with their own shape and stone colour, so a scatter species can show variants (lesson 36) before you
+// have any assets of your own: a flat slab, a tall angular block, and the plain boulder with a mossy green colour.
+constexpr const char* kBuiltinRockFlat = "builtin:rock_flat";
+constexpr const char* kBuiltinRockTall = "builtin:rock_tall";
+constexpr const char* kBuiltinRockMossy = "builtin:rock_mossy";
 
 inline bool IsBuiltinModel(const std::string& path) { return path.rfind("builtin:", 0) == 0; }
 
