@@ -76,8 +76,9 @@ float4 main(PS_IN input) : SV_Target
     const float pixelsPerUnit = (0.5f / screenParams.y) * proj._22 / max(distanceToEye, 0.01f);
     float3 N;
     float jacobian;
-    const float mapDepth = WaterDepthAt(input.local);   // vertical depth under this pixel (1000 when the body has no map)
-    EvaluateWaveShading(input.rest.xy, time, pixelsPerUnit, mapDepth, N, jacobian);
+    const float3 shore = WaterShoreAt(input.local);     // depth and the way to the land under this pixel (1000 and nothing when the body has no map)
+    const float mapDepth = shore.x;                     // vertical depth under this pixel
+    EvaluateWaveShading(input.rest.xy, time, pixelsPerUnit, shore, N, jacobian);
 
     const float detailStrength = waterWaveInfo.y;
     const float detailFade = 1.0f - smoothstep(0.35f * waterWaveInfo.w, waterWaveInfo.w, distanceToEye);

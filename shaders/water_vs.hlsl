@@ -25,7 +25,7 @@ VS_OUT main(VS_IN input)
     const float maxK = kTwoPi / (3.0f * spacing);   // keep >= 3 grid cells per wavelength
 
     // How deep the water is here (from the terrain), so waves grow and break as they reach the shore.
-    const float3 d = WaveDisplacement(restPos.xz, frameParams.x, maxK, WaterDepthAt(input.position.xz));
+    const float3 d = WaveDisplacement(restPos.xz, frameParams.x, maxK, WaterShoreAt(input.position.xz));
     float3 worldPos = restPos;
     worldPos.xz += d.xz;
     worldPos.y  += d.y;

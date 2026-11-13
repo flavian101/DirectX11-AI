@@ -34,7 +34,7 @@ public:
     bool BlocksSceneKeyboard() const override;
 
 private:
-    enum class SelectionKind { Object, Camera, Lights };
+    enum class SelectionKind { Object, Camera, Lights, Weather };
     enum class GizmoTool { Translate, Rotate, Scale };
 
     // --- the shell: dock space, menu, panels ---
@@ -57,6 +57,7 @@ private:
     // --- what the Inspector shows ---
     void DrawObjectInspector(SceneObject* object);
     void DrawCameraInspector();
+    void DrawWeatherInspector();   // the scene's wind (and, later, fog and rain)
     void DrawLightsInspector();
     void DrawShadowInspector();
     void DrawEnvironmentInspector();
@@ -113,6 +114,7 @@ private:
     bool attached_ = false;
     HWND hwnd_ = nullptr;
     Scene* scene_ = nullptr;   // non-owning; refreshed from the LayerContext every frame
+    bool showAllWaterSettings_ = false;   // show every water setting for the selected body, whatever its type
     GpuTimings gpuTimings_;    // a copy of the renderer's per-pass GPU times, refreshed every frame (shown in the Performance panels)
     SelectionKind selectionKind_ = SelectionKind::Object;
     SceneObjectId selectedId_ = 0;   // 0 = nothing; an id (not an index) survives adds and deletes

@@ -211,6 +211,10 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
         WaterSettings loaded = entry.value("settings", WaterSettings{});
         // Scenes saved before water had a separate length were square: the missing length is the width.
         if (entry.contains("settings") && entry["settings"].is_object() && !entry["settings"].contains("sizeZ")) loaded.sizeZ = loaded.size;
+        // Scenes saved before the scene wind existed kept their wind in the water: if it pointed anywhere but the default way,
+        // keep it as this body's own direction rather than silently turning the sea to the scene's wind.
+        if (entry.contains("settings") && entry["settings"].is_object() && !entry["settings"].contains("windSource"))
+            loaded.windSource = std::fabs(loaded.windDirection - 20.0f) > 0.5f ? WindSource::Custom : WindSource::Scene;
         loaded.debugView = water->GetSettings().debugView;   // debug switches are not part of a scene: undo and load must not flip them
         loaded.wireframe = water->GetSettings().wireframe;
         water->SetSettings(loaded);
@@ -254,6 +258,7 @@ json DescribeGlobals(const Scene& scene)
     globals["shadow"] = scene.GetShadowMap().GetSettings();
     globals["post"] = scene.GetPostSettings();
     globals["environment"] = scene.GetEnvironment();
+    globals["weather"] = scene.GetWeather();
     return globals;
 }
 
@@ -282,6 +287,10 @@ void ApplyGlobals(Scene& scene, const json& root, std::vector<std::string>& warn
         scene.GetPostSettings().Clamp();
     });
     attempt("environment", [&] { scene.GetEnvironment() = root.value("environment", scene.GetEnvironment()); });
+    attempt("weather", [&] {
+        scene.GetWeather() = root.value("weather", scene.GetWeather());
+        scene.GetWeather().Clamp();
+    });
 }
 
 }  // namespace

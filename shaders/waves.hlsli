@@ -20,16 +20,34 @@ static const float kTwoPi = 6.2831853f;
 static const float kShoalGrowth = 0.5f;
 static const float kBreakRatio = 0.4f;
 
+// How much a wave of wave number k feels the bottom: 1 in very shallow water, 0 in deep. (WaterWaves::ShallowWeight)
+float ShallowWeight(float k, float depth)
+{
+    return 1.0f - smoothstep(0.5f, 3.14159265f, k * max(depth, 0.0f));
+}
+
 float ShoalAmplitude(float amplitude, float k, float depth, float strength)
 {
     if (strength <= 0.0f) return amplitude;
     depth = max(depth, 0.0f);
-    const float shallow = 1.0f - smoothstep(0.5f, 3.14159265f, k * depth);   // 1 in very shallow water, 0 in deep
+    const float shallow = ShallowWeight(k, depth);
     const float grown = amplitude * (1.0f + kShoalGrowth * shallow * strength);
     const float limit = kBreakRatio * depth;
     if (limit < 1e-5f) return 0.0f;
     const float limited = limit * tanh(min(grown / limit, 10.0f));   // min(): tanh of a huge number is NaN on some GPUs
     return amplitude + (limited - amplitude) * min(strength, 1.0f);
+}
+
+// Waves cannot come FROM the land: a wave running away from a shore it is close to is turned down instead of rising and
+// breaking on a beach it is leaving. `dir` points to where the crests come FROM, so a wave runs away from the land when dir
+// points toward it. `shore` = (depth, toward-land x, toward-land z), the toward part already multiplied by how sure we are.
+// waterShore.w = strength (0 = off). Same formula as WaterWaves::ShelterFactor (src/WaterWaves.h).
+float ShelterFactor(float2 dir, float k, float3 shore)
+{
+    const float strength = waterShore.w;
+    if (strength <= 0.0f) return 1.0f;
+    const float away = saturate(dot(dir, shore.yz));
+    return 1.0f - min(strength, 0.95f) * ShallowWeight(k, shore.x) * away;
 }
 
 // Wave groups: a slow pattern, two crossing waves much longer than the sea's own, that turns the waves DOWN in places so the
@@ -48,9 +66,9 @@ float WaveGroupFactor(float2 restXZ, float time)
 
 // Vertex stage. `maxK`: waves with a higher k (shorter wavelength) are faded out, because the grid is too coarse
 // out there to show them (they would turn into noisy lumps instead of waves).
-// `depth`: how deep the water is under restXZ (WaterDepthAt), for the shore effect.
+// `shore`: depth and direction of the land under restXZ (WaterShoreAt), for the shore effect.
 // Returns (dx, dy, dz): how far the surface point that rests at restXZ has moved.
-float3 WaveDisplacement(float2 restXZ, float time, float maxK, float depth)
+float3 WaveDisplacement(float2 restXZ, float time, float maxK, float3 shore)
 {
     float3 d = float3(0.0f, 0.0f, 0.0f);
     const int count = (int)waterWaveInfo.x;
@@ -61,9 +79,10 @@ float3 WaveDisplacement(float2 restXZ, float time, float maxK, float depth)
         const float4 motion = waterWaveMotion[i];
         const float fade = saturate(2.0f - 2.0f * dirK.z / maxK);
         if (fade <= 0.0f) continue;   // too short for this part of the grid to hold: skip its sin/cos altogether
-        const float shoaled = ShoalAmplitude(dirK.w, dirK.z, depth, waterShore.y);
-        const float a = shoaled * fade * group;
-        const float aSide = min(shoaled, dirK.w) * fade * group;   // the sideways pull never exceeds the open-water wave: no folding
+        const float shoaled = ShoalAmplitude(dirK.w, dirK.z, shore.x, waterShore.y);
+        const float turnedDown = fade * group * ShelterFactor(dirK.xy, dirK.z, shore);
+        const float a = shoaled * turnedDown;
+        const float aSide = min(shoaled, dirK.w) * turnedDown;   // the sideways pull never exceeds the open-water wave: no folding
         const float phase = dirK.z * dot(dirK.xy, restXZ) + motion.x * time + motion.z;
         float s, c;
         sincos(phase, s, c);
@@ -76,9 +95,9 @@ float3 WaveDisplacement(float2 restXZ, float time, float maxK, float depth)
 // Pixel stage. `pixelsPerUnit`: how many screen pixels one world unit covers at this distance. A wave shorter than
 // a few pixels cannot be drawn (it shimmers), so it fades out smoothly instead, like a mip level.
 // N = unit surface normal. J = Jacobian: 1 on flat water, falling toward 0 where a crest is about to fold over.
-// `depth`: how deep the water is under restXZ (WaterDepthAt). It changes the wave heights only; the slope of that change
+// `shore`: depth and direction of the land under restXZ (WaterShoreAt). It changes the wave heights only; the slope of that change
 // is ignored in the normal, which is fine because the depth varies slowly compared with a wavelength.
-void EvaluateWaveShading(float2 restXZ, float time, float pixelsPerUnit, float depth, out float3 N, out float J)
+void EvaluateWaveShading(float2 restXZ, float time, float pixelsPerUnit, float3 shore, out float3 N, out float J)
 {
     float cx = 0.0f, cz = 0.0f, sxx = 0.0f, sxz = 0.0f, szz = 0.0f;
     const int count = (int)waterWaveInfo.x;
@@ -91,9 +110,10 @@ void EvaluateWaveShading(float2 restXZ, float time, float pixelsPerUnit, float d
         const float wavelengthPixels = (kTwoPi / k) * pixelsPerUnit;
         const float fade = saturate((wavelengthPixels - 2.0f) * 0.25f);
         if (fade <= 0.0f) continue;   // under 2 pixels long: invisible, and the far sea is mostly such waves
-        const float shoaled = ShoalAmplitude(dirK.w, k, depth, waterShore.y);
-        const float a = shoaled * fade * group;
-        const float aSide = min(shoaled, dirK.w) * fade * group;
+        const float shoaled = ShoalAmplitude(dirK.w, k, shore.x, waterShore.y);
+        const float turnedDown = fade * group * ShelterFactor(dirK.xy, k, shore);
+        const float a = shoaled * turnedDown;
+        const float aSide = min(shoaled, dirK.w) * turnedDown;
         const float phase = k * dot(dirK.xy, restXZ) + motion.x * time + motion.z;
         float s, c;
         sincos(phase, s, c);

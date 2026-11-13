@@ -7,6 +7,8 @@
 #include "WaterMesh.h"
 #include "WaterShore.h"
 #include "WaterWaves.h"
+#include "WaterTypeUi.h"
+#include "Weather.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -488,6 +490,182 @@ static void TestTileGrowth()
 	}
 }
 
+// Which way the land lies (lesson 35): the field must point toward the land in WORLD space, whatever the body's turn and scale.
+static void TestShoreDirections()
+{
+	const float kPi = 3.14159265f;
+	// A beach that rises toward +x, on a body turned by `yaw` and stretched to `sx` x `sz` world units.
+	auto bakeBeach = [](float yaw, float sx, float sz) {
+		const float c = std::cos(yaw), s = std::sin(yaw);
+		return WaterShore::Bake(128, 128, 0.0f,
+			[=](float lx, float lz, float& wx, float& wz) { const float x = lx * sx * 0.5f, z = lz * sz * 0.5f; wx = x * c + z * s; wz = -x * s + z * c; },
+			[](float wx, float, float& groundY) { groundY = 0.2f * wx; return true; });   // ground height = 20% slope toward +x
+	};
+	for (float yaw : { 0.0f, 0.6f, 2.0f, -1.3f }) {
+		const float sx = 300.0f, sz = 120.0f;
+		const WaterShore::DepthField field = bakeBeach(yaw, sx, sz);
+		CHECK(field.HasDirections());
+		const float c = std::cos(yaw), s = std::sin(yaw);
+		// Several spots in the middle of the body: in the world, the land is always toward +x.
+		for (float lx : { -0.4f, 0.0f, 0.3f }) for (float lz : { -0.3f, 0.2f }) {
+			float wx, wz;
+			field.SampleToward(lx, lz, wx, wz);
+			CHECK(wx > 0.95f && std::fabs(wz) < 0.05f);
+			(void)c; (void)s;
+		}
+	}
+	// An island: from every side the land lies toward the middle.
+	{
+		const WaterShore::DepthField field = WaterShore::Bake(160, 160, 0.0f,
+			[](float lx, float lz, float& wx, float& wz) { wx = lx * 100.0f; wz = lz * 100.0f; },
+			[](float wx, float wz, float& groundY) { const float r = std::hypot(wx, wz); groundY = -6.0f + 0.3f * (40.0f - r); return true; });
+		for (int i = 0; i < 8; ++i) {
+			const float angle = i * kPi / 4.0f;
+			const float lx = 0.30f * std::cos(angle), lz = 0.30f * std::sin(angle);   // 30 units from the middle: open water
+			float wx, wz;
+			field.SampleToward(lx, lz, wx, wz);
+			CHECK(wx * -std::cos(angle) + wz * -std::sin(angle) > 0.9f);   // points back toward the island
+		}
+	}
+	// Flat deep water: no direction to speak of.
+	{
+		const WaterShore::DepthField field = WaterShore::Bake(64, 64, 0.0f,
+			[](float lx, float lz, float& wx, float& wz) { wx = lx * 100.0f; wz = lz * 100.0f; },
+			[](float, float, float& groundY) { groundY = -50.0f; return true; });
+		for (size_t i = 0; i < field.TowardX().size(); ++i) CHECK(std::hypot(field.TowardX()[i], field.TowardZ()[i]) < 0.01f);
+	}
+	// Never longer than 1; the packed texels hold depth first.
+	{
+		const WaterShore::DepthField field = bakeBeach(0.4f, 200.0f, 200.0f);
+		for (size_t i = 0; i < field.TowardX().size(); ++i) CHECK(std::hypot(field.TowardX()[i], field.TowardZ()[i]) <= 1.0001f);
+		const std::vector<float> packed = field.PackedTexels();
+		CHECK(packed.size() == field.Data().size() * 4);
+		for (size_t i = 0; i < field.Data().size(); i += 97) CHECK(packed[i * 4] == field.Data()[i] && packed[i * 4 + 1] == field.TowardX()[i]);
+	}
+	// No map, no directions: reads as "not sure".
+	{
+		WaterShore::DepthField empty;
+		float wx = 1.0f, wz = 1.0f;
+		empty.SampleToward(0.0f, 0.0f, wx, wz);
+		CHECK(wx == 0.0f && wz == 0.0f);
+	}
+}
+
+// Waves running away from a nearby shore are turned down; waves running toward it, or far from any shore, are not.
+static void TestShelter()
+{
+	WaterWaves::Params p;
+	p.windDegrees = 0.0f;   // the waves travel toward +x
+	p.count = 6; p.choppiness = 0.6f; p.amplitude = 0.4f; p.spread = 0.5f;
+	const WaterWaves::Table table = WaterWaves::Build(p);
+	std::uint32_t seed = 31337;
+	auto rms = [&](float towardX, float shelter, float depth) {
+		WaterWaves::ShoreSample shore;
+		shore.depth = depth; shore.towardX = towardX;
+		double sum = 0.0;
+		std::uint32_t local = 99;
+		const int n = 3000;
+		for (int i = 0; i < n; ++i) {
+			const float x = Random01(local) * 300.0f, z = Random01(local) * 300.0f, time = Random01(local) * 60.0f;
+			float dx, dy, dz;
+			WaterWaves::Displacement(table, x, z, time, dx, dy, dz, shore, 0.0f, shelter);
+			sum += static_cast<double>(dy) * dy;
+		}
+		(void)seed;
+		return std::sqrt(sum / n);
+	};
+	const double open = rms(0.0f, 0.0f, 1.0f);
+	// Land ahead (+x): the waves run toward it: untouched.
+	CHECK(std::fabs(rms(1.0f, 0.8f, 1.0f) - open) < 0.03 * open);
+	// Land behind (-x): the waves run away from it: clearly lower.
+	CHECK(rms(-1.0f, 0.8f, 1.0f) < 0.75 * open);
+	// Land to the side: the waves neither approach nor leave: nearly untouched (the spread sends some off-axis).
+	WaterWaves::ShoreSample side;
+	side.depth = 1.0f; side.towardZ = 1.0f;
+	float a, b, c, d, e, f;
+	WaterWaves::Displacement(table, 10.0f, 20.0f, 3.0f, a, b, c, side, 0.0f, 0.8f);
+	WaterWaves::Displacement(table, 10.0f, 20.0f, 3.0f, d, e, f, side, 0.0f, 0.0f);
+	CHECK(std::fabs(b - e) < 0.35f * table.heightBound);
+	// Far from any shore (deep water): shelter changes nothing, even with land "behind".
+	CHECK(std::fabs(rms(-1.0f, 0.8f, 1000.0f) - open) < 1e-6);
+	// Off means off.
+	CHECK(std::fabs(rms(-1.0f, 0.0f, 1.0f) - open) < 1e-9);
+	// The factor stays in range, and the bounds still hold in the lee.
+	for (int i = 0; i < table.count; ++i) {
+		for (float depth : { 0.0f, 0.5f, 3.0f, 30.0f })
+			for (float toward : { -1.0f, -0.4f, 0.0f, 0.7f, 1.0f }) {
+				WaterWaves::ShoreSample shore; shore.depth = depth; shore.towardX = toward;
+				const float f2 = WaterWaves::ShelterFactor(table.waves[i], shore, 1.0f);
+				CHECK(f2 >= 0.05f - 1e-6f && f2 <= 1.0f + 1e-6f);
+			}
+	}
+	for (int n = 0; n < 500; ++n) {
+		WaterWaves::ShoreSample shore; shore.depth = 0.5f; shore.towardX = -1.0f;
+		float dx, dy, dz;
+		WaterWaves::Displacement(table, Random01(seed) * 200.0f, Random01(seed) * 200.0f, Random01(seed) * 50.0f, dx, dy, dz, shore, 1.0f, 1.0f);
+		CHECK(std::fabs(dy) <= table.heightBound + 1e-4f);
+	}
+	// HeightAtShore with a shore direction still inverts correctly.
+	for (int n = 0; n < 300; ++n) {
+		const float x = Random01(seed) * 100.0f, z = Random01(seed) * 100.0f, time = Random01(seed) * 40.0f;
+		WaterWaves::ShoreSample shore; shore.depth = 2.0f; shore.towardX = -0.8f; shore.towardZ = 0.3f;
+		const float height = WaterWaves::HeightAtShore(table, x, z, time, 1.0f, 0.7f, [&](float, float) { return shore; });
+		float rx = x, rz = z, dx, dy, dz;
+		for (int it = 0; it < 200; ++it) { WaterWaves::Displacement(table, rx, rz, time, dx, dy, dz, shore, 1.0f, 0.7f); rx = x - dx; rz = z - dz; }
+		WaterWaves::Displacement(table, rx, rz, time, dx, dy, dz, shore, 1.0f, 0.7f);
+		CHECK(std::fabs(dy - height) < 0.02f);
+	}
+}
+
+// Which settings each kind of water shows (lesson 35), and the scene wind's limits.
+static void TestTypeUiAndWeather()
+{
+	using WaterTypeUi::Control;
+	using WaterTypeUi::IsShown;
+	const WaterBodyType types[] = { WaterBodyType::Ocean, WaterBodyType::Lake, WaterBodyType::River, WaterBodyType::Pond, WaterBodyType::Custom };
+	// Custom shows everything; so does "show all" for any type.
+	for (int c = 0; c < static_cast<int>(Control::Count); ++c) {
+		CHECK(IsShown(WaterBodyType::Custom, static_cast<Control>(c)));
+		for (WaterBodyType type : types) CHECK(IsShown(type, static_cast<Control>(c), true));
+		// Every control is shown by at least one real type (a control nobody sees would be dead code).
+		bool anyone = false;
+		for (WaterBodyType type : types) anyone = anyone || IsShown(type, static_cast<Control>(c));
+		CHECK(anyone);
+	}
+	// A river has a current, not a swell or a wind direction of its own; an ocean has both.
+	CHECK(!IsShown(WaterBodyType::River, Control::Swell));
+	CHECK(!IsShown(WaterBodyType::River, Control::WindSource));
+	CHECK(!IsShown(WaterBodyType::River, Control::ShoreSection));
+	CHECK(IsShown(WaterBodyType::River, Control::Current) && !IsShown(WaterBodyType::Ocean, Control::Current) && !IsShown(WaterBodyType::Lake, Control::Current));
+	CHECK(IsShown(WaterBodyType::Ocean, Control::Swell));
+	CHECK(IsShown(WaterBodyType::Ocean, Control::WindSource));
+	CHECK(IsShown(WaterBodyType::Ocean, Control::WaveModel));
+	// A lake is chop: wind and roughness, no swell, no wave model switch. A pond shows almost nothing.
+	CHECK(IsShown(WaterBodyType::Lake, Control::WindSource) && !IsShown(WaterBodyType::Lake, Control::Swell) && !IsShown(WaterBodyType::Lake, Control::WaveModel));
+	CHECK(!IsShown(WaterBodyType::Pond, Control::WindSource) && !IsShown(WaterBodyType::Pond, Control::Swell) && !IsShown(WaterBodyType::Pond, Control::WavePresets));
+	// Each ordinary type shows strictly fewer settings than Custom.
+	for (WaterBodyType type : { WaterBodyType::Ocean, WaterBodyType::Lake, WaterBodyType::River, WaterBodyType::Pond }) {
+		int shown = 0;
+		for (int c = 0; c < static_cast<int>(Control::Count); ++c) if (IsShown(type, static_cast<Control>(c))) ++shown;
+		CHECK(shown < static_cast<int>(Control::Count));
+	}
+	// The saved value of the first four types never moves (scene files); Custom is new, at the end.
+	CHECK(static_cast<int>(WaterBodyType::Ocean) == 0 && static_cast<int>(WaterBodyType::Pond) == 3 && static_cast<int>(WaterBodyType::Custom) == 4);
+
+	// Wind: the direction wraps, the strength clamps, the wave scale follows the strength.
+	WindSettings wind;
+	wind.direction = -90.0f; wind.strength = 7.0f;
+	wind.Clamp();
+	CHECK(std::fabs(wind.direction - 270.0f) < 1e-4f && wind.strength == WindSettings::kStrengthMax);
+	wind.direction = 725.0f; wind.strength = -1.0f;
+	wind.Clamp();
+	CHECK(std::fabs(wind.direction - 5.0f) < 1e-3f && wind.strength == 0.0f);
+	WindSettings calm; calm.strength = 0.0f;
+	CHECK(WindWaveScale(calm) == 0.0f);
+	WindSettings normal;
+	CHECK(WindWaveScale(normal) == 1.0f);
+}
+
 int main()
 {
 	TestTileIndices();
@@ -498,6 +676,9 @@ int main()
 	TestShoreMap();
 	TestSpectrum();
 	TestTileGrowth();
+	TestShoreDirections();
+	TestShelter();
+	TestTypeUiAndWeather();
 	TestMaxDepthIn();
 	if (g_failures == 0) std::printf("water tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;

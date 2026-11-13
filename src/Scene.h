@@ -9,6 +9,7 @@
 #include "FrameConstants.h"
 #include "PostSettings.h"
 #include "ShadowMap.h"
+#include "Weather.h"
 #include <d3d11.h>
 #include <vector>
 #include <memory>
@@ -124,6 +125,9 @@ public:
     const ShadowMap& GetShadowMap() const { return *shadow_; }
     // Image-based lighting: the sky baked into small textures (lesson 19). The first frame bakes it;
     // InvalidateEnvironment() makes the next frame bake again.
+    // The weather of the whole scene: wind now, fog and rain later. Everything that is blown about reads it from here.
+    WeatherSettings& GetWeather() { return weather_; }
+    const WeatherSettings& GetWeather() const { return weather_; }
     EnvironmentSettings& GetEnvironment() { return environment_; }
     const EnvironmentSettings& GetEnvironment() const { return environment_; }
     const EnvironmentLighting& GetEnvironmentLighting() const { return environmentLighting_; }
@@ -143,6 +147,7 @@ private:
     FrameConstants frame_;   // view/proj/camera/time, uploaded once per frame
     PostSettings post_;      // how the HDR image is converted for display (a property of the "camera")
     EnvironmentSettings environment_;
+    WeatherSettings weather_;
     mutable EnvironmentLighting environmentLighting_;   // a cache of the baked sky: rebuilt on demand, so "mutable" even in const methods
     float time_ = 0.0f;      // scene clock shared by every animated material
     std::unique_ptr<LightSystem> lights_;

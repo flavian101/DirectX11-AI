@@ -177,6 +177,8 @@ void WaterSettings::Clamp()
 	swellLength = std::clamp(swellLength, kSwellLengthMin, kSwellLengthMax);
 	waveGroups = std::clamp(waveGroups, 0.0f, kWaveGroupsMax);
 	waveSeed = std::clamp(waveSeed, 0, 9999);
+	shoreShelter = clamp01(shoreShelter);
+	windSource = windSource == WindSource::Custom ? WindSource::Custom : WindSource::Scene;
 	detailNormal = std::clamp(detailNormal, 0.0f, kDetailMax);
 	detailScale = std::clamp(detailScale, kDetailScaleMin, kDetailScaleMax);
 	detailDistance = std::clamp(detailDistance, kDetailDistanceMin, kDetailDistanceMax);
@@ -255,6 +257,15 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 		detailNormal = 1.2f; detailScale = 1.6f; crestFoam = 0.0f; crestFoamThreshold = 0.5f;
 		flowSpeed = 2.5f; flowAngle = 0.0f;
 		shoreWaves = 0.5f; swash = 0.1f;   // a current laps at its banks; it does not surf
+		break;
+	case WaterBodyType::Custom:
+		// A blank slate that shows every setting. It starts as a lake with the full sea model: a sensible middle to bend either way.
+		ApplyLook(WaterLook::Lake);
+		waveAmplitude = 0.2f; waveSpeed = 0.8f; waveFrequency = 0.7f; directionalSpread = 0.8f; choppiness = 0.3f; waveCount = 6;
+		waveRoughness = 0.5f; swell = 0.2f; swellAngle = 30.0f; swellLength = 2.2f; waveGroups = 0.3f;
+		detailNormal = 0.6f; detailScale = 1.2f; crestFoam = 0.2f; crestFoamThreshold = 0.35f;
+		shoreWaves = 0.8f; swash = 0.3f;
+		flowSpeed = 0.0f;   // no current until the user asks for one
 		break;
 	case WaterBodyType::Pond:
 		ApplyLook(WaterLook::Lake);
@@ -374,7 +385,7 @@ void Water::RebuildMesh(const WaterMesh::TileGrid& grid)
 
 float Water::GetTravelDegrees() const
 {
-	if (settings_.bodyType != WaterBodyType::River) return settings_.windDirection;
+	if (!settings_.HasCurrent()) return EffectiveWindDegrees();   // the scene's wind, or this body's own direction
 	// The flow is stored in the body's OWN space: flowAngle 0 = along its +Z. The world matrix turns that direction by the
 	// yaw (rotation about Y), so a local (sin a, cos a) becomes the world direction (sin(a + yaw), cos(a + yaw)).
 	// The editor's angle runs 0 = +X, 90 = +Z, which makes that direction 90 - (a + yaw) degrees.
@@ -386,7 +397,8 @@ WaterWaves::Params Water::CurrentWaveParams() const
 	WaterWaves::Params p = settings_.WaveParams();
 	p.windDegrees = GetTravelDegrees();
 	p.shoreWaves = settings_.shoreWaves;   // waves can grow near a shore: the table's height bound must have room for that
-	if (settings_.bodyType == WaterBodyType::River) {
+	if (settings_.windSource == WindSource::Scene && !settings_.HasCurrent()) p.amplitude *= WindWaveScale(sceneWind_);   // a stronger wind, taller waves
+	if (settings_.HasCurrent()) {
 		p.flowSpeed = settings_.flowSpeed;
 		p.spread = (std::min)(p.spread, 0.25f);   // a current has one direction: a wide spread would send waves sideways or upstream
 	}
@@ -405,7 +417,7 @@ void Water::UploadMaterial(bool mirrored) const
 	// Colours are picked as sRGB, the shader wants linear.
 	const XMFLOAT3 deep = SrgbToLinear(settings_.color);
 	const XMFLOAT3 shallow = SrgbToLinear(settings_.shallowColor);
-	const bool river = settings_.bodyType == WaterBodyType::River;
+	const bool river = settings_.HasCurrent();
 	const float windRadians = XMConvertToRadians(GetTravelDegrees());
 	// One grid cell of the finest level, in world units (the cells are square: the tiles are).
 	const float cellsX = static_cast<float>((std::max)(builtGrid_.x, 1) * (std::max)(cellsPerTile_, 1));
@@ -426,7 +438,7 @@ void Water::UploadMaterial(bool mirrored) const
 	// The ripples drift with the wind at a fixed pace (multiplier 1: how it always looked). On a river they ride the current
 	// instead: the shader drifts layer 1 by 0.35 NOISE units per second, and one world unit is `detailScale` noise units,
 	// so asking for flowSpeed world units per second means a multiplier of flowSpeed * detailScale / 0.35.
-	block.shore = { depthView_ ? 1.0f : 0.0f, settings_.shoreWaves, settings_.swash, 0.0f };
+	block.shore = { depthView_ ? 1.0f : 0.0f, settings_.shoreWaves, settings_.swash, settings_.shoreShelter };
 	block.groupInfo = { waves_.groupStrength, waves_.groupK, waves_.groupSpeed, 0.0f };
 	block.flow = { river ? settings_.flowSpeed * settings_.detailScale / 0.35f : 1.0f, river ? 0.0f : 1.0f,
 				   static_cast<float>(static_cast<int>(settings_.bodyType)), river ? settings_.flowSpeed : 0.0f };
@@ -614,9 +626,9 @@ float Water::DistanceTo(const XMFLOAT3& point) const
 float Water::SampleHeight(float x, float z, float time) const
 {
 	if (!IsOverWater(x, z)) return position_.y;
-	if (settings_.shoreWaves > 0.0f && !depthField_.IsEmpty()) {   // the same shoaled waves the shader draws
-		return position_.y + WaterWaves::HeightAtShore(waves_, x, z, time, settings_.shoreWaves,
-													   [this](float restX, float restZ) { return DepthAtWorld(restX, restZ); });
+	if ((settings_.shoreWaves > 0.0f || settings_.shoreShelter > 0.0f) && !depthField_.IsEmpty()) {   // the same shoaled, sheltered waves the shader draws
+		return position_.y + WaterWaves::HeightAtShore(waves_, x, z, time, settings_.shoreWaves, settings_.shoreShelter,
+													   [this](float restX, float restZ) { return ShoreAtWorld(restX, restZ); });
 	}
 	return position_.y + WaterWaves::HeightAt(waves_, x, z, time);
 }
@@ -646,7 +658,7 @@ bool Water::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotatio
 	rotation_ = rotation;
 	scale_ = scale;
 	settings_.height = position_.y;   // one source of truth: otherwise the next SetSettings() snaps Y back
-	if (settings_.bodyType == WaterBodyType::River) RebuildWaves();   // a river's flow follows the way the body is turned
+	if (settings_.HasCurrent()) RebuildWaves();   // a current's flow follows the way the body is turned
 	EnsureMesh();                      // scaling can change the body's proportions: a river needs a different grid than a pond
 	tileDry_.assign(tiles_.size(), 0);   // moving or scaling changes which ground is under each tile: show all until the map is re-measured
 	UpdateWorldTransform();
@@ -676,6 +688,25 @@ float Water::DepthAtWorld(float x, float z) const
 	if (depthField_.IsEmpty() || !worldToLocalValid_) return WaterShore::kDeepWater;
 	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), XMLoadFloat4x4(&worldToLocal_));
 	return depthField_.Sample(XMVectorGetX(local), XMVectorGetZ(local));
+}
+
+WaterWaves::ShoreSample Water::ShoreAtWorld(float x, float z) const
+{
+	WaterWaves::ShoreSample shore;   // very deep, no direction
+	if (depthField_.IsEmpty() || !worldToLocalValid_) return shore;
+	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), XMLoadFloat4x4(&worldToLocal_));
+	const float lx = XMVectorGetX(local), lz = XMVectorGetZ(local);
+	shore.depth = depthField_.Sample(lx, lz);
+	depthField_.SampleToward(lx, lz, shore.towardX, shore.towardZ);   // already in world space
+	return shore;
+}
+
+void Water::SetSceneWind(const WindSettings& wind)
+{
+	if (wind.direction == sceneWind_.direction && wind.strength == sceneWind_.strength) return;
+	sceneWind_ = wind;
+	// A body with its own direction, or with a current, does not listen to the scene wind: nothing to rebuild.
+	if (settings_.windSource == WindSource::Scene && !settings_.HasCurrent()) RebuildWaves();
 }
 
 void Water::RefreshShoreDepth(const Terrain* terrain)
@@ -712,13 +743,14 @@ void Water::RefreshShoreDepth(const Terrain* terrain)
 	desc.Height = static_cast<UINT>(height);
 	desc.MipLevels = 1;
 	desc.ArraySize = 1;
-	desc.Format = DXGI_FORMAT_R32_FLOAT;
+	desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;   // depth, toward-land x, toward-land z, unused
 	desc.SampleDesc.Count = 1;
 	desc.Usage = D3D11_USAGE_IMMUTABLE;   // a new map is made whenever the numbers change: it is never edited in place
 	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 	D3D11_SUBRESOURCE_DATA data{};
-	data.pSysMem = field.Data().data();
-	data.SysMemPitch = static_cast<UINT>(width * sizeof(float));
+	const std::vector<float> packed = field.PackedTexels();   // must outlive CreateTexture2D
+	data.pSysMem = packed.data();
+	data.SysMemPitch = static_cast<UINT>(width * 4 * sizeof(float));
 	ID3D11Texture2D* texture = nullptr;
 	HRESULT hr = device_->CreateTexture2D(&desc, &data, &texture);
 	if (FAILED(hr)) {

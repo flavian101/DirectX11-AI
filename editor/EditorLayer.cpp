@@ -1,4 +1,5 @@
 #include "EditorLayer.h"
+#include "WaterTypeUi.h"
 #include "EditorTheme.h"
 #include <algorithm>
 #include <cmath>
@@ -848,14 +849,15 @@ void EditorLayer::HandleShortcuts()
     }
 }
 
-// The four kinds of water, as menu items (Add menu and the Hierarchy's right-click menu share them).
+// The kinds of water, as menu items (Add menu and the Hierarchy's right-click menu share them).
 void EditorLayer::DrawAddWaterItems()
 {
     static const struct { const char* name; const char* hint; WaterBodyType type; } kTypes[] = {
         { "Lake", "Short wind chop, round by default", WaterBodyType::Lake },
         { "River", "A long thin current: everything on it flows one way", WaterBodyType::River },
         { "Pond", "Small and nearly still", WaterBodyType::Pond },
-        { "Ocean", "Big swells rolling in with the wind", WaterBodyType::Ocean } };
+        { "Ocean", "Big swells rolling in with the wind", WaterBodyType::Ocean },
+        { "Custom", "A blank slate that shows every setting", WaterBodyType::Custom } };
     for (const auto& entry : kTypes) {
         if (ImGui::MenuItem(entry.name)) addWaterType_ = static_cast<int>(entry.type);
         ImGui::SetItemTooltip("%s", entry.hint);
@@ -871,6 +873,7 @@ void EditorLayer::DrawHierarchyPanel()
 
     if (ImGui::Selectable("Camera", selectionKind_ == SelectionKind::Camera)) selectionKind_ = SelectionKind::Camera;
     if (ImGui::Selectable("Lights", selectionKind_ == SelectionKind::Lights)) selectionKind_ = SelectionKind::Lights;
+    if (ImGui::Selectable("Weather", selectionKind_ == SelectionKind::Weather)) selectionKind_ = SelectionKind::Weather;
     ImGui::Separator();
 
     for (const auto& owned : scene_->GetObjects()) {
@@ -913,6 +916,8 @@ void EditorLayer::DrawInspectorPanel()
         DrawCameraInspector();
     } else if (selectionKind_ == SelectionKind::Lights) {
         DrawLightsInspector();
+    } else if (selectionKind_ == SelectionKind::Weather) {
+        DrawWeatherInspector();
     } else if (SceneObject* selected = SelectedObject()) {
         DrawObjectInspector(selected);
     } else {
@@ -2221,14 +2226,18 @@ void EditorLayer::DrawWaterInspector(Water* water)
     }
 
     // The TYPE comes first: it decides how the water moves, and which of the sections below apply.
-    static const char* const kTypeNames[] = { "Ocean", "Lake", "River", "Pond" };
+    static const char* const kTypeNames[] = { "Ocean", "Lake", "River", "Pond", "Custom" };
     int typeIndex = static_cast<int>(s.bodyType);
     if (ImGui::Combo("Type", &typeIndex, kTypeNames, IM_ARRAYSIZE(kTypeNames))) {
         s.ApplyBodyType(static_cast<WaterBodyType>(typeIndex));
         changed = true;
     }
-    ImGui::SetItemTooltip("Ocean: big swells rolling with the wind.\nLake: short wind chop.\nRiver: a current - waves and ripples all travel downstream.\nPond: nearly still.\n\nChanging the type loads that type's starting values (waves, ripples, foam, colours).\nLevel, size and shape stay. Ctrl+Z brings the old values back.");
-    const bool river = s.bodyType == WaterBodyType::River;
+    ImGui::SetItemTooltip("Ocean: big swells rolling with the wind.\nLake: short wind chop.\nRiver: a current - waves and ripples all travel downstream.\nPond: nearly still.\nCustom: a blank slate that shows every setting.\n\nChanging the type loads that type's starting values (waves, ripples, foam, colours) and shows only the settings that\nmatter for it. Level, size and shape stay. Ctrl+Z brings the old values back.");
+    const bool river = s.HasCurrent();   // a current: a river, or a Custom body with a flow speed
+    ImGui::Checkbox("Show all settings", &showAllWaterSettings_);
+    ImGui::SetItemTooltip("Each type shows only what matters for it (a river needs a current, not a swell).\nTick this to see every setting for this body.");
+    using WaterTypeUi::Control;
+    const auto shows = [&](Control control) { return WaterTypeUi::IsShown(s.bodyType, control, showAllWaterSettings_); };
 
     // A whole look in one click: colours, depth and foam. Waves, level and size are left alone.
     ImGui::TextDisabled("Looks");
@@ -2275,7 +2284,7 @@ void EditorLayer::DrawWaterInspector(Water* water)
         ImGui::SetItemTooltip("Depth at which the water becomes fully opaque. Smaller = sharper shoreline.");
     }
 
-    if (river && ImGui::CollapsingHeader("Current", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (shows(Control::Current) && ImGui::CollapsingHeader("Current", ImGuiTreeNodeFlags_DefaultOpen)) {
         changed |= ImGui::SliderFloat("Flow speed", &s.flowSpeed, 0.0f, WaterSettings::kFlowSpeedMax, "%.1f units/s");
         ImGui::SetItemTooltip("How fast the waves and ripples are carried downstream.");
         changed |= ImGui::SliderFloat("Flow direction", &s.flowAngle, -180.0f, 180.0f, "%.0f deg");
@@ -2284,7 +2293,7 @@ void EditorLayer::DrawWaterInspector(Water* water)
     }
 
     if (ImGui::CollapsingHeader("Waves", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (!river) {   // the three presets are open-water swells: a river's waves come from its type
+        if (!river && shows(Control::WavePresets)) {   // the three presets are open-water swells: a river's waves come from its type
             if (ImGui::Button("Calm"))   { s.ApplyWavePreset(WavePreset::Calm);   changed = true; }
             ImGui::SameLine();
             if (ImGui::Button("Choppy")) { s.ApplyWavePreset(WavePreset::Choppy); changed = true; }
@@ -2292,29 +2301,50 @@ void EditorLayer::DrawWaterInspector(Water* water)
             if (ImGui::Button("Stormy")) { s.ApplyWavePreset(WavePreset::Stormy); changed = true; }
         }
         changed |= ImGui::SliderFloat("Amplitude", &s.waveAmplitude, 0.0f, WaterSettings::kAmplitudeMax);
-        if (!river) changed |= ImGui::SliderFloat("Speed", &s.waveSpeed, 0.0f, WaterSettings::kSpeedMax);
-        changed |= ImGui::SliderFloat("Frequency", &s.waveFrequency, WaterSettings::kFrequencyMin, WaterSettings::kFrequencyMax);
-        ImGui::SetItemTooltip("Radians per world unit. Lower = longer, lazier waves.");
-        if (!river) {   // a river's direction is its current (above)
-            changed |= ImGui::SliderFloat("Wind direction", &s.windDirection, 0.0f, 360.0f, "%.0f deg");
-            ImGui::SetItemTooltip("The way the waves travel. 0 = toward +X, 90 = toward +Z.");
+        if (!river && shows(Control::Speed)) changed |= ImGui::SliderFloat("Speed", &s.waveSpeed, 0.0f, WaterSettings::kSpeedMax);
+        if (shows(Control::Frequency)) {
+            changed |= ImGui::SliderFloat("Frequency", &s.waveFrequency, WaterSettings::kFrequencyMin, WaterSettings::kFrequencyMax);
+            ImGui::SetItemTooltip("Radians per world unit. Lower = longer, lazier waves.");
         }
-        changed |= ImGui::SliderFloat("Direction spread", &s.directionalSpread, 0.0f, 1.0f);
-        ImGui::SetItemTooltip(river ? "0 = every wave runs with the current. A river caps this low: nothing runs upstream."
-                                    : "0 = every wave runs with the wind (a clean swell). 1 = waves cross from many directions.");
-        changed |= ImGui::SliderFloat("Choppiness", &s.choppiness, 0.0f, 1.0f);
-        ImGui::SetItemTooltip("0 = rounded sine waves. 1 = sharp crests and wide troughs (Gerstner waves). Never folds over.");
-        changed |= ImGui::SliderInt("Wave count", &s.waveCount, WaterSettings::kWaveCountMin, WaterSettings::kWaveCountMax);
-        ImGui::SetItemTooltip("How many waves are added together. Fewer = cheaper and simpler. Each costs a little in the\nvertex AND pixel shader.");
+        if (!river && shows(Control::WindSource)) {   // a river's direction is its current (above)
+            int source = static_cast<int>(s.windSource);
+            static const char* const kSourceNames[] = { "Scene wind", "Own direction" };
+            if (ImGui::Combo("Wind", &source, kSourceNames, IM_ARRAYSIZE(kSourceNames))) { s.windSource = static_cast<WindSource>(source); changed = true; }
+            ImGui::SetItemTooltip("Scene wind: this body follows the Weather entry in the Hierarchy, like everything else that the wind blows.\nOwn direction: it ignores the scene wind and uses the direction below.");
+            if (s.windSource == WindSource::Custom) {
+                changed |= ImGui::SliderFloat("Wind direction", &s.windDirection, 0.0f, 360.0f, "%.0f deg");
+                ImGui::SetItemTooltip("The way the waves travel. 0 = toward +X, 90 = toward +Z.");
+            } else {
+                const WindSettings& wind = scene_->GetWeather().wind;
+                ImGui::TextDisabled("Following the scene wind: toward %.0f deg, strength %.1f", wind.direction, wind.strength);
+            }
+        }
+        if (shows(Control::Spread)) {
+            changed |= ImGui::SliderFloat("Direction spread", &s.directionalSpread, 0.0f, 1.0f);
+            ImGui::SetItemTooltip(river ? "0 = every wave runs with the current. A river caps this low: nothing runs upstream."
+                                        : "0 = every wave runs with the wind (a clean swell). 1 = waves cross from many directions.");
+        }
+        if (shows(Control::Choppiness)) {
+            changed |= ImGui::SliderFloat("Choppiness", &s.choppiness, 0.0f, 1.0f);
+            ImGui::SetItemTooltip("0 = rounded sine waves. 1 = sharp crests and wide troughs (Gerstner waves). Never folds over.");
+        }
+        if (shows(Control::WaveCount)) {
+            changed |= ImGui::SliderInt("Wave count", &s.waveCount, WaterSettings::kWaveCountMin, WaterSettings::kWaveCountMax);
+            ImGui::SetItemTooltip("How many waves are added together. Fewer = cheaper and simpler. Each costs a little in the\nvertex AND pixel shader.");
+        }
         {   // the sea model (lesson 34)
             int style = static_cast<int>(s.waveStyle);
             static const char* const kStyleNames[] = { "Classic (fixed waves)", "Spectrum (sea model)" };
-            if (ImGui::Combo("Wave model", &style, kStyleNames, IM_ARRAYSIZE(kStyleNames))) { s.waveStyle = static_cast<WaterWaves::Style>(style); changed = true; }
-            ImGui::SetItemTooltip("Classic: the original eight fixed waves. Spectrum: waves built from a sea model: they get finer and lower\ntogether, with an optional swell and patches of calmer and rougher water.");
+            if (shows(Control::WaveModel)) {
+                if (ImGui::Combo("Wave model", &style, kStyleNames, IM_ARRAYSIZE(kStyleNames))) { s.waveStyle = static_cast<WaterWaves::Style>(style); changed = true; }
+                ImGui::SetItemTooltip("Classic: the original eight fixed waves. Spectrum: waves built from a sea model: they get finer and lower\ntogether, with an optional swell and patches of calmer and rougher water.");
+            }
             if (s.waveStyle == WaterWaves::Style::Spectrum) {
-                changed |= ImGui::SliderFloat("Roughness", &s.waveRoughness, 0.0f, 1.0f);
-                ImGui::SetItemTooltip("0 = glassy: the small waves die away fast. 1 = rough: the small waves stay almost as tall.");
-                if (!river) {   // a current has one direction: there is no cross swell on a river
+                if (shows(Control::Roughness)) {
+                    changed |= ImGui::SliderFloat("Roughness", &s.waveRoughness, 0.0f, 1.0f);
+                    ImGui::SetItemTooltip("0 = glassy: the small waves die away fast. 1 = rough: the small waves stay almost as tall.");
+                }
+                if (!river && shows(Control::Swell)) {   // a current has one direction: there is no cross swell on a river
                     changed |= ImGui::SliderFloat("Swell", &s.swell, 0.0f, 1.0f);
                     ImGui::SetItemTooltip("Long, low waves from their own direction under the small ones. This is what a boat heaves on.");
                     if (s.swell > 0.0f) {
@@ -2323,14 +2353,18 @@ void EditorLayer::DrawWaterInspector(Water* water)
                         ImGui::SetItemTooltip("The swell's wavelength as a multiple of the biggest wind wave's.");
                     }
                 }
-                changed |= ImGui::SliderFloat("Wave groups", &s.waveGroups, 0.0f, WaterSettings::kWaveGroupsMax);
-                ImGui::SetItemTooltip("The sea breathes: patches of calm and rough water that drift. Only ever turns waves DOWN,\nso the Amplitude above is the average and the roughest patches are a little taller.");
-                changed |= ImGui::SliderInt("Seed", &s.waveSeed, 0, 9999);
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Re-roll")) { s.waveSeed = (s.waveSeed * 7919 + 104729) % 10000; changed = true; }
-                ImGui::SetItemTooltip("Another seed is another sea with the same character: different angles, wavelengths and phases.");
+                if (shows(Control::WaveGroups)) {
+                    changed |= ImGui::SliderFloat("Wave groups", &s.waveGroups, 0.0f, WaterSettings::kWaveGroupsMax);
+                    ImGui::SetItemTooltip("The sea breathes: patches of calm and rough water that drift. Only ever turns waves DOWN,\nso the Amplitude above is the average and the roughest patches are a little taller.");
+                }
+                if (shows(Control::Seed)) {
+                    changed |= ImGui::SliderInt("Seed", &s.waveSeed, 0, 9999);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Re-roll")) { s.waveSeed = (s.waveSeed * 7919 + 104729) % 10000; changed = true; }
+                    ImGui::SetItemTooltip("Another seed is another sea with the same character: different angles, wavelengths and phases.");
+                }
                 ImGui::TextDisabled("Biggest wind wave %.1f units long", 6.2831853f / (std::max)(s.waveFrequency, 0.001f));
-                if (!river && s.swell > 0.0f)
+                if (!river && shows(Control::Swell) && s.swell > 0.0f)
                     ImGui::TextDisabled("Swell %.1f units long", 6.2831853f / (std::max)(s.waveFrequency, 0.001f) * s.swellLength);
             }
         }
@@ -2380,7 +2414,9 @@ void EditorLayer::DrawWaterInspector(Water* water)
         ImGui::SetItemTooltip("Higher = only the very sharpest crests get foam.");
     }
 
-    if (ImGui::CollapsingHeader("Shore")) {
+    if (shows(Control::ShoreSection) && ImGui::CollapsingHeader("Shore")) {
+        changed |= ImGui::SliderFloat("Shelter", &s.shoreShelter, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("Waves cannot come from the land. A wave running AWAY from a shore it is close to (the lee of an island,\nthe far bank of a lake) is turned down instead of rising and breaking on a beach it is leaving.\nWaves running toward the shore are untouched. 0 = off (the old look).");
         changed |= ImGui::SliderFloat("Shore waves", &s.shoreWaves, 0.0f, 1.0f);
         ImGui::SetItemTooltip("How much the waves react to the ground under them. In shallow water they grow taller,\nthen cannot be taller than the water is deep, so they break and die at the waterline.\n0 = identical everywhere (the old look).");
         changed |= ImGui::SliderFloat("Swash", &s.swash, 0.0f, WaterSettings::kSwashMax, "%.2f");
@@ -2448,6 +2484,26 @@ void EditorLayer::DrawWaterInspector(Water* water)
     }
 
     if (changed) water->SetSettings(s);
+}
+
+void EditorLayer::DrawWeatherInspector()
+{
+    // The scene's weather: one wind for everything that is blown about. Water bodies follow it unless they are told not to;
+    // fog, rain, grass and smoke will read it from here too.
+    WeatherSettings& weather = scene_->GetWeather();
+    ImGui::SeparatorText("Wind");
+    ImGui::SliderFloat("Direction", &weather.wind.direction, 0.0f, 360.0f, "%.0f deg");
+    ImGui::SetItemTooltip("The way the wind blows TOWARD. 0 = +X, 90 = +Z. Water bodies set to follow the scene wind turn their\nwaves to match.");
+    ImGui::SliderFloat("Strength", &weather.wind.strength, 0.0f, WindSettings::kStrengthMax, "%.2f");
+    ImGui::SetItemTooltip("0 = dead calm, 1 = the sea each water body was set up for, 2 = a much rougher one.\nOnly the HEIGHT of the waves follows it; wavelength and speed stay as the body's settings say.");
+    weather.Clamp();
+    int followers = 0;
+    for (const auto& object : scene_->GetObjects()) {
+        if (const auto* water = dynamic_cast<const Water*>(object.get())) {
+            if (water->GetSettings().windSource == WindSource::Scene && !water->GetSettings().HasCurrent()) ++followers;
+        }
+    }
+    ImGui::TextDisabled("%d water %s following the scene wind.", followers, followers == 1 ? "body is" : "bodies are");
 }
 
 void EditorLayer::DrawSkyboxInspector(Skybox* skybox)

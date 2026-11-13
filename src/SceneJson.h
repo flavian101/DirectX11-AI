@@ -31,7 +31,9 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ToneMapper, { { ToneMapper::Clamp, "clamp" }, { Ton
                                            { ToneMapper::ACES, "aces" }, { ToneMapper::Filmic, "filmic" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(WaterShape, { { WaterShape::Rectangle, "rectangle" }, { WaterShape::Ellipse, "ellipse" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(WaterBodyType, { { WaterBodyType::Ocean, "ocean" }, { WaterBodyType::Lake, "lake" },
-                                              { WaterBodyType::River, "river" }, { WaterBodyType::Pond, "pond" } })
+                                              { WaterBodyType::River, "river" }, { WaterBodyType::Pond, "pond" },
+                                              { WaterBodyType::Custom, "custom" } })
+NLOHMANN_JSON_SERIALIZE_ENUM(WindSource, { { WindSource::Scene, "scene" }, { WindSource::Custom, "custom" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, { ReflectionMode::PlanarHalf, "planar_half" },
                                                { ReflectionMode::PlanarFull, "planar_full" }, { ReflectionMode::PlanarQuarter, "planar_quarter" } })
 
@@ -40,6 +42,8 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, {
 // listed: they are not part of what a scene IS.
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PostSettings, srgbEncode, exposureEV, toneMapper)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ShadowSettings, enabled, resolution, depthBias, slopeBias, normalOffset, strength)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WindSettings, direction, strength)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WeatherSettings, wind)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(EnvironmentSettings, enabled, diffuseIntensity, specularIntensity)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DirectionalLight, direction, color, intensity)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PointLight, position, color, intensity, range)
@@ -48,7 +52,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SurfaceSettings, baseColor, alph
                                                 emissiveIntensity)
 // (WaterSettings::debugView and ::wireframe are debug-only and deliberately not listed.)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpeed, flowAngle, shoreWaves, swash, height, size, sizeZ, shape, color, alpha, shallowColor, absorption, fadeDistance,
-                                                foamDistance, foamStrength, waveAmplitude, waveSpeed, waveFrequency, windDirection,
+                                                foamDistance, foamStrength, waveAmplitude, waveSpeed, waveFrequency, windSource, windDirection, shoreShelter,
                                                 directionalSpread, choppiness, waveCount, waveStyle, waveRoughness, swell, swellAngle, swellLength, waveGroups, waveSeed, detailNormal, detailScale, detailDistance,
                                                 reflectivity, reflectionMode, reflectionDistortion, refraction, scatter,
                                                 glintStrength, glintSharpness, crestFoam, crestFoamThreshold,

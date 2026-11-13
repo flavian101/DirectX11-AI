@@ -150,6 +150,9 @@ void Scene::Update(float dt)
 {
     time_ += dt;
     for (auto& obj : objects_) if (obj) obj->Update(dt);
+    // The scene's wind goes to every water body that follows it (each rebuilds its waves only if the wind changed).
+    weather_.Clamp();
+    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) water->SetSceneWind(weather_.wind);
     // Floating models read the water under them (the highest body that covers their spot) and follow its waves.
     for (auto& obj : objects_) {
         auto* model = dynamic_cast<ModelObject*>(obj.get());
@@ -352,7 +355,9 @@ Water* Scene::CreateWater(WaterBodyType type)
     case WaterBodyType::Lake:  settings.size = 80.0f;  settings.sizeZ = 80.0f;  settings.shape = WaterShape::Ellipse;   break;
     case WaterBodyType::River: settings.size = 14.0f;  settings.sizeZ = 120.0f; settings.shape = WaterShape::Rectangle; break;
     case WaterBodyType::Pond:  settings.size = 20.0f;  settings.sizeZ = 20.0f;  settings.shape = WaterShape::Ellipse;   break;
+    case WaterBodyType::Custom: settings.size = 120.0f; settings.sizeZ = 120.0f; settings.shape = WaterShape::Rectangle; break;
     }
+    water->SetSceneWind(weather_.wind);   // a new body starts with the scene's wind, not for one frame with a default
     water->SetSettings(settings);
     return water;
 }

@@ -26,17 +26,23 @@ constexpr float kShoalGrowth = 0.5f;   // a wave can become up to 50% taller in 
 constexpr float kBreakRatio = 0.4f;    // a wave's AMPLITUDE never exceeds this fraction of the depth (breaking: wave height ~ 0.8 x depth)
 constexpr float kDeepWater = 1000.0f;  // "no depth information": deep enough that nothing changes
 
+// How much a wave of wave number `k` feels the bottom at this depth: smoothly 1 in very shallow water, 0 in deep water.
+// "Shallow" is relative to the wavelength: the depth is small compared with it when k * depth is below ~pi. So long waves
+// feel the bottom (and the shore) from farther out than short ones. Same function in shaders/waves.hlsli.
+inline float ShallowWeight(float k, float depth)
+{
+	const float kd = k * std::max(depth, 0.0f);
+	const float t = std::clamp((kd - 0.5f) / (3.14159265f - 0.5f), 0.0f, 1.0f);
+	return 1.0f - t * t * (3.0f - 2.0f * t);
+}
+
 // The amplitude a wave of nominal `amplitude` and wave number `k` has where the water is `depth` deep.
 // `strength` 0 = off (the open-water amplitude, always), 1 = full effect.
 inline float ShoalAmplitude(float amplitude, float k, float depth, float strength)
 {
 	if (strength <= 0.0f) return amplitude;
 	depth = std::max(depth, 0.0f);
-	// Shallow = the depth is small compared with the wavelength: k * depth below ~pi (depth < half a wavelength).
-	// Smoothly 1 in very shallow water and 0 in deep water.
-	const float kd = k * depth;
-	const float t = std::clamp((kd - 0.5f) / (3.14159265f - 0.5f), 0.0f, 1.0f);
-	const float shallow = 1.0f - t * t * (3.0f - 2.0f * t);
+	const float shallow = ShallowWeight(k, depth);
 	const float grown = amplitude * (1.0f + kShoalGrowth * shallow * strength);
 	const float limit = kBreakRatio * depth;
 	if (limit < 1e-5f) return 0.0f;
@@ -243,25 +249,57 @@ inline float RiverTravelDegrees(float flowAngleDegrees, float yawRadians)
 	return wrapped < 0.0f ? wrapped + 360.0f : wrapped;
 }
 
+// What the water knows about the shore under a point: how deep it is, and which way the land lies (a unit vector toward
+// the land times how sure we are: see WaterShore::ComputeShoreDirections). (0, 0) = no information.
+struct ShoreSample {
+	float depth = kDeepWater;
+	float towardX = 0.0f;
+	float towardZ = 0.0f;
+};
+
+// Waves cannot come FROM the land. A wave that is running away from a shore it is close to (the lee side of an island, the
+// far bank of a lake) has no open water behind it to have built up in, so it is turned down instead of rising and
+// breaking on a beach it is leaving. A wave running TOWARD the shore is untouched.
+//   `dirX, dirZ` point to where the crests come FROM, so a wave runs away from the land when that direction points to the
+//   land: away = dot(dir, toward). Only waves that feel the bottom (ShallowWeight) are affected, so far from any shore nothing changes.
+// `shelter` 0 = off, 1 = a wave running straight away from a nearby shore is nearly gone. Never more than 1, never below 0.05.
+inline float ShelterFactor(const Wave& w, const ShoreSample& shore, float shelter)
+{
+	if (shelter <= 0.0f) return 1.0f;
+	const float away = std::clamp(w.dirX * shore.towardX + w.dirZ * shore.towardZ, 0.0f, 1.0f);
+	return 1.0f - std::min(shelter, 0.95f) * ShallowWeight(w.k, shore.depth) * away;
+}
+
 // Where a point that rests at (x, z) is at `time`: sideways offset (dx, dz) and height dy.
 // `depth` and `shoreWaves` are the shore effect: how deep the water is under the REST position, and how strongly the waves
 // react to it (0 = not at all). The height follows the shoaled amplitude, but the sideways pull never exceeds what the
 // open-water wave had, so a wave that grows in shallow water can never fold over.
 inline void Displacement(const Table& t, float x, float z, float time, float& dx, float& dy, float& dz,
-						 float depth = kDeepWater, float shoreWaves = 0.0f)
+						 const ShoreSample& shore, float shoreWaves, float shelter)
 {
 	dx = dy = dz = 0.0f;
 	const float group = GroupFactor(t, x, z, time);   // 1 = full waves; lower in the calm patches of a sea with wave groups
 	for (int i = 0; i < t.count; ++i) {
 		const Wave& w = t.waves[i];
-		const float a = ShoalAmplitude(w.amplitude, w.k, depth, shoreWaves) * group;
-		const float aSide = std::min(ShoalAmplitude(w.amplitude, w.k, depth, shoreWaves), w.amplitude) * group;
+		const float shoaled = ShoalAmplitude(w.amplitude, w.k, shore.depth, shoreWaves);
+		const float turnedDown = ShelterFactor(w, shore, shelter) * group;
+		const float a = shoaled * turnedDown;
+		const float aSide = std::min(shoaled, w.amplitude) * turnedDown;
 		const float phase = w.k * (w.dirX * x + w.dirZ * z) + w.omega * time + w.phase0;
 		const float s = std::sin(phase), c = std::cos(phase);
 		dx += w.steepness * aSide * c * w.dirX;
 		dz += w.steepness * aSide * c * w.dirZ;
 		dy += a * s;
 	}
+}
+
+// The same with only a depth (no shore direction): the shoaling alone.
+inline void Displacement(const Table& t, float x, float z, float time, float& dx, float& dy, float& dz,
+						 float depth = kDeepWater, float shoreWaves = 0.0f)
+{
+	ShoreSample shore;
+	shore.depth = depth;
+	Displacement(t, x, z, time, dx, dy, dz, shore, shoreWaves, 0.0f);
 }
 
 // How many fixed-point steps find where a surface point started. Each step shrinks the error by about the choppiness, so
@@ -283,7 +321,23 @@ inline float HeightAt(const Table& t, float x, float z, float time)
 	return dy;
 }
 
-// The same, near a shore: `depthAt(restX, restZ)` says how deep the water is under a REST position (world space).
+// The same, near a shore, with the shore direction too: `shoreAt(restX, restZ)` returns a ShoreSample for a REST position
+// (world space), and `shelter` is how strongly waves running away from the land are turned down.
+template <class ShoreFn>
+inline float HeightAtShore(const Table& t, float x, float z, float time, float shoreWaves, float shelter, ShoreFn&& shoreAt)
+{
+	float rx = x, rz = z;
+	float dx, dy, dz;
+	for (int i = 0; i < kInversionSteps; ++i) {
+		Displacement(t, rx, rz, time, dx, dy, dz, shoreAt(rx, rz), shoreWaves, shelter);
+		rx = x - dx;
+		rz = z - dz;
+	}
+	Displacement(t, rx, rz, time, dx, dy, dz, shoreAt(rx, rz), shoreWaves, shelter);
+	return dy;
+}
+
+// The same, with a depth only: `depthAt(restX, restZ)` says how deep the water is under a REST position (world space).
 template <class DepthFn>
 inline float HeightAtShore(const Table& t, float x, float z, float time, float shoreWaves, DepthFn&& depthAt)
 {

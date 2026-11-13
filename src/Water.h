@@ -3,10 +3,12 @@
 #include "SceneObject.h"
 #include "Material.h"
 #include "RenderView.h"
+#include "WaterBodyType.h"
 #include "WaterMesh.h"
 #include "WaterPlan.h"
 #include "WaterShore.h"
 #include "WaterWaves.h"
+#include "Weather.h"
 #include <array>
 #include <cmath>
 #include <memory>
@@ -21,7 +23,7 @@ enum class WaterLook { Tropical, Ocean, Lake, Swamp, Arctic };
 // What KIND of water this is. It decides how the surface moves: an ocean rolls in swells from the wind, a lake shows
 // short wind chop, a pond barely moves, and a RIVER is a current: everything on it is carried downstream.
 // Values are saved in scene files by name: only ever ADD to the end.
-enum class WaterBodyType : int { Ocean = 0, Lake = 1, River = 2, Pond = 3 };
+// (WaterBodyType itself lives in WaterBodyType.h, and WaterTypeUi.h says which settings each type shows.)
 
 // What the water mirrors. "Sky" is the cheap cubemap from before (reflects only the sky);
 // the planar modes draw the whole scene again from below the water (reflects terrain, cube, sky),
@@ -66,7 +68,10 @@ struct WaterSettings {
 	float waveAmplitude = 0.35f;
 	float waveSpeed = 1.0f;
 	float waveFrequency = 0.6f;   // radians per world unit of the base wave (0.6 = ~10 unit wavelength)
-	float windDirection = 20.0f;  // degrees: the direction the waves travel toward (0 = +X, 90 = +Z)
+	// Where the wind comes from: the scene's weather (one wind for everything: Weather.h), or a direction of this body's own.
+	// Scenes saved before the scene wind existed keep the direction they had (they load as Custom).
+	WindSource windSource = WindSource::Scene;
+	float windDirection = 20.0f;  // degrees: the direction the waves travel toward (0 = +X, 90 = +Z). Used when windSource is Custom
 	float directionalSpread = 0.7f;   // 0 = all waves run with the wind (a clean swell), 1 = waves from every which way
 	float choppiness = 0.5f;      // 0 = rounded sine waves, 1 = sharp crests and wide troughs
 	int waveCount = 6;            // 2..12 waves summed. Fewer = cheaper and simpler
@@ -78,6 +83,7 @@ struct WaterSettings {
 	float swellAngle = 35.0f;     // degrees from the wind: where the swell comes from
 	float swellLength = 2.5f;     // the swell's wavelength as a multiple of the biggest wind wave's
 	float waveGroups = 0.35f;     // 0 = the same waves everywhere; 1 = patches of calm and rough water that drift
+	float shoreShelter = 0.8f;    // 0 = off; 1 = waves running AWAY from a nearby shore (the lee of an island) nearly vanish
 	int waveSeed = 1;             // another seed = another sea with the same character
 	float detailNormal = 0.5f;    // strength of the small ripples on top of the waves (0 = off, saves pixel work)
 	float detailScale = 0.8f;     // ripples per world unit
@@ -124,6 +130,8 @@ struct WaterSettings {
 	static constexpr int kMeshDetailMax = 2;
 	static constexpr float kLodDistanceMin = 10.0f, kLodDistanceMax = 1000.0f;
 
+	// A current carries everything downstream. Rivers always have one; a Custom body has one when its flow speed is above 0.
+	bool HasCurrent() const { return bodyType == WaterBodyType::River || (bodyType == WaterBodyType::Custom && flowSpeed > 0.0f); }
 	void Clamp();
 	void ApplyWavePreset(WavePreset preset);   // only touches the wave shape values (not wind direction)
 	void ApplyLook(WaterLook look);            // only touches colours, depth and optics (not waves, level or size)
@@ -168,6 +176,10 @@ public:
 	// The direction the surface travels toward, in WORLD space, as an angle (0 = +X, 90 = +Z). For a river it follows the
 	// body's own rotation, so turning the river turns its flow; for every other type it is the wind direction.
 	float GetTravelDegrees() const;
+	// The scene's wind, pushed in by the scene every frame. The waves are rebuilt only when it actually changed, and only if this
+	// body follows the scene wind.
+	void SetSceneWind(const WindSettings& wind);
+	float EffectiveWindDegrees() const { return settings_.windSource == WindSource::Scene ? sceneWind_.direction : settings_.windDirection; }
 	void SetSettings(const WaterSettings& settings);
 	void Update(float dt) override;
 	void Render(ID3D11DeviceContext* ctx, const RenderView& view) const override;
@@ -209,6 +221,7 @@ private:
 	void UpdateWorldTransform();
 	void ReleaseShoreMap();
 	float DepthAtWorld(float x, float z) const;   // water depth under a world position, from the CPU copy of the map
+	WaterWaves::ShoreSample ShoreAtWorld(float x, float z) const;   // depth AND the way to the land, the same blend the shader reads
 	float ExtentX() const { return settings_.size * std::abs(scale_.x); }   // world size along X
 	float ExtentZ() const { return settings_.sizeZ * std::abs(scale_.z); }
 	void ChooseTiles(const RenderView& view) const;
@@ -239,6 +252,7 @@ private:
 	const Terrain* shoreTerrain_ = nullptr;
 	bool shoreKeyValid_ = false;
 	std::vector<Tile> tiles_;
+	WindSettings sceneWind_;                // the scene's wind as last pushed by the scene (SetSceneWind)
 	std::vector<unsigned char> tileDry_;   // per tile: 1 = ground stands above the highest the surface can reach, nothing to draw
 	int builtMeshDetail_ = -1;
 	WaterMesh::TileGrid builtGrid_;
