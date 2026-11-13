@@ -230,6 +230,7 @@ void EditorLayer::OnFrame(LayerContext& ctx)
     DrawViewportPanel(ctx);
     DrawHierarchyPanel();
     DrawInspectorPanel();
+    DrawSceneSettingsPanel();
     DrawHistoryPanel();
     DrawProjectPanels();   // Scenes, Assets, Console
     HandleShortcuts();
@@ -303,6 +304,7 @@ void EditorLayer::BuildDefaultLayout(unsigned int dockSpaceId, float width, floa
     ImGui::DockBuilderDockWindow("Console", bottom);   // a tab next to Assets
     ImGui::DockBuilderDockWindow("Viewport", middle);
     ImGui::DockBuilderDockWindow("Inspector", right);
+    ImGui::DockBuilderDockWindow("Scene Settings", right);   // a tab next to the Inspector
     ImGui::DockBuilderFinish(dockSpaceId);
 }
 
@@ -358,6 +360,7 @@ void EditorLayer::DrawMenuBar()
         ImGui::MenuItem("Hierarchy", nullptr, &showHierarchy_);
         ImGui::MenuItem("Viewport", nullptr, &showViewport_);
         ImGui::MenuItem("Inspector", nullptr, &showInspector_);
+        ImGui::MenuItem("Scene Settings", nullptr, &showSceneSettings_);
         ImGui::MenuItem("History", nullptr, &showHistory_);
         ImGui::MenuItem("Scenes", nullptr, &showScenes_);
         ImGui::MenuItem("Assets", nullptr, &showAssets_);
@@ -494,7 +497,7 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
     ImGuizmo::SetDrawlist();                       // draw into the Viewport window, on top of the image
     ImGuizmo::SetRect(x, y, width, height);        // the gizmo must know which part of the screen is the 3D view
 
-    SceneObject* selected = (selectionKind_ == SelectionKind::Object) ? SelectedObject() : nullptr;
+    SceneObject* selected = SelectedObject();
     if (selected) {
         XMFLOAT4X4 boundsWorld;
         XMFLOAT3 boundsMin, boundsMax;
@@ -532,7 +535,7 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
         const float ndcX = ((mouse.x - x) / width) * 2.0f - 1.0f;
         const float ndcY = 1.0f - ((mouse.y - y) / height) * 2.0f;   // screen y grows downward, ndc y grows upward
         const SceneObjectId hit = PickObject(MakePickRay(view, projection, ndcX, ndcY));
-        if (hit != 0) { selectionKind_ = SelectionKind::Object; selectedId_ = hit; }
+        if (hit != 0) selectedId_ = hit;
         else selectedId_ = 0;
     }
 
@@ -632,7 +635,6 @@ SceneObject* EditorLayer::SelectedObject() const
 
 void EditorLayer::Select(SceneObject* object)
 {
-    selectionKind_ = SelectionKind::Object;
     selectedId_ = object ? object->GetId() : 0;
 }
 
@@ -754,7 +756,7 @@ void EditorLayer::TrackEdits(LayerContext& ctx)
     const std::string globals = CaptureGlobalState(ctx.scene);
     if (globalDetector_.Observe(0, globals, interacting, before)) RecordGlobalChange(before, globals);
 
-    SceneObject* selected = (selectionKind_ == SelectionKind::Object) ? SelectedObject() : nullptr;
+    SceneObject* selected = SelectedObject();
     const std::string state = selected ? CaptureObjectState(*selected) : std::string();
     if (selected && !state.empty()) {
         if (objectDetector_.Observe(selected->GetId(), state, interacting, before)) {
@@ -762,6 +764,16 @@ void EditorLayer::TrackEdits(LayerContext& ctx)
         }
     } else {
         objectDetector_.Reset();
+    }
+
+    // The Environment tab edits the sky without selecting it, so it gets its own detector. If the sky IS the selected
+    // object the detector above already sees every change: watching it twice would record each edit twice.
+    Skybox* sky = skyTabOpen_ ? scene_->GetSkybox() : nullptr;
+    if (sky && sky != selected) {
+        const std::string skyState = CaptureObjectState(*sky);
+        if (skyDetector_.Observe(sky->GetId(), skyState, interacting, before)) RecordPropertyChange(sky->GetId(), "Edit Skybox", before, skyState);
+    } else {
+        skyDetector_.Reset();
     }
 }
 
@@ -810,6 +822,7 @@ void EditorLayer::ApplyHistoryRequests()
         // The scene was changed by us, not by the user's hand: make the restored state the new baseline.
         objectDetector_.Reset();
         globalDetector_.Reset();
+        skyDetector_.Reset();
     }
 }
 
@@ -885,16 +898,11 @@ void EditorLayer::DrawHierarchyPanel()
     if (!ImGui::Begin("Hierarchy", &showHierarchy_)) { ImGui::End(); return; }
     hierarchyFocused_ = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
-    if (ImGui::Selectable("Camera", selectionKind_ == SelectionKind::Camera)) selectionKind_ = SelectionKind::Camera;
-    if (ImGui::Selectable("Lights", selectionKind_ == SelectionKind::Lights)) selectionKind_ = SelectionKind::Lights;
-    if (ImGui::Selectable("Weather", selectionKind_ == SelectionKind::Weather)) selectionKind_ = SelectionKind::Weather;
-    ImGui::Separator();
-
     for (const auto& owned : scene_->GetObjects()) {
         SceneObject* object = owned.get();
         if (!object) continue;
         ImGui::PushID(static_cast<int>(object->GetId()));   // two objects can share a name; the id keeps their rows distinct
-        if (ImGui::Selectable(object->GetEditorName(), selectionKind_ == SelectionKind::Object && selectedId_ == object->GetId())) {
+        if (ImGui::Selectable(object->GetEditorName(), selectedId_ == object->GetId())) {
             Select(object);
         }
         if (ImGui::BeginPopupContextItem()) {   // right-click on a row
@@ -926,16 +934,14 @@ void EditorLayer::DrawInspectorPanel()
     if (!showInspector_) return;
     if (!ImGui::Begin("Inspector", &showInspector_)) { ImGui::End(); return; }
 
-    if (selectionKind_ == SelectionKind::Camera) {
-        DrawCameraInspector();
-    } else if (selectionKind_ == SelectionKind::Lights) {
-        DrawLightsInspector();
-    } else if (selectionKind_ == SelectionKind::Weather) {
-        DrawWeatherInspector();
-    } else if (SceneObject* selected = SelectedObject()) {
+    if (SceneObject* selected = SelectedObject()) {
         DrawObjectInspector(selected);
     } else {
         ImGui::TextDisabled("Click an object in the Viewport or the Hierarchy.");
+        ImGui::Spacing();
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("Settings for the whole scene (sky, lights, shadows, exposure, wind, camera) are in the Scene Settings panel.");
+        ImGui::PopTextWrapPos();
     }
     ImGui::End();
 }
@@ -1184,10 +1190,10 @@ void EditorLayer::OpenSceneFile(LayerContext& ctx, const std::string& path)
     history_.Clear();                      // every id in the history now refers to an object that is gone
     objectDetector_.Reset();
     globalDetector_.Reset();
+    skyDetector_.Reset();
     currentScenePath_ = path;
     savedRevision_ = history_.Revision();  // what was just loaded is, by definition, what is saved
     selectedId_ = 0;                       // the old objects are gone, and so are their ids
-    selectionKind_ = SelectionKind::Object;
     RegisterSceneInProject(path);          // a scene opened from inside the project joins its list
     if (!warnings.empty()) ShowMessage("Scene opened, with warnings", JoinLines(warnings));
 }
@@ -1234,10 +1240,10 @@ void EditorLayer::NewScene(LayerContext& ctx)
     history_.Clear();
     objectDetector_.Reset();
     globalDetector_.Reset();
+    skyDetector_.Reset();
     currentScenePath_.clear();
     savedRevision_ = history_.Revision();
     selectedId_ = 0;
-    selectionKind_ = SelectionKind::Object;
 }
 
 // Opening another scene or project replaces what is on screen. If there are unsaved changes the user decides first;
@@ -1788,7 +1794,7 @@ void EditorLayer::DrawEnvironmentInspector()
     EnvironmentSettings& env = scene_->GetEnvironment();
     ImGui::SeparatorText("Image-based lighting");
     ImGui::Checkbox("Sky lighting", &env.enabled);
-    ImGui::SetItemTooltip("On: the sky lights everything (soft light + reflections).\nOff: the flat 'Ambient' colour above, like before.");
+    ImGui::SetItemTooltip("On: the sky lights everything (soft light + reflections).\nOff: the flat 'Ambient' colour (Lighting tab), like before.");
     ImGui::SliderFloat("Diffuse intensity", &env.diffuseIntensity, 0.0f, 3.0f);
     ImGui::SliderFloat("Specular intensity", &env.specularIntensity, 0.0f, 3.0f);
 
@@ -1930,7 +1936,6 @@ void EditorLayer::DrawTransformEditor(SceneObject* object)
 void EditorLayer::DrawCameraInspector()
 {
     Camera& camera = scene_->GetCamera();
-    ImGui::Text("Camera");
     XMFLOAT3 position = camera.GetPosition();
     XMFLOAT3 target = camera.GetTarget();
     XMFLOAT3 up = camera.GetUp();
@@ -1950,7 +1955,13 @@ void EditorLayer::DrawCameraInspector()
     float rotationSpeed = camera.GetRotationSpeed();
     if (ImGui::SliderFloat("Rotation sensitivity", &rotationSpeed, 0.0001f, 0.02f, "%.4f"))
         camera.SetRotationSpeed(rotationSpeed);
+    float fov = camera.GetFovDegrees();
+    if (ImGui::SliderFloat("Field of view", &fov, Camera::kFovMin, Camera::kFovMax, "%.0f deg")) camera.SetFovDegrees(fov);
+    ImGui::SetItemTooltip("How wide the lens is (vertical angle). 45 is the default; a wider angle sees more and exaggerates depth.\nThe editor camera only: it is not saved in the scene.");
+}
 
+void EditorLayer::DrawPostInspector()
+{
     ImGui::SeparatorText("Display");
     PostSettings& post = scene_->GetPostSettings();
     ImGui::SliderFloat("Exposure (stops)", &post.exposureEV, PostSettings::kExposureMin, PostSettings::kExposureMax, "%+.1f EV");
@@ -1964,6 +1975,32 @@ void EditorLayer::DrawCameraInspector()
     ImGui::Checkbox("sRGB encode (gamma)", &post.srgbEncode);
     ImGui::SetItemTooltip("The HDR buffer is linear light; monitors expect the sRGB curve.\nTurn it off to see how dark and harsh un-encoded linear light looks.");
     if (ImGui::Button("Reset display")) post = PostSettings{};
+}
+
+void EditorLayer::DrawSceneSettingsPanel()
+{
+    skyTabOpen_ = false;   // set again below if the Environment tab draws the sky controls this frame
+    if (!showSceneSettings_) return;
+    if (!ImGui::Begin("Scene Settings", &showSceneSettings_)) { ImGui::End(); return; }
+    if (ImGui::BeginTabBar("##sceneSettingsTabs")) {
+        if (ImGui::BeginTabItem("Environment")) {   // the sky and the light it casts, together
+            if (Skybox* sky = scene_->GetSkybox()) {
+                skyTabOpen_ = true;
+                DrawSkyboxInspector(sky);
+            } else {
+                ImGui::TextDisabled("This scene has no sky.");
+                if (ImGui::Button("Add the default sky")) pendingSkyboxFolder_ = Skybox::DefaultFolder();
+            }
+            DrawEnvironmentInspector();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Lighting")) { DrawLightsInspector(); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Post")) { DrawPostInspector(); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Weather")) { DrawWeatherInspector(); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Camera")) { DrawCameraInspector(); ImGui::EndTabItem(); }
+        ImGui::EndTabBar();
+    }
+    ImGui::End();
 }
 
 void EditorLayer::DrawLightsInspector()
@@ -1982,7 +2019,6 @@ void EditorLayer::DrawLightsInspector()
     ImGui::SliderFloat("Directional intensity", &directional.intensity, 0.0f, 5.0f);
 
     DrawShadowInspector();
-    DrawEnvironmentInspector();
 
     ImGui::SeparatorText("Point lights");
     auto& pointLights = lights.PointLights();
@@ -2748,6 +2784,7 @@ bool EditorLayer::ChangeSkybox(Skybox* skybox, const std::string& folder)
     if (before != after) {
         RecordPropertyChange(skybox->GetId(), "Change skybox", before, after);
         objectDetector_.Reset();
+        skyDetector_.Reset();
     }
     return true;
 }

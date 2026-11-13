@@ -93,9 +93,15 @@ void Camera::Rotate(float deltaX, float deltaY)
 
 void Camera::Update(){
     XMMATRIX viewMat = XMMatrixLookAtLH(XMLoadFloat3(&pos_), XMLoadFloat3(&target_), XMLoadFloat3(&up_));
-    XMMATRIX projMat = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.0f), (float)width_/(float)height_, kNearPlane, kFarPlane);
+    XMMATRIX projMat = XMMatrixPerspectiveFovLH(XMConvertToRadians(fovDegrees_), (float)width_/(float)height_, kNearPlane, kFarPlane);
     XMStoreFloat4x4(&view_, viewMat);
     XMStoreFloat4x4(&proj_, projMat);
+}
+
+void Camera::SetFovDegrees(float degrees)
+{
+    fovDegrees_ = std::clamp(degrees, kFovMin, kFovMax);
+    Update();
 }
 
 XMFLOAT4X4 Camera::GetViewMatrix() const{ return view_; }

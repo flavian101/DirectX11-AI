@@ -34,7 +34,6 @@ public:
     bool BlocksSceneKeyboard() const override;
 
 private:
-    enum class SelectionKind { Object, Camera, Lights, Weather };
     enum class GizmoTool { Translate, Rotate, Scale };
 
     // --- the shell: dock space, menu, panels ---
@@ -53,10 +52,12 @@ private:
     void Select(SceneObject* object);
     void DrawHierarchyPanel();
     void DrawInspectorPanel();
+    void DrawSceneSettingsPanel();   // everything that belongs to the whole scene, in tabs: Environment, Lighting, Post, Weather, Camera
 
     // --- what the Inspector shows ---
     void DrawObjectInspector(SceneObject* object);
     void DrawCameraInspector();
+    void DrawPostInspector();      // exposure, tone mapping, gamma
     void DrawWeatherInspector();   // the scene's wind (and, later, fog and rain)
     void DrawLightsInspector();
     void DrawShadowInspector();
@@ -120,7 +121,6 @@ private:
     Scene* scene_ = nullptr;   // non-owning; refreshed from the LayerContext every frame
     bool showAllWaterSettings_ = false;   // show every water setting for the selected body, whatever its type
     GpuTimings gpuTimings_;    // a copy of the renderer's per-pass GPU times, refreshed every frame (shown in the Performance panels)
-    SelectionKind selectionKind_ = SelectionKind::Object;
     SceneObjectId selectedId_ = 0;   // 0 = nothing; an id (not an index) survives adds and deletes
     TerrainSettings pendingTerrainSettings_;
     bool lastTerrainGenerationSucceeded_ = true;
@@ -138,6 +138,8 @@ private:
     // Panels
     bool showHierarchy_ = true;
     bool showInspector_ = true;
+    bool showSceneSettings_ = true;
+    bool skyTabOpen_ = false;        // the Environment tab drew the sky controls last frame (see TrackEdits)
     bool showViewport_ = true;
     bool resetLayout_ = false;
 
@@ -203,6 +205,7 @@ private:
     UndoHistory history_;
     ChangeDetector objectDetector_;
     ChangeDetector globalDetector_;
+    ChangeDetector skyDetector_;   // the sky, while it is edited from the Environment tab without being the selected object
     bool undoRequested_ = false;
     bool redoRequested_ = false;
     int historyJump_ = -1;       // >= 0: stand at this history position (clicked in the History panel)

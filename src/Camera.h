@@ -8,6 +8,8 @@ public:
     // plane makes distant depth values coarse (lesson 8). Nothing in the scene is closer than this.
     static constexpr float kNearPlane = 0.1f;
     static constexpr float kFarPlane = 1000.0f;
+    static constexpr float kFovMin = 20.0f;    // degrees, vertical
+    static constexpr float kFovMax = 110.0f;
 
     Camera();
     void SetPosition(const DirectX::XMFLOAT3 &pos);
@@ -21,6 +23,8 @@ public:
     DirectX::XMFLOAT3 GetUp() const { return up_; }
     float GetMoveSpeed() const { return moveSpeed_; }
     float GetRotationSpeed() const { return rotationSpeed_; }
+    float GetFovDegrees() const { return fovDegrees_; }
+    void SetFovDegrees(float degrees);   // clamped to kFovMin..kFovMax; the projection is rebuilt at once
     void SetWindowSize(int width, int height);
 
     // Camera movement methods
@@ -39,6 +43,7 @@ private:
     DirectX::XMFLOAT4X4 proj_;
     int width_;
     int height_;
+    float fovDegrees_ = 45.0f;
 
     // Camera movement
     float moveSpeed_ = 30.0f;
