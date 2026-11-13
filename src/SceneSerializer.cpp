@@ -99,6 +99,17 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
     } else if (const auto* sky = dynamic_cast<const Skybox*>(&object)) {
         entry["type"] = "Skybox";
         entry["intensity"] = sky->GetIntensity();
+        // Which cubemap folder. The default needs no entry (so scenes saved before this existed still load the same sky).
+        // A file stores it relative to the scene file like every other asset path; an undo snapshot keeps it as it is.
+        if (sky->GetFolder() != Skybox::DefaultFolder()) {
+            if (snapshot) {
+                entry["folder"] = sky->GetFolder();
+            } else {
+                bool outside = false;
+                entry["folder"] = MakeStoredPath(fs::path(sky->GetFolder()), *folder, assetsRoot, outside);
+                if (outside) warn("The skybox \"" + sky->GetFolder() + "\" lives outside the assets folder. It will not be shipped with the game: copy the folder into assets/ and choose it again.");
+            }
+        }
     } else if (const auto* cube = dynamic_cast<const Cube*>(&object)) {
         entry["type"] = "Cube";
         entry["spinning"] = cube->IsSpinning();
@@ -231,6 +242,11 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
         water->SetSettings(loaded);
     } else if (auto* sky = dynamic_cast<Skybox*>(&object)) {
         sky->SetIntensity(entry.value("intensity", 1.0f));
+        // An ABSENT key means "the default sky", which matters for undo: undoing a sky change must bring the old one
+        // back. A cubemap that already matches is not loaded again.
+        const std::string wanted = Skybox::NormalizeFolder(
+            entry.contains("folder") && entry["folder"].is_string() ? resolve(entry["folder"].get<std::string>()) : std::string(Skybox::DefaultFolder()));
+        if (wanted != sky->GetFolder() && !sky->LoadFromFolder(wanted)) warnings.push_back("The skybox could not be loaded from: " + wanted);
     } else if (auto* cube = dynamic_cast<Cube*>(&object)) {
         cube->GetSurface().Settings() = entry.value("surface", SurfaceSettings{});
     } else if (auto* model = dynamic_cast<ModelObject*>(&object)) {

@@ -2,9 +2,13 @@
 #include "Logger.h"
 #include "Mesh.h"
 #include <array>
+#include <filesystem>
 #include <vector>
 
 namespace {
+// The order the GPU expects cube faces in: +X, -X, +Y, -Y, +Z, -Z.
+const std::array<const char*, 6> kFaceFiles = { "right.png", "left.png", "top.png", "bottom.png", "back.png", "front.png" };
+
 Model* CreateSkyboxModel(ID3D11Device* device)
 {
 	const std::vector<Vertex> vertices = {
@@ -25,14 +29,9 @@ Model* CreateSkyboxModel(ID3D11Device* device)
 }
 }
 
-Skybox::Skybox(ID3D11Device* device) : material_(device)
+Skybox::Skybox(ID3D11Device* device) : material_(device), device_(device)
 {
-	const std::array<std::string, 6> faces = {
-		"assets/Skybox/right.png", "assets/Skybox/left.png",
-		"assets/Skybox/top.png", "assets/Skybox/bottom.png",
-		"assets/Skybox/back.png", "assets/Skybox/front.png"
-	};
-	cubemap_ = std::make_unique<Texture>(device, faces);
+	LoadFromFolder(DefaultFolder());
 	renderable_ = std::make_unique<Renderable>(
 		device, CreateSkyboxModel(device), L"shaders/skybox_vs.hlsl", L"shaders/skybox_ps.hlsl");
 	SetIntensity(intensity_);
@@ -56,6 +55,48 @@ Skybox::Skybox(ID3D11Device* device) : material_(device)
 
 Skybox::~Skybox()
 {
+}
+
+const std::array<const char*, 6>& Skybox::FaceFileNames()
+{
+	return kFaceFiles;
+}
+
+std::string Skybox::NormalizeFolder(const std::string& folder)
+{
+	std::string text = std::filesystem::path(folder).lexically_normal().generic_string();
+	while (text.size() > 1 && text.back() == '/') text.pop_back();
+	return text;
+}
+
+bool Skybox::IsSkyboxFolder(const std::string& folder)
+{
+	std::error_code error;
+	for (const char* face : kFaceFiles) {
+		if (!std::filesystem::is_regular_file(std::filesystem::path(folder) / face, error)) return false;
+	}
+	return true;
+}
+
+bool Skybox::LoadFromFolder(const std::string& requested)
+{
+	if (!device_) return false;
+	const std::string folder = NormalizeFolder(requested);
+	std::array<std::string, 6> faces;
+	for (size_t i = 0; i < faces.size(); ++i) faces[i] = (std::filesystem::path(folder) / kFaceFiles[i]).generic_string();
+
+	// Build the NEW cubemap while the old one is still alive, and only then swap. Two reasons: a bad folder must not
+	// leave the scene with no sky, and the scene decides whether to re-bake sky lighting by comparing texture
+	// POINTERS - if the old texture were freed first, the new one could be given the same address and the bake would
+	// be skipped.
+	auto candidate = std::make_unique<Texture>(device_, faces);
+	if (!candidate->IsValid()) {
+		LOG_ERROR("Skybox: could not load all six faces from \"" + folder + "\"");
+		return false;
+	}
+	cubemap_ = std::move(candidate);
+	folder_ = folder;
+	return true;
 }
 
 bool Skybox::IsValid() const
