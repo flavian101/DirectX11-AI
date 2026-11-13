@@ -68,6 +68,7 @@ private:
     void DrawSkyboxInspector(Skybox* skybox);
     void DrawSkyboxPicker(Skybox* skybox);                                 // cubemap combo, Rescan, and the "not shipped" warning
     void RescanSkyboxes();                                                  // looks for skybox folders in the engine's and the project's assets
+    void UseSkyboxFolder(LayerContext& ctx, const std::string& folder);    // the Assets panel's "Use as skybox": adds a skybox if there is none
     bool ChangeSkybox(Skybox* skybox, const std::string& folder);           // swaps the cubemap and records ONE undo step
     void DrawSurfaceInspector(SurfaceMaterial& surface);
     void DrawModelInspector(ModelObject* model);
@@ -176,6 +177,7 @@ private:
     bool showAssets_ = true;
     bool showConsole_ = true;
     bool showScenes_ = true;
+    std::string pendingSkyboxFolder_;   // a skybox folder chosen in the Assets panel (applied at the start of the next frame)
     bool newProjectRequested_ = false;
     std::string pendingImportPath_;   // an asset double-clicked in the Assets panel
     // Opening another scene or project replaces what is open, so it first asks about unsaved changes.

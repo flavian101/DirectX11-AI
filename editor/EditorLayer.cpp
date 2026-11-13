@@ -199,6 +199,11 @@ void EditorLayer::OnFrame(LayerContext& ctx)
         pendingImportPath_.clear();
         ImportModelFromFile(ctx, path);
     }
+    if (!pendingSkyboxFolder_.empty()) {   // "Use as skybox" in the Assets panel, or a folder dropped on the sky picker
+        const std::string folder = pendingSkyboxFolder_;
+        pendingSkyboxFolder_.clear();
+        UseSkyboxFolder(ctx, folder);
+    }
     if (newProjectRequested_) {
         newProjectRequested_ = false;
         NewProject(ctx);
@@ -454,6 +459,15 @@ void EditorLayer::DrawViewportPanel(LayerContext& ctx)
             const ImVec2 imageMin = ImGui::GetCursorScreenPos();
             ImGui::Image(static_cast<ImTextureID>(reinterpret_cast<intptr_t>(image)), available);
             viewportHovered_ = ImGui::IsItemHovered();
+            if (ImGui::BeginDragDropTarget()) {   // a model dragged in from the Assets panel is imported, like a double-click there
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPathPayload)) {
+                    const std::string dropped = static_cast<const char*>(payload->Data);
+                    std::string extension = std::filesystem::path(dropped).extension().string();
+                    for (char& ch : extension) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                    if (extension == ".gltf" || extension == ".glb" || extension == ".fbx" || extension == ".obj") pendingImportPath_ = dropped;
+                }
+                ImGui::EndDragDropTarget();
+            }
             DrawSelectionAndGizmo(ctx, imageMin.x, imageMin.y, available.x, available.y);
 
             char fps[32];
@@ -1322,9 +1336,15 @@ void EditorLayer::DrawProjectPanels()
     }
 
     // Assets: a double-clicked scene opens, a double-clicked model is imported (both at the start of the next frame).
-    const AssetAction assetAction = assetBrowser_.Draw(&showAssets_, project_.IsOpen() ? project_.AssetsRoot() : std::filesystem::path("assets"));
+    // With a project open the browser offers two places: the project's assets/ (what ships; only scenes/ at first) and the
+    // engine's own assets/ (the stock textures, skyboxes and models). Without one, just the engine's.
+    std::vector<AssetBrowserPanel::AssetRoot> assetRoots;
+    if (project_.IsOpen()) assetRoots.push_back({ "Project", project_.AssetsRoot() });
+    assetRoots.push_back({ "Engine", std::filesystem::path("assets") });
+    const AssetAction assetAction = assetBrowser_.Draw(&showAssets_, assetRoots);
     if (assetAction.kind == AssetAction::Kind::OpenScene) RequestNavigation(NavKind::OpenScene, assetAction.path);
     else if (assetAction.kind == AssetAction::Kind::ImportModel) pendingImportPath_ = assetAction.path;
+    else if (assetAction.kind == AssetAction::Kind::UseAsSkybox) pendingSkyboxFolder_ = assetAction.path;
 
     console_.Draw(&showConsole_);
 }
@@ -2732,6 +2752,23 @@ bool EditorLayer::ChangeSkybox(Skybox* skybox, const std::string& folder)
     return true;
 }
 
+void EditorLayer::UseSkyboxFolder(LayerContext& ctx, const std::string& folder)
+{
+    const std::string normalised = Skybox::NormalizeFolder(folder);
+    if (Skybox* existing = ctx.scene.GetSkybox()) {
+        ChangeSkybox(existing, normalised);
+        return;
+    }
+    // A scene without a sky (an old file, or one that was deleted): make one. One undo step takes the whole thing away.
+    Skybox* created = ctx.scene.Add<Skybox>(ctx.renderer.GetDevice());
+    if (!created) return;
+    if (!created->LoadFromFolder(normalised)) {
+        ShowMessage("Could not load skybox", "A skybox folder needs right.png, left.png, top.png, bottom.png, back.png and front.png:\n" + normalised);
+    }
+    Select(created);
+    RecordAdded(created, "Add skybox");
+}
+
 void EditorLayer::DrawSkyboxPicker(Skybox* skybox)
 {
     namespace fs = std::filesystem;
@@ -2755,6 +2792,14 @@ void EditorLayer::DrawSkyboxPicker(Skybox* skybox)
         ImGui::EndCombo();
     }
     ImGui::SetItemTooltip("%s", current.c_str());
+    if (ImGui::BeginDragDropTarget()) {   // a skybox folder dragged here from the Assets panel
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPathPayload)) {
+            const std::string dropped = Skybox::NormalizeFolder(static_cast<const char*>(payload->Data));
+            if (Skybox::IsSkyboxFolder(dropped)) ChangeSkybox(skybox, dropped);
+            else ShowMessage("Not a skybox folder", "Drop a folder that holds right, left, top, bottom, back and front .png files.");
+        }
+        ImGui::EndDragDropTarget();
+    }
     ImGui::SameLine();
     if (ImGui::Button("Rescan")) RescanSkyboxes();
     ImGui::SetItemTooltip("A skybox is a folder with right, left, top, bottom, back and front .png files.\nPut new ones anywhere under assets/ and press this.");

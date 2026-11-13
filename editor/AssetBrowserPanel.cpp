@@ -1,5 +1,6 @@
 #include "AssetBrowserPanel.h"
 #include "imgui.h"
+#include "Skybox.h"
 #include <algorithm>
 #include <cctype>
 #ifdef _WIN32
@@ -23,7 +24,7 @@ bool EndsWith(const std::string& text, const std::string& suffix)
 
 std::string KindOf(const fs::path& path, bool isDirectory)
 {
-    if (isDirectory) return "Folder";
+    if (isDirectory) return Skybox::IsSkyboxFolder(path.string()) ? "Skybox" : "Folder";
     const std::string name = Lower(path.filename().string());
     const std::string extension = Lower(path.extension().string());
     if (EndsWith(name, ".scene.json")) return "Scene";
@@ -45,6 +46,7 @@ std::string SizeText(std::uintmax_t bytes)
 ImVec4 KindColor(const std::string& kind)
 {
     if (kind == "Folder") return ImVec4(0.95f, 0.80f, 0.45f, 1.0f);
+    if (kind == "Skybox") return ImVec4(0.50f, 0.85f, 0.95f, 1.0f);
     if (kind == "Scene")  return ImVec4(0.55f, 0.85f, 0.65f, 1.0f);
     if (kind == "Model")  return ImVec4(0.55f, 0.75f, 1.00f, 1.0f);
     if (kind == "Image")  return ImVec4(0.85f, 0.65f, 0.95f, 1.0f);
@@ -92,11 +94,32 @@ void AssetBrowserPanel::Refresh()
     });
 }
 
-AssetAction AssetBrowserPanel::Draw(bool* open, const fs::path& root)
+AssetAction AssetBrowserPanel::Draw(bool* open, const std::vector<AssetRoot>& roots)
 {
     AssetAction action;
     if (!*open) return action;
     if (!ImGui::Begin("Assets", open)) { ImGui::End(); return action; }
+    if (roots.empty()) {
+        ImGui::TextDisabled("There are no asset folders to browse.");
+        ImGui::End();
+        return action;
+    }
+
+    // Which place to browse. With one root there is nothing to choose. Opening or closing a project changes the list, so
+    // the index is clamped, and a different path starts again at its top.
+    rootIndex_ = (std::min)(rootIndex_, static_cast<int>(roots.size()) - 1);
+    if (roots.size() > 1) {
+        for (int i = 0; i < static_cast<int>(roots.size()); ++i) {
+            const bool active = (i == rootIndex_);
+            if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            if (ImGui::Button(roots[i].label.c_str())) rootIndex_ = i;
+            if (active) ImGui::PopStyleColor();
+            ImGui::SetItemTooltip("%s", roots[i].path.string().c_str());
+            ImGui::SameLine();
+        }
+        ImGui::NewLine();
+    }
+    const fs::path& root = roots[rootIndex_].path;
 
     // A different project (or none): start again at its top.
     if (root != root_) {
@@ -161,6 +184,12 @@ AssetAction AssetBrowserPanel::Draw(bool* open, const fs::path& root)
             const bool clicked = ImGui::Selectable((entry.name + "###" + entry.name).c_str(), false,
                                                    ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick);
             ImGui::PopStyleColor();
+            if (ImGui::BeginDragDropSource()) {
+                const std::string dragged = entry.path.string();
+                ImGui::SetDragDropPayload(kAssetPathPayload, dragged.c_str(), dragged.size() + 1);   // +1: keep the '\0'
+                ImGui::TextUnformatted(entry.name.c_str());   // what follows the pointer
+                ImGui::EndDragDropSource();
+            }
             if (clicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 if (entry.isDirectory) enter = entry.path;
                 else if (entry.kind == "Scene") action = { AssetAction::Kind::OpenScene, entry.path.string() };
@@ -168,6 +197,7 @@ AssetAction AssetBrowserPanel::Draw(bool* open, const fs::path& root)
             }
             if (ImGui::BeginPopupContextItem()) {
                 if (entry.isDirectory && ImGui::MenuItem("Open folder")) enter = entry.path;
+                if (entry.kind == "Skybox" && ImGui::MenuItem("Use as skybox")) action = { AssetAction::Kind::UseAsSkybox, entry.path.string() };
                 if (entry.kind == "Scene" && ImGui::MenuItem("Open scene")) action = { AssetAction::Kind::OpenScene, entry.path.string() };
                 if (entry.kind == "Model" && ImGui::MenuItem("Import into scene")) action = { AssetAction::Kind::ImportModel, entry.path.string() };
                 if (ImGui::MenuItem("Show in Explorer")) ShowInExplorer(entry.path);
