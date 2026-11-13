@@ -144,6 +144,7 @@ bool EditorLayer::OnAttach(HWND hwnd, Direct3D11Renderer& renderer)
     io.ConfigWindowsMoveFromTitleBarOnly = true;
     ImGui::StyleColorsDark();
     ApplyEditorTheme();   // our colours, rounding and spacing on top of the dark base
+    ApplyEditorFont(ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd));   // Segoe UI, and bigger spacing on a high-DPI screen
 
     if (!ImGui_ImplWin32_Init(hwnd) || !ImGui_ImplDX11_Init(renderer.GetDevice(), renderer.GetContext())) {
         LOG_ERROR("Failed to initialize Dear ImGui");
@@ -282,7 +283,10 @@ void EditorLayer::DrawDockSpace()
         BuildDefaultLayout(dockSpaceId, viewport->WorkSize.x, viewport->WorkSize.y);
         resetLayout_ = false;
     }
-    ImGui::DockSpace(dockSpaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+    // The dock space fills what is left of the host window, minus a strip at the bottom for the status bar.
+    const float statusHeight = ImGui::GetFrameHeight();
+    ImGui::DockSpace(dockSpaceId, ImVec2(0.0f, ImGui::GetContentRegionAvail().y - statusHeight), ImGuiDockNodeFlags_None);
+    DrawStatusBar(statusHeight);
     ImGui::End();
 }
 
@@ -380,6 +384,48 @@ void EditorLayer::DrawMenuBar()
     ImGui::EndMenuBar();
 }
 
+void EditorLayer::DrawStatusBar(float height)
+{
+    // Drawn straight onto the host window with absolute coordinates, so it needs no layout and cannot disturb the dock space.
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 min(viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - height);
+    const ImVec2 max(viewport->WorkPos.x + viewport->WorkSize.x, viewport->WorkPos.y + viewport->WorkSize.y);
+    ImDrawList* list = ImGui::GetWindowDrawList();
+    list->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_MenuBarBg));
+    list->AddLine(min, ImVec2(max.x, min.y), ImGui::GetColorU32(ImGuiCol_Border));
+
+    const float textY = min.y + (height - ImGui::GetTextLineHeight()) * 0.5f;
+    const ImU32 normal = ImGui::GetColorU32(ImGuiCol_Text);
+    const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    float x = min.x + 10.0f;
+    auto put = [&](const std::string& text, ImU32 color) {
+        list->AddText(ImVec2(x, textY), color, text.c_str());
+        x += ImGui::CalcTextSize(text.c_str()).x;
+    };
+
+    const float fps = ImGui::GetIO().Framerate;
+    char frame[48];
+    std::snprintf(frame, sizeof(frame), "%.0f FPS  (%.1f ms)", fps, fps > 0.0f ? 1000.0f / fps : 0.0f);
+    put(frame, normal);
+    put("   |   ", dim);
+    put(std::to_string(scene_ ? scene_->GetObjects().size() : 0) + " objects", normal);
+    put("   |   ", dim);
+    if (const SceneObject* selected = SelectedObject()) {
+        put("Selected: ", dim);
+        put(selected->GetEditorName(), normal);
+    } else {
+        put("Nothing selected", dim);
+    }
+
+    // On the right: is there anything to lose?
+    const bool dirty = IsDirty();
+    const char* state = dirty ? "Unsaved changes" : "All changes saved";
+    const float width = ImGui::CalcTextSize(state).x + 18.0f;
+    const ImU32 dot = dirty ? IM_COL32(240, 180, 70, 255) : IM_COL32(110, 200, 120, 255);
+    list->AddCircleFilled(ImVec2(max.x - width - 2.0f, min.y + height * 0.5f), 4.0f, dot);
+    list->AddText(ImVec2(max.x - width + 8.0f, textY), dirty ? normal : dim, state);
+}
+
 static constexpr float kBrushRadiusMin = 1.0f;
 static constexpr float kBrushRadiusMax = 120.0f;
 
@@ -415,28 +461,53 @@ static void DrawBrushRing(ImDrawList* list, const Terrain& terrain, float center
 void EditorLayer::DrawViewportToolbar()
 {
     ImGui::SetCursorPos(ImVec2(6.0f, 4.0f));
-    auto toolButton = [&](const char* label, GizmoTool tool) {
-        const bool active = gizmoTool_ == tool;
+
+    // A button that stays lit while its tool is on. The shortcut is in the tooltip, not on the button: the labels stay short
+    // and the strip stays quiet.
+    auto toggleButton = [&](const char* label, bool active, const char* tip) {
         if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-        if (ImGui::Button(label)) gizmoTool_ = tool;
+        const bool clicked = ImGui::Button(label);
         if (active) ImGui::PopStyleColor();
-        ImGui::SameLine();
+        ImGui::SetItemTooltip("%s", tip);
+        return clicked;
     };
-    toolButton("Move [1]", GizmoTool::Translate);
-    toolButton("Rotate [2]", GizmoTool::Rotate);
-    toolButton("Scale [3]", GizmoTool::Scale);
-    if (ImGui::Button(gizmoLocal_ ? "Local [G]" : "World [G]")) gizmoLocal_ = !gizmoLocal_;
-    ImGui::SameLine();
+    // A thin vertical line between groups of tools.
+    auto groupGap = [&]() {
+        ImGui::SameLine(0.0f, 10.0f);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x, p.y + 2.0f), ImVec2(p.x, p.y + ImGui::GetFrameHeight() - 2.0f),
+                                            ImGui::GetColorU32(ImGuiCol_Separator));
+        ImGui::SameLine(0.0f, 10.0f);
+    };
+
+    // Transform tools: joined, because only one is on at a time.
+    if (toggleButton("Move", gizmoTool_ == GizmoTool::Translate, "Move  (1)")) gizmoTool_ = GizmoTool::Translate;
+    ImGui::SameLine(0.0f, 2.0f);
+    if (toggleButton("Rotate", gizmoTool_ == GizmoTool::Rotate, "Rotate  (2)")) gizmoTool_ = GizmoTool::Rotate;
+    ImGui::SameLine(0.0f, 2.0f);
+    if (toggleButton("Scale", gizmoTool_ == GizmoTool::Scale, "Scale  (3)")) gizmoTool_ = GizmoTool::Scale;
+
+    groupGap();
+    if (ImGui::Button(gizmoLocal_ ? "Local" : "World")) gizmoLocal_ = !gizmoLocal_;
+    ImGui::SetItemTooltip("Handles follow the object (Local) or the world axes (World)  (G)");
+
     if (scene_ && scene_->GetTerrain()) {
+        groupGap();
         // Read the mode ONCE, before the click. The click flips sculptMode_, and a push and its pop must agree on it.
-        const bool sculptWasOn = sculptMode_;
-        if (sculptWasOn) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-        if (ImGui::Button("Brush [4]")) ToggleSculptMode();
-        if (sculptWasOn) ImGui::PopStyleColor();
-        ImGui::SameLine();
+        if (toggleButton("Brush", sculptMode_, "Sculpt and paint the terrain  (4)")) ToggleSculptMode();
     }
-    ImGui::TextDisabled("%s", sculptMode_ ? "Left-drag brushes  |  Shift inverts  |  [ ] radius  |  Esc leaves"
-                                          : "Hold Ctrl to snap  |  F frame  |  Del delete  |  Ctrl+D duplicate");
+
+    // The shortcuts for whatever mode is on, one hover away instead of a sentence that always takes up the room.
+    ImGui::SameLine(0.0f, 14.0f);
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip()) {
+        if (sculptMode_) {
+            ImGui::TextUnformatted("Left-drag: brush      Shift: invert\n[ and ]: brush radius      Esc: leave brush mode");
+        } else {
+            ImGui::TextUnformatted("Ctrl: snap while dragging      F: frame selected\nDel: delete      Ctrl+D: duplicate\nMiddle mouse: look around      WASD: move");
+        }
+        ImGui::EndTooltip();
+    }
 }
 
 void EditorLayer::DrawViewportPanel(LayerContext& ctx)
@@ -472,11 +543,6 @@ void EditorLayer::DrawViewportPanel(LayerContext& ctx)
                 ImGui::EndDragDropTarget();
             }
             DrawSelectionAndGizmo(ctx, imageMin.x, imageMin.y, available.x, available.y);
-
-            char fps[32];
-            std::snprintf(fps, sizeof(fps), "FPS: %.1f", ImGui::GetIO().Framerate);
-            ImGui::GetWindowDrawList()->AddText(ImVec2(imageMin.x + 8.0f, imageMin.y + available.y - 22.0f),
-                                                IM_COL32(255, 255, 255, 200), fps);
         }
     }
     ImGui::End();
@@ -949,7 +1015,9 @@ void EditorLayer::DrawInspectorPanel()
 void EditorLayer::DrawObjectInspector(SceneObject* object)
 {
     if (!object) return;
-    ImGui::Text("Object: %s", object->GetEditorName());
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_CheckMark));   // the accent colour: which object this is
+    ImGui::TextUnformatted(object->GetEditorName());
+    ImGui::PopStyleColor();
     ImGui::Separator();
     DrawTransformEditor(object);
 

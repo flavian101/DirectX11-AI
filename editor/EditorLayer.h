@@ -40,6 +40,7 @@ private:
     void DrawDockSpace();
     void BuildDefaultLayout(unsigned int dockSpaceId, float width, float height);
     void DrawMenuBar();
+    void DrawStatusBar(float height);   // the strip along the bottom: frame rate, object count, selection, saved state
     void DrawViewportPanel(LayerContext& ctx);
     void DrawViewportToolbar();
     void DrawSelectionAndGizmo(LayerContext& ctx, float imageX, float imageY, float imageWidth, float imageHeight);

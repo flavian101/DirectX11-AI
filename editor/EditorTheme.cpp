@@ -1,5 +1,6 @@
 #include "EditorTheme.h"
 #include "imgui.h"
+#include <filesystem>
 
 void ApplyEditorTheme()
 {
@@ -24,6 +25,8 @@ void ApplyEditorTheme()
     style.ChildBorderSize = 1.0f;
     style.PopupBorderSize = 1.0f;
     style.FrameBorderSize = 0.0f;
+    style.SeparatorTextBorderSize = 1.0f;       // the section titles in the Inspector: a hairline, a little more air around it
+    style.SeparatorTextPadding = ImVec2(16.0f, 4.0f);
     style.WindowMenuButtonPosition = ImGuiDir_None;   // no collapse arrow in every title: docked panels do not collapse
 
     // Colour: cool dark greys, one accent. Surfaces step up in brightness the closer they are to your hands:
@@ -65,8 +68,22 @@ void ApplyEditorTheme()
     c[ImGuiCol_ResizeGrip]           = ImVec4(0.26f, 0.59f, 0.98f, 0.15f);
     c[ImGuiCol_ResizeGripHovered]    = accentSoft;
     c[ImGuiCol_ResizeGripActive]     = accent;
-    c[ImGuiCol_Tab]                  = ImVec4(0.125f, 0.130f, 0.150f, 1.00f);
     c[ImGuiCol_TabHovered]           = ImVec4(0.260f, 0.400f, 0.620f, 1.00f);
+    // Tabs: the selected one is the brightest, with an accent line on top; the others sit back into the title bar. Without
+    // these the tabs keep the base theme's blue, which is the one colour here that is not ours. (Renamed in ImGui 1.90.9.)
+#if IMGUI_VERSION_NUM >= 19090
+    c[ImGuiCol_Tab]                  = ImVec4(0.100f, 0.105f, 0.120f, 1.00f);
+    c[ImGuiCol_TabSelected]          = ImVec4(0.160f, 0.200f, 0.270f, 1.00f);
+    c[ImGuiCol_TabSelectedOverline]  = accent;
+    c[ImGuiCol_TabDimmed]            = ImVec4(0.090f, 0.095f, 0.108f, 1.00f);
+    c[ImGuiCol_TabDimmedSelected]    = ImVec4(0.130f, 0.150f, 0.190f, 1.00f);
+    c[ImGuiCol_TabDimmedSelectedOverline] = ImVec4(0.26f, 0.59f, 0.98f, 0.45f);
+#else
+    c[ImGuiCol_Tab]                  = ImVec4(0.100f, 0.105f, 0.120f, 1.00f);
+    c[ImGuiCol_TabActive]            = ImVec4(0.160f, 0.200f, 0.270f, 1.00f);
+    c[ImGuiCol_TabUnfocused]         = ImVec4(0.090f, 0.095f, 0.108f, 1.00f);
+    c[ImGuiCol_TabUnfocusedActive]   = ImVec4(0.130f, 0.150f, 0.190f, 1.00f);
+#endif
     c[ImGuiCol_TextSelectedBg]       = accentSoft;
     c[ImGuiCol_DragDropTarget]       = accentHover;
     c[ImGuiCol_NavHighlight]         = accent;
@@ -76,4 +93,20 @@ void ApplyEditorTheme()
     c[ImGuiCol_TableBorderStrong]    = ImVec4(0.200f, 0.210f, 0.235f, 1.00f);
     c[ImGuiCol_TableBorderLight]     = ImVec4(0.160f, 0.170f, 0.190f, 1.00f);
     c[ImGuiCol_TableRowBgAlt]        = ImVec4(1.00f, 1.00f, 1.00f, 0.025f);
+}
+
+void ApplyEditorFont(float dpiScale)
+{
+    if (dpiScale < 1.0f) dpiScale = 1.0f;
+    ImGuiIO& io = ImGui::GetIO();
+    // ImGui's built-in font is a 13 px bitmap-style font: legible, but it is the thing that most makes an ImGui tool look
+    // like a prototype. Segoe UI ships with every Windows. The first font added becomes the default one.
+    static const char* const kCandidates[] = { "C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\arial.ttf" };
+    for (const char* path : kCandidates) {
+        std::error_code error;
+        if (!std::filesystem::exists(path, error)) continue;
+        if (io.Fonts->AddFontFromFileTTF(path, 15.0f * dpiScale)) break;
+    }
+    // Spacing and radii were chosen for 100%: grow them with the text, or a 150% screen gets big letters in cramped boxes.
+    if (dpiScale > 1.0f) ImGui::GetStyle().ScaleAllSizes(dpiScale);
 }
