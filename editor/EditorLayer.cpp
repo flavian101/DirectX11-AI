@@ -2686,10 +2686,108 @@ void EditorLayer::DrawWeatherInspector()
     ImGui::TextDisabled("%d water %s following the scene wind.", followers, followers == 1 ? "body is" : "bodies are");
 }
 
+void EditorLayer::RescanSkyboxes()
+{
+    namespace fs = std::filesystem;
+    skyboxFolders_.clear();
+    skyboxScanRoot_ = AssetsRootText();
+
+    struct Root { fs::path path; const char* tag; };
+    std::vector<Root> roots = { { fs::path("assets"), "engine" } };
+    if (project_.IsOpen()) roots.push_back({ project_.AssetsRoot(), "project" });
+
+    for (const Root& root : roots) {
+        std::error_code error;
+        if (!fs::is_directory(root.path, error)) continue;
+        for (fs::recursive_directory_iterator it(root.path, fs::directory_options::skip_permission_denied, error), end;
+             !error && it != end; it.increment(error)) {
+            std::error_code entryError;
+            if (!it->is_directory(entryError)) continue;
+            const std::string folder = Skybox::NormalizeFolder(it->path().string());
+            if (!Skybox::IsSkyboxFolder(folder)) continue;
+            it.disable_recursion_pending();   // a skybox folder holds six images: nothing worth looking inside
+            SkyboxChoice choice;
+            choice.folder = folder;
+            choice.label = it->path().lexically_relative(root.path).generic_string() + "  (" + root.tag + ")";
+            skyboxFolders_.push_back(std::move(choice));
+        }
+    }
+}
+
+// One undo step for "the sky was swapped". The state is captured before and after because the folder is part of the
+// skybox's saved state; objectDetector_ is reset so the property detector does not report the same change a second time.
+bool EditorLayer::ChangeSkybox(Skybox* skybox, const std::string& folder)
+{
+    if (!skybox) return false;
+    const std::string before = CaptureObjectState(*skybox);
+    if (!skybox->LoadFromFolder(folder)) {
+        ShowMessage("Could not load skybox", "A skybox folder needs right.png, left.png, top.png, bottom.png, back.png and front.png:\n" + folder);
+        return false;
+    }
+    const std::string after = CaptureObjectState(*skybox);
+    if (before != after) {
+        RecordPropertyChange(skybox->GetId(), "Change skybox", before, after);
+        objectDetector_.Reset();
+    }
+    return true;
+}
+
+void EditorLayer::DrawSkyboxPicker(Skybox* skybox)
+{
+    namespace fs = std::filesystem;
+    if (skyboxScanRoot_ != AssetsRootText()) RescanSkyboxes();   // the first time, or another project was opened
+
+    const std::string current = skybox->GetFolder();
+    std::string preview = current;   // a skybox from outside the assets folders is shown by its path
+    for (const SkyboxChoice& choice : skyboxFolders_) {
+        if (choice.folder == current) { preview = choice.label; break; }
+    }
+
+    ImGui::TextDisabled("Cubemap folder");
+    const ImGuiStyle& style = ImGui::GetStyle();
+    ImGui::SetNextItemWidth(-(ImGui::CalcTextSize("Rescan").x + style.FramePadding.x * 2.0f + style.ItemSpacing.x));
+    if (ImGui::BeginCombo("##skyCubemap", preview.c_str())) {
+        for (const SkyboxChoice& choice : skyboxFolders_) {
+            const std::string row = choice.label + "###" + choice.folder;
+            if (ImGui::Selectable(row.c_str(), choice.folder == current) && choice.folder != current) ChangeSkybox(skybox, choice.folder);
+        }
+        if (skyboxFolders_.empty()) ImGui::TextDisabled("No skybox folders found.");
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("%s", current.c_str());
+    ImGui::SameLine();
+    if (ImGui::Button("Rescan")) RescanSkyboxes();
+    ImGui::SetItemTooltip("A skybox is a folder with right, left, top, bottom, back and front .png files.\nPut new ones anywhere under assets/ and press this.");
+
+    // With a project open, only ITS assets folder is shipped. Say so here, where the choice is made, instead of at save time.
+    if (project_.IsOpen() && !IsInsideAssets(current, AssetsRootText())) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "This sky is outside the project's assets folder, so it will not be shipped with the game.");
+        ImGui::PopTextWrapPos();
+        if (ImGui::Button("Copy into project")) {
+            const fs::path destination = project_.AssetsRoot() / "skyboxes" / fs::path(current).filename();
+            std::error_code error;
+            fs::create_directories(destination, error);
+            for (const char* face : Skybox::FaceFileNames()) {
+                if (error) break;
+                fs::copy_file(fs::path(current) / face, destination / face, fs::copy_options::overwrite_existing, error);
+            }
+            if (error) {
+                ShowMessage("Could not copy the skybox", "Copying into " + destination.string() + " failed:\n" + error.message());
+            } else {
+                RescanSkyboxes();
+                ChangeSkybox(skybox, Skybox::NormalizeFolder(destination.string()));
+            }
+        }
+        ImGui::SetItemTooltip("Copies the six images into the project's assets/skyboxes folder and switches to that copy.");
+    }
+}
+
 void EditorLayer::DrawSkyboxInspector(Skybox* skybox)
 {
-    ImGui::SeparatorText("Skybox material");
+    ImGui::SeparatorText("Sky");
+    DrawSkyboxPicker(skybox);
     float intensity = skybox->GetIntensity();
     if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 3.0f)) skybox->SetIntensity(intensity);
-    ImGui::Text("Cubemap: assets/Skybox");
+    ImGui::SetItemTooltip("Brightness of the sky. Dimming it dims the light it casts on the scene as well.");
 }

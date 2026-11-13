@@ -66,6 +66,9 @@ private:
     void DrawWaterInspector(Water* water);
     void DrawAddWaterItems();
     void DrawSkyboxInspector(Skybox* skybox);
+    void DrawSkyboxPicker(Skybox* skybox);                                 // cubemap combo, Rescan, and the "not shipped" warning
+    void RescanSkyboxes();                                                  // looks for skybox folders in the engine's and the project's assets
+    bool ChangeSkybox(Skybox* skybox, const std::string& folder);           // swaps the cubemap and records ONE undo step
     void DrawSurfaceInspector(SurfaceMaterial& surface);
     void DrawModelInspector(ModelObject* model);
     void DrawScatterInspector(ScatterObject* scatter);
@@ -122,6 +125,14 @@ private:
     bool lastTerrainGenerationSucceeded_ = true;
     bool terrainKeepProportions_ = true;   // widening the terrain also raises its height scale, so it keeps its look (editor-only)
     bool showShadowMap_ = false;
+
+    // Folders (in the engine's assets/ and the open project's) that hold all six skybox faces, found by RescanSkyboxes.
+    struct SkyboxChoice {
+        std::string folder;   // normalised, see Skybox::NormalizeFolder
+        std::string label;    // what the combo shows: "Skybox  (engine)"
+    };
+    std::vector<SkyboxChoice> skyboxFolders_;
+    std::string skyboxScanRoot_ = "?";   // the assets root the list was made for: another project = look again
 
     // Panels
     bool showHierarchy_ = true;
