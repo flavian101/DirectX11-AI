@@ -1,7 +1,10 @@
 #include "EditorLayer.h"
 #include "WaterTypeUi.h"
 #include "EditorTheme.h"
+#include "EditorIcons.h"
+#include "SkyFaces.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -94,6 +97,81 @@ void DecomposeTransform(const XMFLOAT4X4& m, XMFLOAT3& position, XMFLOAT3& rotat
 }
 
 // Draws the 12 edges of a box (in an object's local space, placed by `world`) as lines over the Viewport image.
+// A world point on the screen. False when it is behind the camera (the divide would put it on the wrong side).
+bool ProjectPoint(const XMFLOAT3& point, const XMFLOAT4X4& view, const XMFLOAT4X4& projection, float x, float y, float width, float height, ImVec2& out)
+{
+    const XMVECTOR clip = XMVector4Transform(XMVectorSet(point.x, point.y, point.z, 1.0f), XMLoadFloat4x4(&view) * XMLoadFloat4x4(&projection));
+    const float w = XMVectorGetW(clip);
+    if (w <= 0.01f) return false;
+    out = ImVec2(x + (XMVectorGetX(clip) / w * 0.5f + 0.5f) * width, y + (0.5f - XMVectorGetY(clip) / w * 0.5f) * height);
+    return true;
+}
+
+// A warm, strong directional light is a sun; a pale blue one is a moon; a point light is a bulb.
+EditorIcons::Icon LightIconFor(const LightObject& light)
+{
+    if (!light.IsDirectional()) return EditorIcons::Icon::Bulb;
+    return light.GetColor().z > light.GetColor().x ? EditorIcons::Icon::Moon : EditorIcons::Icon::Sun;
+}
+
+// The lights have no body to see, so each gets a marker in the viewport: its icon in its own colour. The selected one also
+// shows what it does: a directional light the way it shines (an arrow), a point light how far it reaches (three circles).
+void DrawLightMarkers(ImDrawList* list, const Scene& scene, SceneObjectId selectedId, const XMFLOAT4X4& view, const XMFLOAT4X4& projection,
+                      float x, float y, float width, float height)
+{
+    list->PushClipRect(ImVec2(x, y), ImVec2(x + width, y + height), true);
+    for (const auto& object : scene.GetObjects()) {
+        const auto* light = dynamic_cast<const LightObject*>(object.get());
+        if (!light) continue;
+        ImVec2 center;
+        if (!ProjectPoint(light->GetPosition(), view, projection, x, y, width, height, center)) continue;
+        const bool selected = light->GetId() == selectedId;
+        const XMFLOAT3 c = light->GetColor();
+        auto channel = [](float v) { return static_cast<int>((0.35f + 0.65f * v) * 255.0f); };   // pulled toward white so a dark colour still shows
+        const ImU32 tint = IM_COL32(channel(c.x), channel(c.y), channel(c.z), 255);
+        const float radius = 14.0f;
+        list->AddCircleFilled(center, radius, IM_COL32(18, 18, 22, 175));
+        list->AddCircle(center, radius, selected ? IM_COL32(255, 170, 40, 255) : IM_COL32(255, 255, 255, 80), 0, selected ? 2.0f : 1.0f);
+        EditorIcons::Draw(list, LightIconFor(*light), center, radius * 1.3f, tint);
+        if (!selected) continue;
+
+        if (light->IsDirectional()) {
+            const XMFLOAT3 d = light->GetDirection();
+            const XMFLOAT3 p = light->GetPosition();
+            ImVec2 tip;
+            if (ProjectPoint({ p.x + d.x * 8.0f, p.y + d.y * 8.0f, p.z + d.z * 8.0f }, view, projection, x, y, width, height, tip)) {
+                list->AddLine(center, tip, tint, 2.0f);
+                const ImVec2 back(center.x - tip.x, center.y - tip.y);
+                const float length = std::sqrt(back.x * back.x + back.y * back.y);
+                if (length > 1.0f) {   // an arrow head: two short strokes back along the line
+                    const ImVec2 u(back.x / length * 9.0f, back.y / length * 9.0f);
+                    list->AddLine(tip, ImVec2(tip.x + u.x - u.y * 0.5f, tip.y + u.y + u.x * 0.5f), tint, 2.0f);
+                    list->AddLine(tip, ImVec2(tip.x + u.x + u.y * 0.5f, tip.y + u.y - u.x * 0.5f), tint, 2.0f);
+                }
+            }
+        } else {
+            const XMFLOAT3 p = light->GetPosition();
+            const float range = light->GetRange();
+            constexpr int kSegments = 40;
+            for (int plane = 0; plane < 3; ++plane) {   // a circle around each axis: together they read as a sphere
+                ImVec2 previous;
+                bool havePrevious = false;
+                for (int i = 0; i <= kSegments; ++i) {
+                    const float a = 6.2831853f * static_cast<float>(i) / static_cast<float>(kSegments);
+                    const float ca = std::cos(a) * range, sa = std::sin(a) * range;
+                    const XMFLOAT3 world = plane == 0 ? XMFLOAT3(p.x + ca, p.y + sa, p.z) : plane == 1 ? XMFLOAT3(p.x + ca, p.y, p.z + sa) : XMFLOAT3(p.x, p.y + ca, p.z + sa);
+                    ImVec2 screen;
+                    const bool ok = ProjectPoint(world, view, projection, x, y, width, height, screen);
+                    if (ok && havePrevious) list->AddLine(previous, screen, IM_COL32(255, 200, 90, 110), 1.0f);
+                    previous = screen;
+                    havePrevious = ok;
+                }
+            }
+        }
+    }
+    list->PopClipRect();
+}
+
 void DrawBoxOutline(ImDrawList* list, const XMFLOAT4X4& world, const XMFLOAT3& boxMin, const XMFLOAT3& boxMax,
                     const XMFLOAT4X4& view, const XMFLOAT4X4& projection, float x, float y, float width, float height, ImU32 color)
 {
@@ -155,6 +233,7 @@ bool EditorLayer::OnAttach(HWND hwnd, Direct3D11Renderer& renderer)
     }
     hwnd_ = hwnd;
     attached_ = true;
+    assetBrowser_.SetDevice(renderer.GetDevice());   // the Assets panel makes its thumbnails with it
     LoadRecentProjects();
     return true;
 }
@@ -162,6 +241,7 @@ bool EditorLayer::OnAttach(HWND hwnd, Direct3D11Renderer& renderer)
 void EditorLayer::OnDetach()
 {
     if (!attached_) return;   // safe to call twice (SetLayer, then the destructor)
+    assetBrowser_.Release();  // its thumbnails are GPU textures: they must go before the device does
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -204,6 +284,16 @@ void EditorLayer::OnFrame(LayerContext& ctx)
         const std::string folder = pendingSkyboxFolder_;
         pendingSkyboxFolder_.clear();
         UseSkyboxFolder(ctx, folder);
+    }
+    if (!pendingAddSkyFolder_.empty()) {   // "Add as new sky"
+        const std::string folder = pendingAddSkyFolder_;
+        pendingAddSkyFolder_.clear();
+        AddSkybox(ctx, folder);
+    }
+    if (pendingActiveSkyId_ != 0) {        // "Use this sky"
+        const SceneObjectId id = pendingActiveSkyId_;
+        pendingActiveSkyId_ = 0;
+        ActivateSky(dynamic_cast<Skybox*>(ctx.scene.Find(id)));
     }
     if (newProjectRequested_) {
         newProjectRequested_ = false;
@@ -351,6 +441,10 @@ void EditorLayer::DrawMenuBar()
     }
     if (ImGui::BeginMenu("Add")) {
         if (ImGui::MenuItem("Cube")) addCubeRequested_ = true;
+        if (ImGui::BeginMenu("Light")) {
+            DrawAddLightItems();
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Water body")) {
             DrawAddWaterItems();
             ImGui::EndMenu();
@@ -460,17 +554,9 @@ static void DrawBrushRing(ImDrawList* list, const Terrain& terrain, float center
 
 void EditorLayer::DrawViewportToolbar()
 {
+    using EditorIcons::Icon;
     ImGui::SetCursorPos(ImVec2(6.0f, 4.0f));
 
-    // A button that stays lit while its tool is on. The shortcut is in the tooltip, not on the button: the labels stay short
-    // and the strip stays quiet.
-    auto toggleButton = [&](const char* label, bool active, const char* tip) {
-        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-        const bool clicked = ImGui::Button(label);
-        if (active) ImGui::PopStyleColor();
-        ImGui::SetItemTooltip("%s", tip);
-        return clicked;
-    };
     // A thin vertical line between groups of tools.
     auto groupGap = [&]() {
         ImGui::SameLine(0.0f, 10.0f);
@@ -480,21 +566,22 @@ void EditorLayer::DrawViewportToolbar()
         ImGui::SameLine(0.0f, 10.0f);
     };
 
+    // Icon buttons that stay lit while their tool is on. The tooltip is the label and carries the shortcut, so the strip stays quiet.
     // Transform tools: joined, because only one is on at a time.
-    if (toggleButton("Move", gizmoTool_ == GizmoTool::Translate, "Move  (1)")) gizmoTool_ = GizmoTool::Translate;
+    if (EditorIcons::Button("##toolMove", Icon::Move, gizmoTool_ == GizmoTool::Translate, "Move  (1)")) gizmoTool_ = GizmoTool::Translate;
     ImGui::SameLine(0.0f, 2.0f);
-    if (toggleButton("Rotate", gizmoTool_ == GizmoTool::Rotate, "Rotate  (2)")) gizmoTool_ = GizmoTool::Rotate;
+    if (EditorIcons::Button("##toolRotate", Icon::Rotate, gizmoTool_ == GizmoTool::Rotate, "Rotate  (2)")) gizmoTool_ = GizmoTool::Rotate;
     ImGui::SameLine(0.0f, 2.0f);
-    if (toggleButton("Scale", gizmoTool_ == GizmoTool::Scale, "Scale  (3)")) gizmoTool_ = GizmoTool::Scale;
+    if (EditorIcons::Button("##toolScale", Icon::Scale, gizmoTool_ == GizmoTool::Scale, "Scale  (3)")) gizmoTool_ = GizmoTool::Scale;
 
     groupGap();
-    if (ImGui::Button(gizmoLocal_ ? "Local" : "World")) gizmoLocal_ = !gizmoLocal_;
-    ImGui::SetItemTooltip("Handles follow the object (Local) or the world axes (World)  (G)");
+    if (EditorIcons::Button("##toolSpace", gizmoLocal_ ? Icon::Local : Icon::World, false,
+                            gizmoLocal_ ? "Local: handles follow the object  (G)" : "World: handles follow the world axes  (G)")) gizmoLocal_ = !gizmoLocal_;
 
     if (scene_ && scene_->GetTerrain()) {
         groupGap();
         // Read the mode ONCE, before the click. The click flips sculptMode_, and a push and its pop must agree on it.
-        if (toggleButton("Brush", sculptMode_, "Sculpt and paint the terrain  (4)")) ToggleSculptMode();
+        if (EditorIcons::Button("##toolBrush", Icon::Brush, sculptMode_, "Sculpt and paint the terrain  (4)")) ToggleSculptMode();
     }
 
     // The shortcuts for whatever mode is on, one hover away instead of a sentence that always takes up the room.
@@ -563,6 +650,8 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
     ImGuizmo::SetDrawlist();                       // draw into the Viewport window, on top of the image
     ImGuizmo::SetRect(x, y, width, height);        // the gizmo must know which part of the screen is the 3D view
 
+    DrawLightMarkers(ImGui::GetWindowDrawList(), ctx.scene, selectedId_, view, projection, x, y, width, height);
+
     SceneObject* selected = SelectedObject();
     if (selected) {
         XMFLOAT4X4 boundsWorld;
@@ -576,7 +665,8 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
 
         XMFLOAT3 position, rotation, scale;
         if (!sculptTerrain && selected->GetEditorTransform(position, rotation, scale) &&   // no gizmo while sculpting
-            (gizmoTool_ != GizmoTool::Rotate || selected->SupportsRotation())) {
+            (gizmoTool_ != GizmoTool::Rotate || selected->SupportsRotation()) &&
+            (gizmoTool_ != GizmoTool::Scale || selected->SupportsScale())) {
             XMFLOAT4X4 matrix = ComposeTransform(position, rotation, scale);
             const ImGuizmo::OPERATION operation = gizmoTool_ == GizmoTool::Translate ? ImGuizmo::TRANSLATE
                                                 : gizmoTool_ == GizmoTool::Rotate    ? ImGuizmo::ROTATE
@@ -742,6 +832,18 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
             RecordAdded(cube, "Add cube");
         }
     }
+    if (addLightKind_ >= 0) {
+        const int kind = addLightKind_;
+        addLightKind_ = -1;
+        if (LightObject* light = ctx.scene.Add<LightObject>(kind == 2 ? LightKind::Point : LightKind::Directional)) {
+            if (kind == 0) { LightObject::ApplySunPreset(*light); light->SetName("Sun"); }
+            else if (kind == 1) { LightObject::ApplyMoonPreset(*light); light->SetName("Moon"); }
+            else light->SetName("Point light");
+            PlaceInFrontOfCamera(light, kind == 2 ? 6.0f : 12.0f);   // where you are looking, so it is in view to grab
+            Select(light);
+            RecordAdded(light, std::string("Add ") + light->GetEditorName());
+        }
+    }
     if (addScatterRequested_) {
         addScatterRequested_ = false;
         if (ctx.scene.GetTerrain()) {
@@ -831,16 +933,7 @@ void EditorLayer::TrackEdits(LayerContext& ctx)
     } else {
         objectDetector_.Reset();
     }
-
-    // The Environment tab edits the sky without selecting it, so it gets its own detector. If the sky IS the selected
-    // object the detector above already sees every change: watching it twice would record each edit twice.
-    Skybox* sky = skyTabOpen_ ? scene_->GetSkybox() : nullptr;
-    if (sky && sky != selected) {
-        const std::string skyState = CaptureObjectState(*sky);
-        if (skyDetector_.Observe(sky->GetId(), skyState, interacting, before)) RecordPropertyChange(sky->GetId(), "Edit Skybox", before, skyState);
-    } else {
-        skyDetector_.Reset();
-    }
+    skyDetector_.Reset();   // the sky is edited only while selected (the Inspector), which the detector above already watches
 }
 
 void EditorLayer::RecordPropertyChange(SceneObjectId id, const std::string& name, const std::string& before, const std::string& after)
@@ -957,6 +1050,38 @@ void EditorLayer::DrawAddWaterItems()
     }
 }
 
+namespace {
+// The Hierarchy groups what is in the scene by kind, so a scene with a few dozen things stays readable.
+enum class HierarchyGroup { Environment, Lights, Terrain, Water, Objects, Scatter };
+
+HierarchyGroup GroupOf(const SceneObject& object)
+{
+    if (dynamic_cast<const Skybox*>(&object)) return HierarchyGroup::Environment;
+    if (dynamic_cast<const LightObject*>(&object)) return HierarchyGroup::Lights;
+    if (dynamic_cast<const Terrain*>(&object)) return HierarchyGroup::Terrain;
+    if (dynamic_cast<const Water*>(&object)) return HierarchyGroup::Water;
+    if (dynamic_cast<const ScatterObject*>(&object)) return HierarchyGroup::Scatter;
+    return HierarchyGroup::Objects;
+}
+
+EditorIcons::Icon IconFor(const SceneObject& object)
+{
+    if (dynamic_cast<const Skybox*>(&object)) return EditorIcons::Icon::Sky;
+    if (const auto* light = dynamic_cast<const LightObject*>(&object)) return LightIconFor(*light);
+    if (dynamic_cast<const Terrain*>(&object)) return EditorIcons::Icon::Terrain;
+    if (dynamic_cast<const Water*>(&object)) return EditorIcons::Icon::Water;
+    if (dynamic_cast<const ScatterObject*>(&object)) return EditorIcons::Icon::Scatter;
+    if (dynamic_cast<const ModelObject*>(&object)) return EditorIcons::Icon::Model;
+    return EditorIcons::Icon::Cube;
+}
+
+std::string LowerCopy(std::string text)
+{
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return text;
+}
+}
+
 void EditorLayer::DrawHierarchyPanel()
 {
     hierarchyFocused_ = false;
@@ -964,32 +1089,109 @@ void EditorLayer::DrawHierarchyPanel()
     if (!ImGui::Begin("Hierarchy", &showHierarchy_)) { ImGui::End(); return; }
     hierarchyFocused_ = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
-    for (const auto& owned : scene_->GetObjects()) {
-        SceneObject* object = owned.get();
-        if (!object) continue;
-        ImGui::PushID(static_cast<int>(object->GetId()));   // two objects can share a name; the id keeps their rows distinct
-        if (ImGui::Selectable(object->GetEditorName(), selectedId_ == object->GetId())) {
-            Select(object);
+    // The search box: matches the name or the kind ("water", "model", "sky"). While it has text every group opens.
+    {
+        const bool hadText = hierarchyFilter_[0] != '\0';
+        const float clearWidth = ImGui::GetFrameHeight();
+        ImGui::SetNextItemWidth(hadText ? -(clearWidth + ImGui::GetStyle().ItemSpacing.x) : -1.0f);
+        ImGui::InputTextWithHint("##hierarchyFilter", "Search by name or type...", hierarchyFilter_, sizeof(hierarchyFilter_));
+        if (hadText) {
+            ImGui::SameLine();
+            if (ImGui::Button("x##clearHierarchyFilter", ImVec2(clearWidth, 0.0f))) hierarchyFilter_[0] = '\0';
+            ImGui::SetItemTooltip("Clear the search");
         }
-        if (ImGui::BeginPopupContextItem()) {   // right-click on a row
-            Select(object);
-            if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, object->CanClone())) duplicateRequested_ = true;
-            if (ImGui::MenuItem("Delete", "Del", false, object->CanDelete())) deleteRequested_ = true;
-            if (ImGui::MenuItem("Frame", "F")) FrameSelected();
-            ImGui::EndPopup();
-        }
-        ImGui::PopID();
     }
+    const std::string needle = LowerCopy(hierarchyFilter_);
+    const bool filtering = !needle.empty();
+    ImGui::Spacing();
+
+    static const struct { HierarchyGroup group; const char* label; } kGroups[] = {
+        { HierarchyGroup::Environment, "Environment" }, { HierarchyGroup::Lights, "Lights" }, { HierarchyGroup::Terrain, "Terrain" }, { HierarchyGroup::Water, "Water" },
+        { HierarchyGroup::Objects, "Objects" }, { HierarchyGroup::Scatter, "Scatter" } };
+
+    int shown = 0;
+    for (const auto& group : kGroups) {
+        std::vector<SceneObject*> members;
+        for (const auto& owned : scene_->GetObjects()) {
+            SceneObject* object = owned.get();
+            if (!object || GroupOf(*object) != group.group) continue;
+            if (filtering && LowerCopy(object->GetEditorName()).find(needle) == std::string::npos &&
+                LowerCopy(object->GetTypeName()).find(needle) == std::string::npos) continue;
+            members.push_back(object);
+        }
+        if (members.empty()) continue;   // a group with nothing in it takes no room
+        shown += static_cast<int>(members.size());
+
+        char header[64];
+        std::snprintf(header, sizeof(header), "%s  (%d)###group%d", group.label, static_cast<int>(members.size()), static_cast<int>(group.group));
+        if (filtering) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+        if (!ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen)) continue;
+
+        for (SceneObject* object : members) {
+            ImGui::PushID(static_cast<int>(object->GetId()));   // two objects can share a name; the id keeps their rows distinct
+            const float rowHeight = ImGui::GetTextLineHeight() + 4.0f;
+            if (ImGui::Selectable("##row", selectedId_ == object->GetId(), ImGuiSelectableFlags_None, ImVec2(0.0f, rowHeight))) {
+                Select(object);
+            }
+            const ImVec2 rowMin = ImGui::GetItemRectMin();
+            const ImVec2 rowMax = ImGui::GetItemRectMax();
+
+            // The row itself: an icon for the kind, the name, and for the sky that is showing a small "active" tag.
+            const auto* sky = dynamic_cast<const Skybox*>(object);
+            const bool dimmed = sky && !sky->IsActive();
+            ImDrawList* list = ImGui::GetWindowDrawList();
+            const ImU32 textColor = ImGui::GetColorU32(dimmed ? ImGuiCol_TextDisabled : ImGuiCol_Text);
+            const float iconSize = ImGui::GetTextLineHeight();
+            EditorIcons::Draw(list, IconFor(*object), ImVec2(rowMin.x + iconSize * 0.5f + 4.0f, (rowMin.y + rowMax.y) * 0.5f), iconSize * 0.95f, textColor);
+            list->AddText(ImVec2(rowMin.x + iconSize + 12.0f, rowMin.y + 2.0f), textColor, object->GetEditorName());
+            const auto* lightObject = dynamic_cast<const LightObject*>(object);
+            const int rank = lightObject ? scene_->DirectionalRank(*lightObject) : -1;
+            if (rank >= 0 && rank <= 2) {   // which directional light does what, at a glance
+                const char* tag = rank == 0 ? "sun" : rank == 1 ? "2nd" : "unused";
+                const float tagWidth = ImGui::CalcTextSize(tag).x;
+                list->AddText(ImVec2(rowMax.x - tagWidth - 8.0f, rowMin.y + 2.0f), ImGui::GetColorU32(rank == 2 ? ImGuiCol_TextDisabled : ImGuiCol_CheckMark), tag);
+            }
+            if (sky && sky->IsActive()) {
+                const char* tag = "active";
+                const float tagWidth = ImGui::CalcTextSize(tag).x;
+                list->AddText(ImVec2(rowMax.x - tagWidth - 8.0f, rowMin.y + 2.0f), ImGui::GetColorU32(ImGuiCol_CheckMark), tag);
+            }
+
+            if (ImGui::BeginPopupContextItem()) {   // right-click on a row
+                Select(object);
+                if (sky && ImGui::MenuItem("Use this sky", nullptr, false, !sky->IsActive())) pendingActiveSkyId_ = object->GetId();
+                if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, object->CanClone())) duplicateRequested_ = true;
+                if (ImGui::MenuItem("Delete", "Del", false, object->CanDelete())) deleteRequested_ = true;
+                if (ImGui::MenuItem("Frame", "F")) FrameSelected();
+                ImGui::EndPopup();
+            }
+            ImGui::PopID();
+        }
+        ImGui::Spacing();
+    }
+    if (shown == 0) ImGui::TextDisabled(filtering ? "Nothing matches the search." : "The scene is empty.");
 
     // Right-click on the empty part of the panel.
     if (ImGui::BeginPopupContextWindow("HierarchyContext", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
         if (ImGui::MenuItem("Add cube")) addCubeRequested_ = true;
+        if (ImGui::BeginMenu("Add light")) {
+            DrawAddLightItems();
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Add water body")) {
             DrawAddWaterItems();
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Add model from file...")) importRequested_ = true;
         if (ImGui::MenuItem("Add scatter on terrain", nullptr, false, scene_ && scene_->GetTerrain())) addScatterRequested_ = true;
+        if (ImGui::BeginMenu("Add sky")) {
+            EnsureSkyboxScan();
+            for (const SkyboxChoice& choice : skyboxFolders_) {
+                if (ImGui::MenuItem(choice.label.c_str())) pendingAddSkyFolder_ = choice.folder;
+            }
+            if (skyboxFolders_.empty()) ImGui::TextDisabled("No skybox folders found in assets/.");
+            ImGui::EndMenu();
+        }
         ImGui::EndPopup();
     }
     ImGui::End();
@@ -1019,10 +1221,11 @@ void EditorLayer::DrawObjectInspector(SceneObject* object)
     ImGui::TextUnformatted(object->GetEditorName());
     ImGui::PopStyleColor();
     ImGui::Separator();
-    DrawTransformEditor(object);
+    if (!dynamic_cast<Skybox*>(object)) DrawTransformEditor(object);   // a sky has no position: it is always around you
 
     if (auto* terrain = dynamic_cast<Terrain*>(object)) DrawTerrainInspector(terrain);
     if (auto* water = dynamic_cast<Water*>(object)) DrawWaterInspector(water);
+    if (auto* light = dynamic_cast<LightObject*>(object)) DrawLightInspector(light);
     if (auto* skybox = dynamic_cast<Skybox*>(object)) DrawSkyboxInspector(skybox);
     if (auto* cube = dynamic_cast<Cube*>(object)) {
         bool spinning = cube->IsSpinning();
@@ -1305,6 +1508,7 @@ void EditorLayer::NewScene(LayerContext& ctx)
 {
     ctx.scene.ClearObjects();
     ctx.scene.Add<Skybox>(ctx.renderer.GetDevice());   // an empty scene still needs a sky, or the background is black
+    if (LightObject* sun = ctx.scene.Add<LightObject>(LightKind::Directional)) sun->SetName("Sun");   // ...and a sun, or it is dark
     history_.Clear();
     objectDetector_.Reset();
     globalDetector_.Reset();
@@ -1419,6 +1623,7 @@ void EditorLayer::DrawProjectPanels()
     if (assetAction.kind == AssetAction::Kind::OpenScene) RequestNavigation(NavKind::OpenScene, assetAction.path);
     else if (assetAction.kind == AssetAction::Kind::ImportModel) pendingImportPath_ = assetAction.path;
     else if (assetAction.kind == AssetAction::Kind::UseAsSkybox) pendingSkyboxFolder_ = assetAction.path;
+    else if (assetAction.kind == AssetAction::Kind::AddAsSkybox) pendingAddSkyFolder_ = assetAction.path;
 
     console_.Draw(&showConsole_);
 }
@@ -1860,23 +2065,33 @@ void EditorLayer::DrawScatterInspector(ScatterObject* scatter)
 void EditorLayer::DrawEnvironmentInspector()
 {
     EnvironmentSettings& env = scene_->GetEnvironment();
-    ImGui::SeparatorText("Image-based lighting");
-    ImGui::Checkbox("Sky lighting", &env.enabled);
-    ImGui::SetItemTooltip("On: the sky lights everything (soft light + reflections).\nOff: the flat 'Ambient' colour (Lighting tab), like before.");
-    ImGui::SliderFloat("Diffuse intensity", &env.diffuseIntensity, 0.0f, 3.0f);
-    ImGui::SliderFloat("Specular intensity", &env.specularIntensity, 0.0f, 3.0f);
+    ImGui::SeparatorText("Sky lighting");
+    ImGui::Checkbox("Light the scene from the sky", &env.enabled);
+    ImGui::SetItemTooltip("On: the sky lights everything - soft light from every direction, plus reflections on glossy surfaces.\nOff: a flat Ambient colour (Lighting tab) instead, like a scene without a sky.");
+    ImGui::BeginDisabled(!env.enabled);
+    ImGui::SliderFloat("Diffuse", &env.diffuseIntensity, 0.0f, 3.0f);
+    ImGui::SetItemTooltip("Strength of the soft light the sky gives every surface.");
+    ImGui::SliderFloat("Specular", &env.specularIntensity, 0.0f, 3.0f);
+    ImGui::SetItemTooltip("Strength of the sky's reflection on glossy surfaces.");
+    ImGui::EndDisabled();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled(env.enabled ? "The sky's own Intensity, Tint and Rotation also change this light: select the sky to edit them."
+                                    : "Sky lighting is off: the Ambient colour in the Lighting tab is what lights the shadows.");
+    ImGui::PopTextWrapPos();
 
-    static const char* const kViews[] = { "Sky", "Irradiance (diffuse)", "Prefiltered (reflections)" };
-    int view = static_cast<int>(env.skyView);
-    if (ImGui::Combo("Show as sky background", &view, kViews, IM_ARRAYSIZE(kViews))) env.skyView = static_cast<SkyDebugView>(view);
-    if (env.skyView == SkyDebugView::Prefiltered) {
-        ImGui::SliderFloat("Roughness level (mip)", &env.debugMip, 0.0f, EnvironmentLighting::MaxPrefilterMip());
-    }
-    if (ImGui::Button("Bake again")) scene_->InvalidateEnvironment();
-
-    if (ID3D11ShaderResourceView* table = scene_->GetEnvironmentLighting().GetBrdfTable()) {
-        ImGui::TextDisabled("BRDF table: x = view angle, y = roughness (red = scale, green = bias)");
-        ImGui::Image(static_cast<ImTextureID>(reinterpret_cast<intptr_t>(table)), ImVec2(128.0f, 128.0f));
+    // The things that only matter when checking how the sky was baked, out of the way until asked for.
+    if (ImGui::CollapsingHeader("Debug")) {
+        static const char* const kViews[] = { "Sky", "Irradiance (diffuse)", "Prefiltered (reflections)" };
+        int view = static_cast<int>(env.skyView);
+        if (ImGui::Combo("Show as sky background", &view, kViews, IM_ARRAYSIZE(kViews))) env.skyView = static_cast<SkyDebugView>(view);
+        if (env.skyView == SkyDebugView::Prefiltered) {
+            ImGui::SliderFloat("Roughness level (mip)", &env.debugMip, 0.0f, EnvironmentLighting::MaxPrefilterMip());
+        }
+        if (ImGui::Button("Bake again")) scene_->InvalidateEnvironment();
+        if (ID3D11ShaderResourceView* table = scene_->GetEnvironmentLighting().GetBrdfTable()) {
+            ImGui::TextDisabled("BRDF table: x = view angle, y = roughness (red = scale, green = bias)");
+            ImGui::Image(static_cast<ImTextureID>(reinterpret_cast<intptr_t>(table)), ImVec2(128.0f, 128.0f));
+        }
     }
 }
 
@@ -1987,7 +2202,7 @@ void EditorLayer::DrawTransformEditor(SceneObject* object)
     }
 
     float scaleValues[3] = { scale.x, scale.y, scale.z };
-    if (ImGui::DragFloat3("Scale", scaleValues, 0.01f, 0.01f, 100.0f)) {
+    if (object->SupportsScale() && ImGui::DragFloat3("Scale", scaleValues, 0.01f, 0.01f, 100.0f)) {
         scale = { scaleValues[0], scaleValues[1], scaleValues[2] };
         changed = true;
     }
@@ -2047,18 +2262,11 @@ void EditorLayer::DrawPostInspector()
 
 void EditorLayer::DrawSceneSettingsPanel()
 {
-    skyTabOpen_ = false;   // set again below if the Environment tab draws the sky controls this frame
     if (!showSceneSettings_) return;
     if (!ImGui::Begin("Scene Settings", &showSceneSettings_)) { ImGui::End(); return; }
     if (ImGui::BeginTabBar("##sceneSettingsTabs")) {
-        if (ImGui::BeginTabItem("Environment")) {   // the sky and the light it casts, together
-            if (Skybox* sky = scene_->GetSkybox()) {
-                skyTabOpen_ = true;
-                DrawSkyboxInspector(sky);
-            } else {
-                ImGui::TextDisabled("This scene has no sky.");
-                if (ImGui::Button("Add the default sky")) pendingSkyboxFolder_ = Skybox::DefaultFolder();
-            }
+        if (ImGui::BeginTabItem("Environment")) {   // which sky is showing, and the light it casts
+            DrawSkiesSection();
             DrawEnvironmentInspector();
             ImGui::EndTabItem();
         }
@@ -2074,39 +2282,94 @@ void EditorLayer::DrawSceneSettingsPanel()
 void EditorLayer::DrawLightsInspector()
 {
     LightSystem& lights = scene_->GetLightSystem();
-    XMFLOAT3& ambient = lights.Ambient();
-    float ambientValues[3] = { ambient.x, ambient.y, ambient.z };
-    if (ImGui::ColorEdit3("Ambient", ambientValues)) ambient = { ambientValues[0], ambientValues[1], ambientValues[2] };
+    // With sky lighting on, the sky IS the ambient light, so a separate colour would do nothing: it only appears when the
+    // sky is not lighting the scene (switched off, or no sky in the scene).
+    if (scene_->GetEnvironment().enabled && scene_->GetSkybox()) {
+        ImGui::TextDisabled("Ambient light comes from the sky (Environment tab).");
+    } else {
+        XMFLOAT3& ambient = lights.Ambient();
+        float ambientValues[3] = { ambient.x, ambient.y, ambient.z };
+        if (ImGui::ColorEdit3("Ambient (no sky)", ambientValues)) ambient = { ambientValues[0], ambientValues[1], ambientValues[2] };
+        ImGui::SetItemTooltip("Used because the sky is not lighting the scene.");
+    }
 
-    DirectionalLight& directional = lights.Directional();
-    ImGui::SeparatorText("Directional light");
-    DrawFloat3("Direction", directional.direction, 0.01f, -1.0f, 1.0f);
-    float directionalColor[3] = { directional.color.x, directional.color.y, directional.color.z };
-    if (ImGui::ColorEdit3("Directional color", directionalColor))
-        directional.color = { directionalColor[0], directionalColor[1], directionalColor[2] };
-    ImGui::SliderFloat("Directional intensity", &directional.intensity, 0.0f, 5.0f);
-
-    DrawShadowInspector();
-
-    ImGui::SeparatorText("Point lights");
-    auto& pointLights = lights.PointLights();
-    for (int index = 0; index < static_cast<int>(pointLights.size()); ++index) {
-        PointLight& point = pointLights[index];
-        ImGui::PushID(index);
-        if (ImGui::TreeNode("Point light")) {
-            DrawFloat3("Position", point.position, 0.1f, -1000.0f, 1000.0f);
-            float color[3] = { point.color.x, point.color.y, point.color.z };
-            if (ImGui::ColorEdit3("Color", color)) point.color = { color[0], color[1], color[2] };
-            ImGui::SliderFloat("Intensity", &point.intensity, 0.0f, 10.0f);
-            ImGui::SliderFloat("Range", &point.range, 0.1f, 100.0f);
-            ImGui::TreePop();
-        }
+    // The lights are objects now: this tab lists them and adds more; each is edited in the Inspector and moved in the viewport.
+    ImGui::SeparatorText("Lights");
+    const std::vector<LightObject*> sceneLights = scene_->GetLights();
+    if (sceneLights.empty()) ImGui::TextDisabled("No lights: the scene is lit only by the sky.");
+    for (LightObject* light : sceneLights) {
+        ImGui::PushID(static_cast<int>(light->GetId()));
+        const int rank = scene_->DirectionalRank(*light);
+        const char* role = rank == 0 ? "sun" : rank == 1 ? "2nd" : rank >= 2 ? "unused" : "point";
+        std::string row = std::string(light->GetEditorName()) + "  (" + role + ")";
+        if (ImGui::Selectable(row.c_str(), selectedId_ == light->GetId())) Select(light);
         ImGui::PopID();
     }
-    if (pointLights.size() < LightSystem::kMaxPointLights && ImGui::Button("Add point light")) {
-        PointLight point;
-        point.position = { 0.0f, 10.0f, 0.0f };
-        lights.AddPointLight(point);
+    if (ImGui::Button("+ Sun")) addLightKind_ = 0;
+    ImGui::SameLine();
+    if (ImGui::Button("+ Moon")) addLightKind_ = 1;
+    ImGui::SameLine();
+    if (ImGui::Button("+ Point light")) addLightKind_ = 2;
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("Select a light here or in the Hierarchy to edit it; drag it in the viewport. A sun and a moon are both directional lights: the strongest one casts the shadows, the next one lights without shadows.");
+    ImGui::PopTextWrapPos();
+
+    DrawShadowInspector();
+}
+
+void EditorLayer::DrawAddLightItems()
+{
+    if (ImGui::MenuItem("Sun")) addLightKind_ = 0;
+    ImGui::SetItemTooltip("A strong, warm directional light high in the sky. It casts the shadows.");
+    if (ImGui::MenuItem("Moon")) addLightKind_ = 1;
+    ImGui::SetItemTooltip("A weak, pale blue directional light. Next to a sun it lights without shadows; alone (or stronger) it casts them.");
+    if (ImGui::MenuItem("Point light")) addLightKind_ = 2;
+    ImGui::SetItemTooltip("A lamp: light from one spot that fades out over its range. The 8 nearest the camera are lit.");
+}
+
+void EditorLayer::DrawLightInspector(LightObject* light)
+{
+    char name[64];
+    std::snprintf(name, sizeof(name), "%s", light->GetName().c_str());
+    if (ImGui::InputText("Name", name, sizeof(name))) light->SetName(name);
+
+    static const char* const kKinds[] = { "Directional (sun, moon)", "Point (lamp)" };
+    int kind = static_cast<int>(light->GetKind());
+    if (ImGui::Combo("Kind", &kind, kKinds, IM_ARRAYSIZE(kKinds))) light->SetKind(static_cast<LightKind>(kind));
+
+    const XMFLOAT3 color = light->GetColor();
+    float colorValues[3] = { color.x, color.y, color.z };
+    if (ImGui::ColorEdit3("Color", colorValues)) light->SetColor({ colorValues[0], colorValues[1], colorValues[2] });
+    float intensity = light->GetIntensity();
+    if (ImGui::DragFloat("Intensity", &intensity, 0.02f, 0.0f, LightObject::kIntensityMax, "%.2f")) light->SetIntensity(intensity);
+    ImGui::SetItemTooltip("The scene is HDR: a sun is around 2.5, far above 1 = white. The tone mapper (Camera tab) brings it back.");
+
+    if (light->IsDirectional()) {
+        float azimuth = light->GetAzimuth(), elevation = light->GetElevation();
+        bool aimed = ImGui::SliderFloat("Azimuth", &azimuth, 0.0f, 360.0f, "%.0f deg");
+        ImGui::SetItemTooltip("Which way round the compass the light is, in the sky. 0 = toward +X, 90 = toward +Z (the wind's convention).");
+        aimed = ImGui::SliderFloat("Elevation", &elevation, -90.0f, 90.0f, "%.0f deg") || aimed;
+        ImGui::SetItemTooltip("How high above the horizon: 0 = on the horizon, 90 = straight overhead. Below 0 the light shines from under the ground.");
+        if (aimed) light->SetAngles(azimuth, elevation);
+
+        const int rank = scene_->DirectionalRank(*light);
+        ImGui::PushTextWrapPos(0.0f);
+        if (rank == 0) ImGui::TextDisabled("This is the sun: the strongest directional light. It casts the shadows.");
+        else if (rank == 1) ImGui::TextDisabled("The second directional light: it lights the scene but casts no shadows.");
+        else ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "Not used: only the two strongest directional lights shine.");
+        ImGui::TextDisabled("Where it stands changes nothing: the handle is only there to grab. Rotate it with the gizmo, or use the sliders.");
+        ImGui::PopTextWrapPos();
+    } else {
+        float range = light->GetRange();
+        if (ImGui::SliderFloat("Range", &range, LightObject::kRangeMin, 100.0f, "%.1f")) light->SetRange(range);
+        ImGui::SetItemTooltip("The distance at which the light has faded to nothing. Shown as three circles while the light is selected.");
+        int points = 0;
+        for (LightObject* other : scene_->GetLights()) points += other->IsDirectional() ? 0 : 1;
+        if (points > static_cast<int>(LightSystem::kMaxPointLights)) {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "%d point lights: only the %d nearest the camera are lit.", points, static_cast<int>(LightSystem::kMaxPointLights));
+            ImGui::PopTextWrapPos();
+        }
     }
 }
 
@@ -2808,6 +3071,35 @@ void EditorLayer::DrawWeatherInspector()
         }
     }
     ImGui::TextDisabled("%d water %s following the scene wind.", followers, followers == 1 ? "body is" : "bodies are");
+
+    ImGui::SeparatorText("Fog");
+    FogSettings& fog = weather.fog;
+    ImGui::Checkbox("Fog", &fog.enabled);
+    ImGui::SetItemTooltip("The farther away something is, the more it takes the fog's colour: far hills melt into the sky.");
+    ImGui::BeginDisabled(!fog.enabled);
+    ImGui::ColorEdit3("Colour##fog", fog.color.data());
+    ImGui::SetItemTooltip("Pick something close to the sky's horizon colour: the sky's horizon is blended toward it (Horizon blend).");
+    ImGui::SliderFloat("Brightness##fog", &fog.brightness, 0.0f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip("The scene is HDR: in strong sun the fog may need to be brighter than 1 to look like lit mist.");
+    ImGui::SliderFloat("Visibility", &fog.visibility, FogSettings::kVisibilityMin, 5000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("The distance at which the fog hides 95%% of what is behind it. Smaller = thicker fog.");
+    ImGui::SliderFloat("Start distance", &fog.startDistance, 0.0f, 500.0f, "%.0f m");
+    ImGui::SetItemTooltip("Nothing nearer than this is fogged at all.");
+    ImGui::SliderFloat("Height falloff", &fog.heightFalloff, 0.0f, 0.2f, "%.3f");
+    ImGui::SetItemTooltip("0 = the same thickness at every height. Larger = the fog thins out faster going up: a mist lying in the valleys.");
+    ImGui::DragFloat("Base height", &fog.baseHeight, 0.5f, -1000.0f, 1000.0f, "%.1f");
+    ImGui::SetItemTooltip("The height where the fog is at full thickness (only matters with a height falloff).");
+    ImGui::SliderFloat("Sun glow", &fog.sunGlow, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Fog toward the sun glows with the sun's colour.");
+    ImGui::SliderFloat("Horizon blend", &fog.skyBlend, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("How much the sky near the horizon takes the fog's colour, so the far ground fades into it with no seam.");
+    ImGui::SliderFloat("Max opacity", &fog.maxOpacity, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Fog never hides more than this: below 1 the far distance stays faintly visible.");
+    ImGui::EndDisabled();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("Under water the water body takes over: its own colours and absorption set how far you can see.");
+    ImGui::PopTextWrapPos();
+    weather.Clamp();
 }
 
 void EditorLayer::RescanSkyboxes()
@@ -2838,6 +3130,11 @@ void EditorLayer::RescanSkyboxes()
     }
 }
 
+void EditorLayer::EnsureSkyboxScan()
+{
+    if (skyboxScanRoot_ != AssetsRootText()) RescanSkyboxes();   // the first time, or another project was opened
+}
+
 // One undo step for "the sky was swapped". The state is captured before and after because the folder is part of the
 // skybox's saved state; objectDetector_ is reset so the property detector does not report the same change a second time.
 bool EditorLayer::ChangeSkybox(Skybox* skybox, const std::string& folder)
@@ -2845,7 +3142,7 @@ bool EditorLayer::ChangeSkybox(Skybox* skybox, const std::string& folder)
     if (!skybox) return false;
     const std::string before = CaptureObjectState(*skybox);
     if (!skybox->LoadFromFolder(folder)) {
-        ShowMessage("Could not load skybox", "A skybox folder needs right.png, left.png, top.png, bottom.png, back.png and front.png:\n" + folder);
+        ShowMessage("Could not load skybox", SkyFaces::Hint() + "\n\n" + folder);
         return false;
     }
     const std::string after = CaptureObjectState(*skybox);
@@ -2864,20 +3161,111 @@ void EditorLayer::UseSkyboxFolder(LayerContext& ctx, const std::string& folder)
         ChangeSkybox(existing, normalised);
         return;
     }
-    // A scene without a sky (an old file, or one that was deleted): make one. One undo step takes the whole thing away.
-    Skybox* created = ctx.scene.Add<Skybox>(ctx.renderer.GetDevice());
+    AddSkybox(ctx, normalised);   // a scene without a sky (an old file): make one
+}
+
+// Switching which sky is showing is ONE undo step that remembers which sky it was before.
+void EditorLayer::ActivateSky(Skybox* sky)
+{
+    if (!sky || !scene_) return;
+    Skybox* previous = scene_->GetSkybox();
+    if (previous == sky && sky->IsActive()) return;
+    const SceneObjectId previousId = previous ? previous->GetId() : 0;
+    const SceneObjectId newId = sky->GetId();
+    const std::string name = sky->GetEditorName();
+    if (!scene_->SetActiveSkybox(sky)) return;
+    auto setActive = [this](SceneObjectId id) {
+        if (auto* target = dynamic_cast<Skybox*>(scene_->Find(id))) scene_->SetActiveSkybox(target);
+    };
+    history_.Push(std::make_unique<LambdaCommand>("Use sky " + name, [setActive, previousId]() { setActive(previousId); },
+                                                  [setActive, newId]() { setActive(newId); }));
+    objectDetector_.Reset();   // the "active" flag changed under the detectors: not an edit by hand
+    skyDetector_.Reset();
+}
+
+// Adds another sky made from `folder` and makes it the active one. Undo removes it again AND brings the previous sky back.
+void EditorLayer::AddSkybox(LayerContext& ctx, const std::string& folder)
+{
+    const std::string normalised = Skybox::NormalizeFolder(folder);
+    Skybox* previous = ctx.scene.GetSkybox();
+    const SceneObjectId previousId = previous ? previous->GetId() : 0;
+    Skybox* created = ctx.scene.Add<Skybox>(ctx.renderer.GetDevice(), normalised);
     if (!created) return;
-    if (!created->LoadFromFolder(normalised)) {
-        ShowMessage("Could not load skybox", "A skybox folder needs right.png, left.png, top.png, bottom.png, back.png and front.png:\n" + normalised);
+    if (!created->GetCubemapView()) {   // the folder could not be loaded: do not leave a blank sky behind
+        ctx.scene.Remove(created->GetId());
+        ShowMessage("Could not load skybox", SkyFaces::Hint() + "\n\n" + normalised);
+        return;
     }
+    const std::string name = std::filesystem::path(normalised).filename().string();
+    if (!name.empty()) created->SetName(name);
+    ctx.scene.SetActiveSkybox(created);
+
+    auto holder = std::make_shared<std::unique_ptr<SceneObject>>();
+    auto position = std::make_shared<size_t>(0);
+    const SceneObjectId id = created->GetId();
+    history_.Push(std::make_unique<LambdaCommand>(
+        "Add sky " + name,
+        [this, holder, position, id, previousId]() {
+            *holder = scene_->Detach(id, position.get());
+            if (selectedId_ == id) selectedId_ = 0;
+            if (auto* before = dynamic_cast<Skybox*>(scene_->Find(previousId))) scene_->SetActiveSkybox(before);
+        },
+        [this, holder, position]() {
+            if (!*holder) return;
+            SceneObject* attached = scene_->Attach(std::move(*holder), *position);
+            if (auto* sky = dynamic_cast<Skybox*>(attached)) scene_->SetActiveSkybox(sky);
+            Select(attached);
+        }));
     Select(created);
-    RecordAdded(created, "Add skybox");
+    objectDetector_.Reset();
+}
+
+// The Environment tab: which sky is showing, and a way to add another. The sky's own settings (cubemap, rotation, tint,
+// intensity) are in the Inspector when the sky is selected: one place for them, not two.
+void EditorLayer::DrawSkiesSection()
+{
+    ImGui::SeparatorText("Sky");
+    Skybox* active = scene_->GetSkybox();
+    if (!active) {
+        ImGui::TextDisabled("This scene has no sky.");
+        if (ImGui::Button("Add the default sky")) pendingAddSkyFolder_ = Skybox::DefaultFolder();
+        return;
+    }
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float buttons = ImGui::CalcTextSize("Edit").x + ImGui::GetFrameHeight() + style.FramePadding.x * 2.0f + style.ItemSpacing.x * 2.0f;
+    ImGui::SetNextItemWidth(-buttons);
+    if (ImGui::BeginCombo("##activeSky", active->GetEditorName())) {
+        for (Skybox* sky : scene_->GetSkyboxes()) {
+            const std::string row = std::string(sky->GetEditorName()) + "###sky" + std::to_string(sky->GetId());
+            if (ImGui::Selectable(row.c_str(), sky == active) && sky != active) pendingActiveSkyId_ = sky->GetId();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("The sky that is drawn and lights the scene. Switching is one undo step.");
+    ImGui::SameLine();
+    if (ImGui::Button("Edit")) Select(active);
+    ImGui::SetItemTooltip("Select this sky: its cubemap, rotation, tint and intensity are in the Inspector.");
+    ImGui::SameLine();
+    if (ImGui::Button("+##addSky")) ImGui::OpenPopup("##addSkyPopup");
+    ImGui::SetItemTooltip("Add another sky to the scene (a day and a night one, say) and switch between them.");
+    if (ImGui::BeginPopup("##addSkyPopup")) {
+        EnsureSkyboxScan();
+        ImGui::TextDisabled("Add a sky from:");
+        for (const SkyboxChoice& choice : skyboxFolders_) {
+            if (ImGui::Selectable(choice.label.c_str())) pendingAddSkyFolder_ = choice.folder;
+        }
+        if (skyboxFolders_.empty()) ImGui::TextDisabled("No skybox folders found under assets/.");
+        ImGui::EndPopup();
+    }
+    const size_t count = scene_->GetSkyboxes().size();
+    ImGui::TextDisabled("%d %s in this scene.", static_cast<int>(count), count == 1 ? "sky" : "skies");
 }
 
 void EditorLayer::DrawSkyboxPicker(Skybox* skybox)
 {
     namespace fs = std::filesystem;
-    if (skyboxScanRoot_ != AssetsRootText()) RescanSkyboxes();   // the first time, or another project was opened
+    EnsureSkyboxScan();
 
     const std::string current = skybox->GetFolder();
     std::string preview = current;   // a skybox from outside the assets folders is shown by its path
@@ -2901,13 +3289,13 @@ void EditorLayer::DrawSkyboxPicker(Skybox* skybox)
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPathPayload)) {
             const std::string dropped = Skybox::NormalizeFolder(static_cast<const char*>(payload->Data));
             if (Skybox::IsSkyboxFolder(dropped)) ChangeSkybox(skybox, dropped);
-            else ShowMessage("Not a skybox folder", "Drop a folder that holds right, left, top, bottom, back and front .png files.");
+            else ShowMessage("Not a skybox folder", SkyFaces::Hint());
         }
         ImGui::EndDragDropTarget();
     }
     ImGui::SameLine();
     if (ImGui::Button("Rescan")) RescanSkyboxes();
-    ImGui::SetItemTooltip("A skybox is a folder with right, left, top, bottom, back and front .png files.\nPut new ones anywhere under assets/ and press this.");
+    ImGui::SetItemTooltip("%s\nPut new ones anywhere under assets/ and press this.", SkyFaces::Hint().c_str());
 
     // With a project open, only ITS assets folder is shipped. Say so here, where the choice is made, instead of at save time.
     if (project_.IsOpen() && !IsInsideAssets(current, AssetsRootText())) {
@@ -2918,9 +3306,11 @@ void EditorLayer::DrawSkyboxPicker(Skybox* skybox)
             const fs::path destination = project_.AssetsRoot() / "skyboxes" / fs::path(current).filename();
             std::error_code error;
             fs::create_directories(destination, error);
-            for (const char* face : Skybox::FaceFileNames()) {
+            std::array<std::string, 6> faces;
+            if (!Skybox::ResolveFaces(current, faces)) error = std::make_error_code(std::errc::no_such_file_or_directory);
+            for (const std::string& face : faces) {   // the files keep their own names: the folder is read the same way afterwards
                 if (error) break;
-                fs::copy_file(fs::path(current) / face, destination / face, fs::copy_options::overwrite_existing, error);
+                fs::copy_file(face, destination / fs::path(face).filename(), fs::copy_options::overwrite_existing, error);
             }
             if (error) {
                 ShowMessage("Could not copy the skybox", "Copying into " + destination.string() + " failed:\n" + error.message());
@@ -2935,9 +3325,35 @@ void EditorLayer::DrawSkyboxPicker(Skybox* skybox)
 
 void EditorLayer::DrawSkyboxInspector(Skybox* skybox)
 {
-    ImGui::SeparatorText("Sky");
+    char name[64];
+    std::snprintf(name, sizeof(name), "%s", skybox->GetName().c_str());
+    if (ImGui::InputText("Name", name, sizeof(name))) skybox->SetName(name);
+
+    if (skybox->IsActive()) {
+        ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "Active sky");
+        ImGui::SetItemTooltip("This sky is drawn and lights the scene. To switch, use another sky's \"Use this sky\" (right-click it in the Hierarchy).");
+    } else if (ImGui::Button("Use this sky")) {
+        pendingActiveSkyId_ = skybox->GetId();
+    }
+
+    ImGui::SeparatorText("Cubemap");
     DrawSkyboxPicker(skybox);
+    if (!skybox->GetFaceScheme().empty()) ImGui::TextDisabled("Face names: %s", skybox->GetFaceScheme().c_str());
+
+    ImGui::SeparatorText("Look");
     float intensity = skybox->GetIntensity();
     if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 3.0f)) skybox->SetIntensity(intensity);
     ImGui::SetItemTooltip("Brightness of the sky. Dimming it dims the light it casts on the scene as well.");
+
+    float yaw = skybox->GetYawDegrees();
+    if (ImGui::SliderFloat("Rotation", &yaw, 0.0f, 360.0f, "%.0f deg")) skybox->SetYawDegrees(yaw);
+    ImGui::SetItemTooltip("Turns the sky around the vertical axis: the background, its light and its reflections together.\nThe sun (Lighting tab) does not turn with it: aim it separately.");
+
+    const XMFLOAT3 tint = skybox->GetTint();
+    float tintValues[3] = { tint.x, tint.y, tint.z };
+    if (ImGui::ColorEdit3("Tint", tintValues)) skybox->SetTint({ tintValues[0], tintValues[1], tintValues[2] });
+    ImGui::SetItemTooltip("Multiplies the sky's colours, and the light it gives. White leaves it as it is.");
+    if (tint.x != 1.0f || tint.y != 1.0f || tint.z != 1.0f) {
+        if (ImGui::SmallButton("Reset tint")) skybox->SetTint({ 1.0f, 1.0f, 1.0f });
+    }
 }

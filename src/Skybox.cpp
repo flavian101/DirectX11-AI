@@ -1,14 +1,15 @@
 #include "Skybox.h"
+#include "Color.h"
 #include "Logger.h"
 #include "Mesh.h"
+#include "SkyFaces.h"
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <vector>
 
 namespace {
-// The order the GPU expects cube faces in: +X, -X, +Y, -Y, +Z, -Z.
-const std::array<const char*, 6> kFaceFiles = { "right.png", "left.png", "top.png", "bottom.png", "back.png", "front.png" };
-
 Model* CreateSkyboxModel(ID3D11Device* device)
 {
 	const std::vector<Vertex> vertices = {
@@ -29,9 +30,9 @@ Model* CreateSkyboxModel(ID3D11Device* device)
 }
 }
 
-Skybox::Skybox(ID3D11Device* device) : material_(device), device_(device)
+Skybox::Skybox(ID3D11Device* device, const std::string& folder) : material_(device), device_(device)
 {
-	LoadFromFolder(DefaultFolder());
+	LoadFromFolder(folder);
 	renderable_ = std::make_unique<Renderable>(
 		device, CreateSkyboxModel(device), L"shaders/skybox_vs.hlsl", L"shaders/skybox_ps.hlsl");
 	SetIntensity(intensity_);
@@ -57,9 +58,9 @@ Skybox::~Skybox()
 {
 }
 
-const std::array<const char*, 6>& Skybox::FaceFileNames()
+bool Skybox::ResolveFaces(const std::string& folder, std::array<std::string, 6>& faces, std::string* schemeLabel)
 {
-	return kFaceFiles;
+	return SkyFaces::Resolve(folder, faces, schemeLabel);
 }
 
 std::string Skybox::NormalizeFolder(const std::string& folder)
@@ -71,11 +72,8 @@ std::string Skybox::NormalizeFolder(const std::string& folder)
 
 bool Skybox::IsSkyboxFolder(const std::string& folder)
 {
-	std::error_code error;
-	for (const char* face : kFaceFiles) {
-		if (!std::filesystem::is_regular_file(std::filesystem::path(folder) / face, error)) return false;
-	}
-	return true;
+	std::array<std::string, 6> faces;
+	return SkyFaces::Resolve(folder, faces);
 }
 
 bool Skybox::LoadFromFolder(const std::string& requested)
@@ -83,7 +81,11 @@ bool Skybox::LoadFromFolder(const std::string& requested)
 	if (!device_) return false;
 	const std::string folder = NormalizeFolder(requested);
 	std::array<std::string, 6> faces;
-	for (size_t i = 0; i < faces.size(); ++i) faces[i] = (std::filesystem::path(folder) / kFaceFiles[i]).generic_string();
+	std::string scheme;
+	if (!SkyFaces::Resolve(folder, faces, &scheme)) {
+		LOG_ERROR("Skybox: \"" + folder + "\" has no complete set of six faces. " + SkyFaces::Hint());
+		return false;
+	}
 
 	// Build the NEW cubemap while the old one is still alive, and only then swap. Two reasons: a bad folder must not
 	// leave the scene with no sky, and the scene decides whether to re-bake sky lighting by comparing texture
@@ -96,6 +98,7 @@ bool Skybox::LoadFromFolder(const std::string& requested)
 	}
 	cubemap_ = std::move(candidate);
 	folder_ = folder;
+	faceScheme_ = scheme;
 	return true;
 }
 
@@ -109,7 +112,26 @@ bool Skybox::IsValid() const
 void Skybox::SetIntensity(float intensity)
 {
 	intensity_ = intensity;
-	if (renderable_) renderable_->SetMaterialColor({ intensity_, intensity_, intensity_, 1.0f });
+	ApplyMaterialColor();
+}
+
+void Skybox::SetTint(const DirectX::XMFLOAT3& tint)
+{
+	tint_ = { (std::min)((std::max)(tint.x, 0.0f), 1.0f), (std::min)((std::max)(tint.y, 0.0f), 1.0f), (std::min)((std::max)(tint.z, 0.0f), 1.0f) };
+	ApplyMaterialColor();
+}
+
+void Skybox::SetYawDegrees(float degrees)
+{
+	yawDegrees_ = std::fmod(degrees, 360.0f);
+	if (yawDegrees_ < 0.0f) yawDegrees_ += 360.0f;
+}
+
+void Skybox::ApplyMaterialColor()
+{
+	if (!renderable_) return;
+	const DirectX::XMFLOAT3 linear = SrgbToLinear(tint_);   // the picker gives display numbers; the shader multiplies linear light
+	renderable_->SetMaterialColor({ intensity_ * linear.x, intensity_ * linear.y, intensity_ * linear.z, 1.0f });
 }
 
 void Skybox::Update(float /*dt*/)

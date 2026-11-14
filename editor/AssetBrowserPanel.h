@@ -1,11 +1,12 @@
 #pragma once
+#include "ThumbnailCache.h"
 #include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
 
 struct AssetAction {
-    enum class Kind { None, OpenScene, ImportModel, UseAsSkybox };
+    enum class Kind { None, OpenScene, ImportModel, UseAsSkybox, AddAsSkybox };   // UseAsSkybox swaps the active sky's cubemap; AddAsSkybox makes a new sky
     Kind kind = Kind::None;
     std::string path;
 };
@@ -28,6 +29,10 @@ public:
     // skyboxes and models, so with a project open both are offered.
     AssetAction Draw(bool* open, const std::vector<AssetRoot>& roots);
 
+    // The device that makes the thumbnails. Set once when the editor starts; Release before the device goes away.
+    void SetDevice(ID3D11Device* device) { thumbnails_.SetDevice(device); }
+    void Release() { thumbnails_.Release(); }
+
 private:
     struct Entry {
         std::filesystem::path path;
@@ -35,8 +40,15 @@ private:
         std::string kind;         // "Folder", "Skybox" (a folder with the six faces), "Scene", "Model", "Image", "Shader", "File"
         bool isDirectory = false;
         std::uintmax_t size = 0;
+        std::string previewImage;   // an image to preview: the file itself, or one face of a skybox folder. Empty = none.
+        std::string previewStamp;   // size + time of that image, so a changed file gets a new thumbnail
     };
     void Refresh();
+    // What every row and tile does, whatever the view: be dragged, open on a double-click, show the context menu. Call it
+    // straight after the item was submitted (it works on "the last item").
+    void HandleEntry(const Entry& entry, bool doubleClicked, AssetAction& action, std::filesystem::path& enter);
+    void DrawTile(const Entry& entry, float tile, bool selectedLook);   // grid view: the thumbnail (or an icon) and the name
+    void DrawRow(const Entry& entry);                                    // list view: an icon, the name, the type, the size
     void GoTo(const std::filesystem::path& folder);
 
     int rootIndex_ = 0;
@@ -45,4 +57,6 @@ private:
     std::vector<Entry> entries_;
     double lastRefresh_ = -100.0;
     char filter_[64] = "";
+    bool gridView_ = true;       // thumbnails (true) or a plain list
+    ThumbnailCache thumbnails_;
 };

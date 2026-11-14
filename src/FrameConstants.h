@@ -18,6 +18,11 @@ struct CBPerFrame {
     DirectX::XMFLOAT4   reflectionParams; // x = planar reflection available this frame, y = scene copy for refraction available
     DirectX::XMFLOAT4   iblParams;    // x = image-based lighting on (1/0), y = diffuse intensity, z = specular intensity, w = last prefilter mip
     DirectX::XMFLOAT4   iblDebug;     // x = sky background: 0 sky, 1 irradiance, 2 prefiltered; y = mip to show
+    DirectX::XMFLOAT4   skyParams;    // x = cos(sky yaw), y = sin(sky yaw): the sky turns around +Y without being re-baked
+    DirectX::XMFLOAT4   skyTint;      // rgb = sky tint (LINEAR), w = sky intensity
+    DirectX::XMFLOAT4   fogParams;    // x = density (0 = no fog), y = start distance, z = height falloff, w = height of full density
+    DirectX::XMFLOAT4   fogColor;     // rgb = fog colour (LINEAR, brightness applied), w = most opaque the fog may get
+    DirectX::XMFLOAT4   fogExtra;     // x = sun glow, y = how much the sky's horizon takes the fog colour, z = 1 when the camera is under water
 };
 static_assert(sizeof(CBPerFrame) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
@@ -38,6 +43,11 @@ struct FrameData {
     bool refractionAvailable = false;   // a copy of the opaque scene is bound to t14 (the water bends it)
     DirectX::XMFLOAT4 iblParams{};         // zeros = image-based lighting off (the sun's shadow pass uses that)
     DirectX::XMFLOAT4 iblDebug{};
+    DirectX::XMFLOAT4 skyParams{ 1.0f, 0.0f, 0.0f, 0.0f };   // identity rotation: a zero here would turn every sky direction into NaN
+    DirectX::XMFLOAT4 skyTint{ 1.0f, 1.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT4 fogParams{};   // zeros = no fog (the sun's shadow pass uses that)
+    DirectX::XMFLOAT4 fogColor{};
+    DirectX::XMFLOAT4 fogExtra{};
     DirectX::XMFLOAT4X4 lightViewProj{};   // identity-free zero matrix is fine while strength is 0
     DirectX::XMFLOAT4 shadowParams{};      // z = 0 means "no shadows this frame"
 

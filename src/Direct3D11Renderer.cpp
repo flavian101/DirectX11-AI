@@ -303,7 +303,7 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
 {
     if (!m_context || !m_renderTargetView || !m_sceneDepth.IsValid() || !m_swapChain || !m_hdrScene.IsValid()) return;
     // Lights first: both passes below read them.
-    scene.GetLightSystem().Apply(m_context, scene.GetCamera().GetPosition());
+    scene.ApplyLights(m_context);   // the scene's light objects -> the lighting system -> the GPU
 
     m_gpuTimer.BeginFrame(m_context);
     m_gpuTimer.Mark(m_context, GpuPass::Shadows);

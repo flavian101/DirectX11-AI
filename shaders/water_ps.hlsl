@@ -2,6 +2,7 @@
 #include "noise.hlsli"
 
 TextureCube  environmentMap : register(t1);   // the skybox cubemap, bound once per frame by Scene
+TextureCube  skyIrradiance  : register(t11);  // the sky's baked diffuse light (EnvironmentLighting), bound once per frame by Scene
 Texture2D<float4> planarReflection : register(t3);   // the scene seen from below the water (when waterShape.x = 1: set per water body)
 Texture2D<float> sceneDepth : register(t4);   // the camera's depth buffer, bound for the water pass only
 Texture2D<float4> sceneColor : register(t14); // a copy of the opaque scene, for refraction (when reflectionParams.y = 1)
@@ -88,6 +89,28 @@ float4 main(PS_IN input) : SV_Target
         N = normalize(N + float3(-slope.x, 0.0f, -slope.y));
     }
 
+    // ---- Seen from BELOW (the camera is under the surface) ----
+    // Looking up from under water you see the sky only through a round "window" straight above you: light from the sky bends
+    // toward the vertical as it enters the water, so the whole sky is squeezed into a cone of about 97 degrees. Outside the
+    // window the surface is a mirror (total internal reflection) of the water around you. Both are approximated here: the
+    // window shows the refracted sky, the rest shows the water's own colour.
+    [branch]
+    if (cameraPos.y < input.worldPos.y) {
+        const float3 downNormal = -N;                               // the surface's normal, facing the viewer below
+        const float cosI = saturate(dot(V, downNormal));
+        const float sinT = sqrt(saturate(1.0f - cosI * cosI)) * 1.33f;   // Snell: sin(out) = 1.33 * sin(in); >= 1 means no way out
+        const float window = 1.0f - smoothstep(0.85f, 1.0f, sinT);
+        const float3 bent = refract(-V, downNormal, 1.33f);
+        const float3 skyDirection = dot(bent, bent) > 1e-4f ? normalize(bent) : float3(0.0f, 1.0f, 0.0f);
+        const float3 skySeen = environmentMap.SampleLevel(linearSampler, SkyDirection(skyDirection), 1.0f).rgb * skyTint.rgb * skyTint.w;
+        const float3 mirror = fogColor.rgb * 0.9f;
+        const float3 underColor = lerp(mirror, skySeen, window);
+        const float underAlpha = lerp(1.0f, 0.9f, window);   // the window lets a little of what is above the water through
+        float3 underFog;
+        const float underAmount = FogAt(input.worldPos, underFog);
+        return float4(underColor * underAlpha * (1.0f - underAmount) + underFog * (underAmount * underAlpha), underAlpha);
+    }
+
     // ---- How much water lies behind this pixel? ----
     // Same screen pixel in the camera's depth buffer = the nearest SOLID thing along this ray
     // (ground, or the far plane where there is only sky). Subtract the water's own distance.
@@ -149,7 +172,8 @@ float4 main(PS_IN input) : SV_Target
     float3 R = reflect(-V, N);
     R.y = abs(R.y);
     const float skyBlur = saturate(distanceToEye / (2.0f * waterWaveInfo.w)) * 4.0f;
-    float3 reflected = environmentMap.SampleLevel(linearSampler, R, skyBlur).rgb;
+    // The sky may be turned, tinted and dimmed (Skybox settings): the mirror of it follows.
+    float3 reflected = environmentMap.SampleLevel(linearSampler, SkyDirection(R), skyBlur).rgb * skyTint.rgb * skyTint.w;
     [branch]
     if (waterShape.x > 0.5f) {   // THIS body has a mirror image (other bodies in the same frame may not)
         // Where on screen is this pixel? The reflection image was drawn with the same projection,
@@ -162,7 +186,12 @@ float4 main(PS_IN input) : SV_Target
 
     // Water body: tinted diffuse (same lighting floor as before).
     const float lighting = 0.35f + saturate(dot(N, L)) * dirDirection.w * 0.65f;
-    const float3 lightColor = ambientColor.rgb + lighting * dirColor.rgb;
+    // The light the SKY gives the water body: with sky lighting on, the baked diffuse light looking straight up
+    // (so the sky sets it, not a separate flat colour); with it off, the old flat ambient colour.
+    float3 skyLight = ambientColor.rgb;
+    [branch]
+    if (iblParams.x > 0.5f) skyLight = skyIrradiance.SampleLevel(linearSampler, SkyDirection(float3(0.0f, 1.0f, 0.0f)), 0.0f).rgb * iblParams.y * skyTint.rgb;
+    const float3 lightColor = skyLight + lighting * dirColor.rgb;
     const float3 body = baseColor * lightColor;
 
     // Sun glint: a tight Blinn-Phong highlight on the wave normals.
@@ -230,5 +259,9 @@ float4 main(PS_IN input) : SV_Target
     foam *= shapeFade;
     rgb = foamColor * foam + rgb * (1.0f - foam);
     alpha = foam + alpha * (1.0f - foam);
+    // Fog. The colour is premultiplied by alpha, so the fog that replaces it is too: a see-through pixel stays see-through.
+    float3 fogHere;
+    const float fogAmount = FogAt(input.worldPos, fogHere);
+    rgb = rgb * (1.0f - fogAmount) + fogHere * (fogAmount * alpha);
     return float4(rgb, alpha);
 }

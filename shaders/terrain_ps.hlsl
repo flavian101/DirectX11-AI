@@ -180,5 +180,5 @@ float4 main(PS_IN input) : SV_Target
     surface.occlusion = occlusion;
     surface.normal = normal;
     surface.worldPos = p;
-    return float4(ShadePbr(surface), 1.0f);
+    return float4(ApplyFog(ShadePbr(surface), p), 1.0f);
 }

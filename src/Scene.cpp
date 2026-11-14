@@ -1,4 +1,5 @@
 ﻿#include "Scene.h"
+#include "Color.h"
 #include "ModelObject.h"
 #include "Cube.h"
 #include "Logger.h"
@@ -200,6 +201,7 @@ void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
     using namespace DirectX;
     if (shadow_) shadow_->Invalidate();   // until Begin() runs, the main pass must not sample the map
     if (!ctx || !shadow_ || !shadow_->IsEnabled()) return;
+    if (lights_->Directional().intensity <= 0.0f) return;   // no sun (or a moonless dark scene): nothing to cast a shadow from
     DirectX::XMFLOAT3 center;
     float radius = 0.0f;
     if (!ComputeShadowBounds(center, radius)) return;
@@ -231,6 +233,42 @@ void Scene::RenderShadows(ID3D11DeviceContext* ctx) const
     shadow_->End(ctx);
 }
 
+Skybox* Scene::GetSkybox()
+{
+    Skybox* first = nullptr;
+    for (auto& object : objects_) {
+        auto* sky = dynamic_cast<Skybox*>(object.get());
+        if (!sky) continue;
+        if (sky->IsActive()) return sky;
+        if (!first) first = sky;
+    }
+    return first;
+}
+
+const Skybox* Scene::GetSkybox() const
+{
+    return const_cast<Scene*>(this)->GetSkybox();
+}
+
+std::vector<Skybox*> Scene::GetSkyboxes()
+{
+    std::vector<Skybox*> skies;
+    for (auto& object : objects_) {
+        if (auto* sky = dynamic_cast<Skybox*>(object.get())) skies.push_back(sky);
+    }
+    return skies;
+}
+
+bool Scene::SetActiveSkybox(Skybox* sky)
+{
+    if (!sky) return false;
+    bool found = false;
+    for (Skybox* other : GetSkyboxes()) found = found || (other == sky);
+    if (!found) return false;
+    for (Skybox* other : GetSkyboxes()) other->SetActive(other == sky);
+    return true;
+}
+
 void Scene::PrepareEnvironment(ID3D11DeviceContext* ctx) const
 {
     const Skybox* skybox = GetSkybox();
@@ -246,10 +284,132 @@ void Scene::PrepareEnvironment(ID3D11DeviceContext* ctx) const
     }
 }
 
+// How strong a directional light is, for choosing which one is the sun: strength times how bright its colour is.
+static float DirectionalStrength(const LightObject& light)
+{
+    const DirectX::XMFLOAT3 c = SrgbToLinear(light.GetColor());
+    return light.GetIntensity() * (0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z);
+}
+
+const LightObject* Scene::PrimaryDirectional() const
+{
+    const LightObject* best = nullptr;
+    for (const auto& object : objects_) {
+        const auto* light = dynamic_cast<const LightObject*>(object.get());
+        if (!light || !light->IsDirectional()) continue;
+        if (!best || DirectionalStrength(*light) > DirectionalStrength(*best)) best = light;
+    }
+    return best;
+}
+
+int Scene::DirectionalRank(const LightObject& light) const
+{
+    if (!light.IsDirectional()) return -1;
+    int stronger = 0;
+    for (const auto& object : objects_) {
+        const auto* other = dynamic_cast<const LightObject*>(object.get());
+        if (!other || other == &light || !other->IsDirectional()) continue;
+        const float a = DirectionalStrength(*other), b = DirectionalStrength(light);
+        // Equal strength: the one earlier in the scene wins, the same way ApplyLights chooses.
+        if (a > b || (a == b && other->GetId() < light.GetId())) ++stronger;
+    }
+    return stronger;
+}
+
+std::vector<LightObject*> Scene::GetLights()
+{
+    std::vector<LightObject*> lights;
+    for (auto& object : objects_) {
+        if (auto* light = dynamic_cast<LightObject*>(object.get())) lights.push_back(light);
+    }
+    return lights;
+}
+
+void Scene::ApplyLights(ID3D11DeviceContext* ctx) const
+{
+    if (!lights_) return;
+    // The two strongest directional lights: the first is the sun (shadows), the second lights without shadows.
+    const LightObject* first = nullptr;
+    const LightObject* second = nullptr;
+    std::vector<const LightObject*> points;
+    for (const auto& object : objects_) {
+        const auto* light = dynamic_cast<const LightObject*>(object.get());
+        if (!light) continue;
+        if (!light->IsDirectional()) { points.push_back(light); continue; }
+        if (!first || DirectionalStrength(*light) > DirectionalStrength(*first)) { second = first; first = light; }
+        else if (!second || DirectionalStrength(*light) > DirectionalStrength(*second)) second = light;
+    }
+    auto copyDirectional = [](DirectionalLight& target, const LightObject* source) {
+        if (!source) { target.intensity = 0.0f; return; }   // no light of this kind: it contributes nothing
+        target.direction = source->GetDirection();
+        target.color = source->GetColor();
+        target.intensity = source->GetIntensity();
+    };
+    copyDirectional(lights_->Directional(), first);
+    copyDirectional(lights_->Secondary(), second);
+
+    // More lamps than slots: the ones nearest the camera win, so the lamps you can see are the lit ones.
+    const DirectX::XMFLOAT3 camera = camera_.GetPosition();
+    auto distanceSquared = [&](const LightObject* light) {
+        const DirectX::XMFLOAT3& p = light->GetPosition();
+        const float dx = p.x - camera.x, dy = p.y - camera.y, dz = p.z - camera.z;
+        return dx * dx + dy * dy + dz * dz;
+    };
+    std::stable_sort(points.begin(), points.end(), [&](const LightObject* a, const LightObject* b) { return distanceSquared(a) < distanceSquared(b); });
+    lights_->ClearPointLights();
+    for (const LightObject* light : points) {
+        if (!lights_->AddPointLight(PointLight{ light->GetPosition(), light->GetColor(), light->GetIntensity(), light->GetRange() })) break;
+    }
+    lights_->Apply(ctx, camera);
+}
+
+void Scene::FillFogFrameData(FrameData& frame) const
+{
+    const DirectX::XMFLOAT3 camera = camera_.GetPosition();
+
+    // Under water the water body is the medium: thick, coloured by the body's own colours, getting darker with depth.
+    const Water* water = FindWaterAt(camera.x, camera.y, camera.z);
+    if (water) {
+        const float surface = water->SampleHeight(camera.x, camera.z, time_);
+        if (camera.y < surface) {
+            const WaterSettings& settings = water->GetSettings();
+            const float depth = surface - camera.y;
+            const float absorption = (std::max)(settings.absorption, 0.02f);
+            const DirectX::XMFLOAT3 shallow = SrgbToLinear(settings.shallowColor);
+            const DirectX::XMFLOAT3 deep = SrgbToLinear(settings.color);
+            const float blend = (std::min)(depth * absorption * 0.15f, 1.0f);   // shallow colour near the surface, deep colour far down
+            const LightObject* sun = PrimaryDirectional();
+            const float sunLevel = sun ? (std::min)(0.3f + 0.5f * DirectionalStrength(*sun), 1.6f) : 0.3f;   // night under water is dark
+            const float dim = sunLevel * std::exp(-depth * absorption * 0.1f);
+            frame.fogParams = DirectX::XMFLOAT4(absorption * 0.6f, 0.0f, 0.0f, 0.0f);
+            frame.fogColor = DirectX::XMFLOAT4((shallow.x + (deep.x - shallow.x) * blend) * dim, (shallow.y + (deep.y - shallow.y) * blend) * dim,
+                                               (shallow.z + (deep.z - shallow.z) * blend) * dim, 1.0f);
+            frame.fogExtra = DirectX::XMFLOAT4(0.0f, 0.0f, 1.0f, 0.0f);
+            return;
+        }
+    }
+
+    const FogSettings& fog = weather_.fog;
+    if (!fog.enabled) return;   // FrameData's defaults are "no fog"
+    const DirectX::XMFLOAT3 color = SrgbToLinear(DirectX::XMFLOAT3(fog.color[0], fog.color[1], fog.color[2]));
+    frame.fogParams = DirectX::XMFLOAT4(fog.Density(), fog.startDistance, fog.heightFalloff, fog.baseHeight);
+    frame.fogColor = DirectX::XMFLOAT4(color.x * fog.brightness, color.y * fog.brightness, color.z * fog.brightness, fog.maxOpacity);
+    frame.fogExtra = DirectX::XMFLOAT4(fog.sunGlow, fog.skyBlend, 0.0f, 0.0f);
+}
+
 void Scene::FillEnvironmentFrameData(FrameData& frame) const
 {
-    if (!environmentLighting_.IsBaked()) return;   // stays zeros: shaders use the flat ambient colour
+    FillFogFrameData(frame);
     const Skybox* skybox = GetSkybox();
+    // The sky's turn and tint reach every shader that looks the sky up (the water's mirror of it works even before the
+    // baked lighting exists). FrameData's defaults are "no turn, no tint".
+    if (skybox) {
+        const float yaw = DirectX::XMConvertToRadians(skybox->GetYawDegrees());
+        frame.skyParams = DirectX::XMFLOAT4(std::cos(yaw), std::sin(yaw), 0.0f, 0.0f);
+        const DirectX::XMFLOAT3 tint = SrgbToLinear(skybox->GetTint());
+        frame.skyTint = DirectX::XMFLOAT4(tint.x, tint.y, tint.z, skybox->GetIntensity());
+    }
+    if (!environmentLighting_.IsBaked()) return;   // iblParams stays zeros: shaders use the flat ambient colour
     const float skyIntensity = skybox ? skybox->GetIntensity() : 1.0f;   // dimming the sky dims its light, too
     if (environment_.enabled) {
         frame.iblParams = DirectX::XMFLOAT4(1.0f, environment_.diffuseIntensity * skyIntensity,
@@ -435,8 +595,11 @@ void Scene::RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase, const Render
 {
     std::vector<const SceneObject*> sorted;
     sorted.reserve(objects_.size());
+    const Skybox* activeSky = GetSkybox();
     for (const auto& object : objects_) {
         if (!object) continue;
+        // A scene can hold several skies, but only the active one is drawn.
+        if (dynamic_cast<const Skybox*>(object.get()) && object.get() != activeSky) continue;
         const bool transparent = object->GetRenderCategory() == SceneObject::RenderCategory::Transparent;
         if (transparent == (phase == ScenePhase::Transparent)) sorted.push_back(object.get());
     }

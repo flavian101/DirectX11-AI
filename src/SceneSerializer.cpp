@@ -98,7 +98,14 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
         entry["settings"] = water->GetSettings();
     } else if (const auto* sky = dynamic_cast<const Skybox*>(&object)) {
         entry["type"] = "Skybox";
+        entry["name"] = sky->GetName();            // a scene can hold several skies ("Day", "Night"): they keep their names
+        entry["active"] = sky->IsActive();         // the one that is showing
         entry["intensity"] = sky->GetIntensity();
+        // Turn and tint are written only when they are not the defaults, so a plain sky saves exactly what it always did.
+        if (sky->GetYawDegrees() != 0.0f) entry["yaw"] = sky->GetYawDegrees();
+        if (sky->GetTint().x != 1.0f || sky->GetTint().y != 1.0f || sky->GetTint().z != 1.0f) {
+            entry["tint"] = json::array({ sky->GetTint().x, sky->GetTint().y, sky->GetTint().z });
+        }
         // Which cubemap folder. The default needs no entry (so scenes saved before this existed still load the same sky).
         // A file stores it relative to the scene file like every other asset path; an undo snapshot keeps it as it is.
         if (sky->GetFolder() != Skybox::DefaultFolder()) {
@@ -110,6 +117,13 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
                 if (outside) warn("The skybox \"" + sky->GetFolder() + "\" lives outside the assets folder. It will not be shipped with the game: copy the folder into assets/ and choose it again.");
             }
         }
+    } else if (const auto* light = dynamic_cast<const LightObject*>(&object)) {
+        entry["type"] = "Light";
+        entry["name"] = light->GetName();   // "Sun", "Moon", "Campfire": a light is told apart by its name
+        entry["kind"] = light->GetKind();
+        entry["color"] = light->GetColor();
+        entry["intensity"] = light->GetIntensity();
+        if (!light->IsDirectional()) entry["range"] = light->GetRange();
     } else if (const auto* cube = dynamic_cast<const Cube*>(&object)) {
         entry["type"] = "Cube";
         entry["spinning"] = cube->IsSpinning();
@@ -242,11 +256,29 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
         water->SetSettings(loaded);
     } else if (auto* sky = dynamic_cast<Skybox*>(&object)) {
         sky->SetIntensity(entry.value("intensity", 1.0f));
+        // Absent keys mean the defaults (no turn, no tint, active): matters for undo, and for scenes saved before these existed.
+        if (entry.contains("name") && entry["name"].is_string()) sky->SetName(entry["name"].get<std::string>());
+        sky->SetActive(entry.value("active", true));
+        sky->SetYawDegrees(entry.value("yaw", 0.0f));
+        {
+            DirectX::XMFLOAT3 tint = { 1.0f, 1.0f, 1.0f };
+            if (entry.contains("tint") && entry["tint"].is_array() && entry["tint"].size() == 3) {
+                tint = { entry["tint"][0].get<float>(), entry["tint"][1].get<float>(), entry["tint"][2].get<float>() };
+            }
+            sky->SetTint(tint);
+        }
         // An ABSENT key means "the default sky", which matters for undo: undoing a sky change must bring the old one
         // back. A cubemap that already matches is not loaded again.
         const std::string wanted = Skybox::NormalizeFolder(
             entry.contains("folder") && entry["folder"].is_string() ? resolve(entry["folder"].get<std::string>()) : std::string(Skybox::DefaultFolder()));
         if (wanted != sky->GetFolder() && !sky->LoadFromFolder(wanted)) warnings.push_back("The skybox could not be loaded from: " + wanted);
+    } else if (auto* light = dynamic_cast<LightObject*>(&object)) {
+        // The kind first: the transform (applied after this) only takes a rotation for a directional light.
+        light->SetKind(entry.value("kind", LightKind::Point));
+        if (entry.contains("name") && entry["name"].is_string()) light->SetName(entry["name"].get<std::string>());
+        light->SetColor(entry.value("color", DirectX::XMFLOAT3(1.0f, 0.85f, 0.6f)));
+        light->SetIntensity(entry.value("intensity", 2.0f));
+        light->SetRange(entry.value("range", 12.0f));
     } else if (auto* cube = dynamic_cast<Cube*>(&object)) {
         cube->GetSurface().Settings() = entry.value("surface", SurfaceSettings{});
     } else if (auto* model = dynamic_cast<ModelObject*>(&object)) {
@@ -284,9 +316,8 @@ json DescribeGlobals(const Scene& scene)
 {
     json globals;
     const LightSystem& lights = scene.GetLightSystem();
-    json points = json::array();
-    for (const PointLight& light : lights.PointLights()) points.push_back(light);
-    globals["lights"] = { { "ambient", lights.Ambient() }, { "directional", lights.Directional() }, { "points", points } };
+    // Only the ambient colour is global now: the sun, the moon and the lamps are objects (LightObject).
+    globals["lights"] = { { "ambient", lights.Ambient() } };
     globals["shadow"] = scene.GetShadowMap().GetSettings();
     globals["post"] = scene.GetPostSettings();
     globals["environment"] = scene.GetEnvironment();
@@ -307,11 +338,6 @@ void ApplyGlobals(Scene& scene, const json& root, std::vector<std::string>& warn
         const json lights = root.value("lights", json::object());
         LightSystem& system = scene.GetLightSystem();
         system.Ambient() = lights.value("ambient", system.Ambient());
-        system.Directional() = lights.value("directional", system.Directional());
-        system.ClearPointLights();
-        for (const json& point : lights.value("points", json::array())) {
-            if (!system.AddPointLight(point.get<PointLight>())) { warnings.push_back("Too many point lights: the extra ones were dropped."); break; }
-        }
     });
     attempt("shadow settings", [&] { scene.GetShadowMap().SetSettings(root.value("shadow", scene.GetShadowMap().GetSettings())); });
     attempt("post-processing", [&] {
@@ -461,6 +487,7 @@ bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std:
             else if (type == "Water") created = scene.Add<Water>(device);
             else if (type == "Skybox") created = scene.Add<Skybox>(device);
             else if (type == "Cube") created = scene.Add<Cube>(device);
+            else if (type == "Light") created = scene.Add<LightObject>(LightKind::Point);
             else if (type == "Scatter") created = scene.Add<ScatterObject>(device);
             else if (type == "Model") {
                 fs::path modelPath(entry.value("path", ""));
@@ -485,6 +512,33 @@ bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std:
             ApplyObject(*created, entry, &sceneFolder, warnings);   // settings, images, materials, transform
         });
     }
+
+    // A version-1 file kept its sun and lamps in the global "lights" block. They become ordinary light objects, so an old
+    // scene looks the same and its lights can now be selected, moved and deleted. (A file that already has Light objects
+    // never carries those keys: the editor stopped writing them.)
+    attempt("old lights", [&] {
+        const json lights = root.value("lights", json::object());
+        if (lights.contains("directional") && lights["directional"].is_object()) {
+            const DirectionalLight sun = lights["directional"].get<DirectionalLight>();
+            auto* light = scene.Add<LightObject>(LightKind::Directional);
+            light->SetName("Sun");
+            light->SetColor(sun.color);
+            light->SetIntensity(sun.intensity);
+            float azimuth = 0.0f, elevation = 0.0f;
+            LightAngles::FromTravel({ sun.direction.x, sun.direction.y, sun.direction.z }, azimuth, elevation);
+            light->SetAngles(azimuth, elevation);
+        }
+        int count = 0;
+        for (const json& entry : lights.value("points", json::array())) {
+            const PointLight point = entry.get<PointLight>();
+            auto* light = scene.Add<LightObject>(LightKind::Point);
+            light->SetName("Point light " + std::to_string(++count));
+            light->SetColor(point.color);
+            light->SetIntensity(point.intensity);
+            light->SetRange(point.range);
+            light->SetEditorTransform(point.position, DirectX::XMFLOAT3(0.0f, 0.0f, 0.0f), DirectX::XMFLOAT3(1.0f, 1.0f, 1.0f));
+        }
+    });
     return true;
 }
 

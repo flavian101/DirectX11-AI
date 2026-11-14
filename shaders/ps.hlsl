@@ -64,5 +64,5 @@ float4 main(PS_IN input) : SV_Target {
     if (surfaceExtra.x > 0.0f && texColor.a < surfaceExtra.x) discard;
     const float3 emissive = emissiveTexture.Sample(colorSampler, input.texCoord).rgb * surfaceParams.w;
     surface.albedo = texColor.rgb;
-    return float4(ShadePbr(surface) + emissive, texColor.a);
+    return float4(ApplyFog(ShadePbr(surface) + emissive, input.worldPos), texColor.a);
 }

@@ -105,6 +105,8 @@ add_library(Engine STATIC
 	src/Png16.cpp
 	src/Water.cpp
 	src/Skybox.cpp
+	src/SkyFaces.cpp
+	src/LightObject.cpp
 	src/EnvironmentLighting.cpp
 	src/libs/stb_image.cpp
 )
@@ -201,6 +203,17 @@ if(BUILD_TESTS)
     add_executable(Png16Tests tests/png16_test.cpp src/Png16.cpp src/libs/stb_image.cpp)
     target_include_directories(Png16Tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME Png16 COMMAND Png16Tests)
+    # Skybox face names (px/nx, right/left, 0-5...) and the Assets panel's thumbnail shrinker.
+    add_executable(SkyFacesTests tests/sky_faces_test.cpp src/SkyFaces.cpp)
+    target_include_directories(SkyFacesTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME SkyFaces COMMAND SkyFacesTests)
+    # How a sun or a moon is aimed: azimuth/elevation <-> direction <-> the gizmo's rotation.
+    add_executable(LightAnglesTests tests/light_angles_test.cpp)
+    target_include_directories(LightAnglesTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME LightAngles COMMAND LightAnglesTests)
+    add_executable(ImageDownscaleTests tests/image_downscale_test.cpp)
+    target_include_directories(ImageDownscaleTests PRIVATE ${CMAKE_SOURCE_DIR}/editor)
+    add_test(NAME ImageDownscale COMMAND ImageDownscaleTests)
 endif()
 
 if(BUILD_EDITOR)
@@ -221,6 +234,8 @@ if(BUILD_EDITOR)
             editor/EditorTheme.cpp
             editor/ConsolePanel.cpp
             editor/AssetBrowserPanel.cpp
+            editor/EditorIcons.cpp
+            editor/ThumbnailCache.cpp
             editor/ScenesPanel.cpp
             extern/imgui/imgui.cpp
             extern/imgui/imgui_demo.cpp

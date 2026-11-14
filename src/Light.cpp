@@ -75,6 +75,12 @@ void LightSystem::Apply(ID3D11DeviceContext* ctx, const XMFLOAT3& cameraPos) con
     data->cameraPosNumLights = XMFLOAT4(cameraPos.x, cameraPos.y, cameraPos.z,
                                         static_cast<float>(count));
 
+    const XMVECTOR dir2 = XMVector3Normalize(XMLoadFloat3(&secondary_.direction));
+    XMStoreFloat4(&data->dirDirection2, dir2);
+    data->dirDirection2.w = secondary_.intensity;
+    const XMFLOAT3 secondColor = SrgbToLinear(secondary_.color);
+    data->dirColor2 = XMFLOAT4(secondColor.x, secondColor.y, secondColor.z, 0.0f);
+
     ctx->Unmap(cb_, 0);
     ctx->PSSetConstantBuffers(Slots::kCbLights, 1, &cb_);
 }

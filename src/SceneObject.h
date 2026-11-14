@@ -55,6 +55,8 @@ public:
     // False for objects that can only be moved and scaled (the terrain: its height queries assume it is never tilted).
     // The editor hides the Rotation row and the rotate gizmo for them.
     virtual bool SupportsRotation() const { return true; }
+    // False for objects whose size means nothing (a light): the editor hides the Scale row and the scale gizmo for them.
+    virtual bool SupportsScale() const { return true; }
 
     // --- editor interaction ---
     // The object's box in its OWN space, plus the matrix that places it in the world. The editor uses it to pick

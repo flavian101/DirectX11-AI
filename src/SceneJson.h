@@ -3,6 +3,7 @@
 // Kept out of the public headers so the rest of the engine does not need nlohmann/json.
 #include "EnvironmentLighting.h"
 #include "Light.h"
+#include "LightObject.h"
 #include "PostSettings.h"
 #include "ModelObject.h"
 #include "ScatterObject.h"
@@ -33,6 +34,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(WaterShape, { { WaterShape::Rectangle, "rectangle" 
 NLOHMANN_JSON_SERIALIZE_ENUM(WaterBodyType, { { WaterBodyType::Ocean, "ocean" }, { WaterBodyType::Lake, "lake" },
                                               { WaterBodyType::River, "river" }, { WaterBodyType::Pond, "pond" },
                                               { WaterBodyType::Custom, "custom" } })
+NLOHMANN_JSON_SERIALIZE_ENUM(LightKind, { { LightKind::Directional, "directional" }, { LightKind::Point, "point" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(WindSource, { { WindSource::Scene, "scene" }, { WindSource::Custom, "custom" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, { ReflectionMode::PlanarHalf, "planar_half" },
                                                { ReflectionMode::PlanarFull, "planar_full" }, { ReflectionMode::PlanarQuarter, "planar_quarter" } })
@@ -43,7 +45,8 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PostSettings, srgbEncode, exposureEV, toneMapper)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ShadowSettings, enabled, resolution, depthBias, slopeBias, normalOffset, strength)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WindSettings, direction, strength)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WeatherSettings, wind)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FogSettings, enabled, color, brightness, visibility, startDistance, heightFalloff, baseHeight, sunGlow, skyBlend, maxOpacity)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WeatherSettings, wind, fog)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(EnvironmentSettings, enabled, diffuseIntensity, specularIntensity)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DirectionalLight, direction, color, intensity)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PointLight, position, color, intensity, range)

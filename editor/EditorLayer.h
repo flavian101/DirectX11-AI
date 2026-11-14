@@ -67,9 +67,15 @@ private:
     void DrawSculptSection(Terrain* terrain);
     void DrawWaterInspector(Water* water);
     void DrawAddWaterItems();
+    void DrawAddLightItems();                                               // Sun / Moon / Point light: the items of the "Light" menus
+    void DrawLightInspector(LightObject* light);
     void DrawSkyboxInspector(Skybox* skybox);
     void DrawSkyboxPicker(Skybox* skybox);                                 // cubemap combo, Rescan, and the "not shipped" warning
+    void DrawSkiesSection();                                                // Environment tab: which sky is active, add another
     void RescanSkyboxes();                                                  // looks for skybox folders in the engine's and the project's assets
+    void EnsureSkyboxScan();                                                // RescanSkyboxes, but only if the list is for another project
+    void ActivateSky(Skybox* sky);                                          // makes `sky` the one that is drawn: ONE undo step
+    void AddSkybox(LayerContext& ctx, const std::string& folder);           // a new sky from a folder, made the active one: ONE undo step
     void UseSkyboxFolder(LayerContext& ctx, const std::string& folder);    // the Assets panel's "Use as skybox": adds a skybox if there is none
     bool ChangeSkybox(Skybox* skybox, const std::string& folder);           // swaps the cubemap and records ONE undo step
     void DrawSurfaceInspector(SurfaceMaterial& surface);
@@ -140,7 +146,6 @@ private:
     bool showHierarchy_ = true;
     bool showInspector_ = true;
     bool showSceneSettings_ = true;
-    bool skyTabOpen_ = false;        // the Environment tab drew the sky controls last frame (see TrackEdits)
     bool showViewport_ = true;
     bool resetLayout_ = false;
 
@@ -158,6 +163,7 @@ private:
     bool viewportFocused_ = false;
     bool hierarchyFocused_ = false;
     bool addCubeRequested_ = false;
+    int addLightKind_ = -1;   // a light to add next frame: 0 sun, 1 moon, 2 point light (-1 = none)
     bool addScatterRequested_ = false;   // add a scatter (trees and rocks on the terrain) at the start of the next frame
     int addWaterType_ = -1;           // >= 0: add a water body of this WaterBodyType at the start of the next frame
     bool duplicateRequested_ = false;
@@ -181,6 +187,9 @@ private:
     bool showConsole_ = true;
     bool showScenes_ = true;
     std::string pendingSkyboxFolder_;   // a skybox folder chosen in the Assets panel (applied at the start of the next frame)
+    std::string pendingAddSkyFolder_;   // a folder to add as a NEW sky (Assets panel, Hierarchy menu, Environment tab)
+    SceneObjectId pendingActiveSkyId_ = 0;   // a sky the user asked to switch to
+    char hierarchyFilter_[64] = "";     // the Hierarchy's search box
     bool newProjectRequested_ = false;
     std::string pendingImportPath_;   // an asset double-clicked in the Assets panel
     // Opening another scene or project replaces what is open, so it first asks about unsaved changes.
@@ -206,7 +215,7 @@ private:
     UndoHistory history_;
     ChangeDetector objectDetector_;
     ChangeDetector globalDetector_;
-    ChangeDetector skyDetector_;   // the sky, while it is edited from the Environment tab without being the selected object
+    ChangeDetector skyDetector_;   // (kept only so history code can reset it; the sky is watched as the selected object)
     bool undoRequested_ = false;
     bool redoRequested_ = false;
     int historyJump_ = -1;       // >= 0: stand at this history position (clicked in the History panel)

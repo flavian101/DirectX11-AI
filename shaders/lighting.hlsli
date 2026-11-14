@@ -88,6 +88,12 @@ float3 ShadePbr(PbrInput s)
         const float shadow = ShadowFactor(s.worldPos, N, L);
         color += DirectLight(N, V, L, dirColor.rgb * dirDirection.w, s.albedo, s.metallic, roughness, F0) * shadow;
     }
+    // A second directional light (the moon beside a sun): lights the scene, but casts no shadows.
+    [branch]
+    if (dirDirection2.w > 0.0f) {
+        const float3 L2 = normalize(-dirDirection2.xyz);
+        color += DirectLight(N, V, L2, dirColor2.rgb * dirDirection2.w, s.albedo, s.metallic, roughness, F0);
+    }
 
     // Point lights with smooth quadratic range falloff.
     const int numPointLights = (int)cameraPosNumLights.w;
@@ -108,13 +114,13 @@ float3 ShadePbr(PbrInput s)
         const float3 kD = (1.0f - F) * (1.0f - s.metallic);
 
         // Diffuse: the irradiance map already holds the sky's cosine-weighted average for this normal.
-        const float3 irradiance = irradianceMap.SampleLevel(iblSampler, N, 0.0f).rgb * iblParams.y;
+        const float3 irradiance = irradianceMap.SampleLevel(iblSampler, SkyDirection(N), 0.0f).rgb * iblParams.y * skyTint.rgb;
         const float3 diffuse = irradiance * s.albedo * kD;
 
         // Specular: look up the sky in the mirror direction, from the mip that matches the roughness,
         // then scale by the reflectivity from the BRDF table ("split sum": two lookups instead of an integral).
         const float3 R = reflect(-V, N);
-        const float3 prefiltered = prefilteredMap.SampleLevel(iblSampler, R, roughness * iblParams.w).rgb * iblParams.z;
+        const float3 prefiltered = prefilteredMap.SampleLevel(iblSampler, SkyDirection(R), roughness * iblParams.w).rgb * iblParams.z * skyTint.rgb;
         const float2 brdf = brdfTable.SampleLevel(iblSampler, float2(NdotV, roughness), 0.0f).rg;
         const float3 specular = prefiltered * (F * brdf.x + brdf.y);
 

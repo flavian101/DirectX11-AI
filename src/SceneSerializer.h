@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-constexpr int kSceneFileVersion = 1;
+constexpr int kSceneFileVersion = 2;   // 2: lights are objects ("Light"), and the weather has fog; a version-1 file still loads
 
 // Writes `scene` to `path` (JSON). `warnings` receives things worth telling the user that did not stop the
 // save (for example a model that lives outside the scene's folder and will not travel with it).

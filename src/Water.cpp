@@ -122,7 +122,14 @@ void Water::CreateRenderStates(ID3D11Device* device)
 	wireDesc.CullMode = D3D11_CULL_NONE;
 	wireDesc.DepthClipEnable = TRUE;
 
+	// Drawn from BOTH sides: from under the surface the camera looks up at its underside (the "window" of the sky, see water_ps.hlsl).
+	D3D11_RASTERIZER_DESC solidDesc{};
+	solidDesc.FillMode = D3D11_FILL_SOLID;
+	solidDesc.CullMode = D3D11_CULL_NONE;
+	solidDesc.DepthClipEnable = TRUE;
+
 	if (!device) return;
+	if (!material_.CreateRasterizerState(solidDesc)) LOG_ERROR("Water rasterizer state creation failed");
 	if (!material_.CreateBlendState(blendDesc)) LOG_ERROR("Water blend state creation failed");
 	if (!material_.CreateDepthStencilState(depthDesc)) LOG_ERROR("Water depth state creation failed");
 	if (!wireMaterial_.CreateBlendState(blendDesc) || !wireMaterial_.CreateDepthStencilState(depthDesc) ||
@@ -536,6 +543,7 @@ void Water::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 	} else {
 		material_.Apply(ctx);
 		renderable_->Render(ctx, &drawList_);
+		ctx->RSSetState(nullptr);   // the next object is not drawn double-sided
 	}
 }
 

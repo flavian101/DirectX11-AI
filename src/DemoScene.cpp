@@ -21,35 +21,20 @@ bool BuildDemoScene(Scene& scene, ID3D11Device* device)
     scene.GetCamera().SetTarget({ 0.0f, 12.0f, 0.0f });
 
     // --- lights ---
-    LightSystem& lights = scene.GetLightSystem();
-    DirectionalLight& sun = lights.Directional();
-    sun.direction = { 0.3f, -0.8f, 0.5f };
-    sun.color = { 1.0f, 0.95f, 0.85f };
-    // HDR: the sun is far brighter than "1.0 = white". The tone mapper brings it back into range;
-    // set the tone mapper to "None" in the Camera panel to see what clipping looks like.
-    sun.intensity = 2.5f;
-    lights.SetAmbient({ 0.2f, 0.2f, 0.25f });
+    // The sun is a light OBJECT (select it in the Hierarchy, aim it with the gizmo or the Inspector), and there are no lamps:
+    // add point lights where the scene needs them. Only the flat fallback colour, used when the sky is not lighting the scene, stays global.
+    scene.GetLightSystem().SetAmbient({ 0.2f, 0.2f, 0.25f });
+    LightObject* sun = scene.Add<LightObject>(LightKind::Directional);   // starts as the sun preset: warm, HDR-bright (2.5; the tone mapper brings it back)
+    sun->SetName("Sun");
+    float sunAzimuth = 0.0f, sunElevation = 0.0f;
+    LightAngles::FromTravel({ 0.3f, -0.8f, 0.5f }, sunAzimuth, sunElevation);   // the direction this scene always had
+    sun->SetAngles(sunAzimuth, sunElevation);
 
-    PointLight warm;
-    warm.position = { 3.0f, 2.0f, 3.0f };
-    warm.color = { 1.0f, 0.6f, 0.3f };
-    warm.intensity = 1.5f;
-    warm.range = 8.0f;
-    lights.AddPointLight(warm);
-
-    PointLight cool;
-    cool.position = { -3.0f, 1.0f, -3.0f };
-    cool.color = { 0.3f, 0.6f, 1.0f };
-    cool.intensity = 1.2f;
-    cool.range = 7.0f;
-    lights.AddPointLight(cool);
-
-    PointLight lime;
-    lime.position = { 0.0f, 3.0f, -4.0f };
-    lime.color = { 0.8f, 1.0f, 0.4f };
-    lime.intensity = 1.0f;
-    lime.range = 6.0f;
-    lights.AddPointLight(lime);
+    // A light haze, so far hills fade into the sky instead of ending at a hard edge. (Weather tab > Fog.)
+    FogSettings& fog = scene.GetWeather().fog;
+    fog.enabled = true;
+    fog.visibility = 1500.0f;
+    fog.heightFalloff = 0.01f;
 
     // --- objects (the scene owns them) ---
     Terrain* terrain = scene.Add<Terrain>(device);

@@ -2,6 +2,7 @@
 #include "Camera.h"
 #include "SceneObject.h"
 #include "Light.h"
+#include "LightObject.h"
 #include "Terrain.h"
 #include "Water.h"
 #include "Skybox.h"
@@ -42,11 +43,26 @@ public:
     // The FIRST water body (scenes can have several: loop over GetObjects(), or use FindWaterAt for a position).
     Water* GetWater() { return FindFirst<Water>(); }
     const Water* GetWater() const { return FindFirst<Water>(); }
-    Skybox* GetSkybox() { return FindFirst<Skybox>(); }
-    const Skybox* GetSkybox() const { return FindFirst<Skybox>(); }
+    // The ACTIVE sky: the one that is drawn and that lights the scene. A scene can hold several (day, dusk, night);
+    // if none is marked active (a hand-edited file) the first one is used. Null if the scene has no sky.
+    Skybox* GetSkybox();
+    const Skybox* GetSkybox() const;
+    std::vector<Skybox*> GetSkyboxes();
+    // Makes `sky` the active one and every other sky inactive. The next frame bakes its lighting (Scene::PrepareEnvironment
+    // notices the sky changed). Passing a sky that is not in this scene does nothing.
+    bool SetActiveSkybox(Skybox* sky);
     const std::vector<std::unique_ptr<SceneObject>>& GetObjects() const { return objects_; }
     LightSystem& GetLightSystem() { return *lights_; }
     const LightSystem& GetLightSystem() const { return *lights_; }
+    // The lights are scene objects (LightObject). Once per frame, before the shadows, this copies them into the lighting system
+    // and uploads it: the strongest directional light becomes the sun (it casts the shadows), the next strongest the second
+    // directional light, and the point lights nearest the camera fill the point light slots.
+    void ApplyLights(ID3D11DeviceContext* ctx) const;
+    const LightObject* PrimaryDirectional() const;   // the strongest directional light; null when there is none
+    // 0 = this light is the sun (casts shadows), 1 = the second directional light, 2 or more = a weaker one that is not used
+    // (only two directional lights shine). -1 for a point light.
+    int DirectionalRank(const LightObject& light) const;
+    std::vector<LightObject*> GetLights();           // every light object, in scene order
 
     SceneObject* Find(SceneObjectId id);
     const SceneObject* Find(SceneObjectId id) const;
@@ -139,7 +155,8 @@ public:
 
 private:
     void UpdateCamera(const InputState& input, float dt);
-    void FillEnvironmentFrameData(FrameData& frame) const;   // the IBL numbers every lit pixel needs
+    void FillEnvironmentFrameData(FrameData& frame) const;   // the IBL numbers every lit pixel needs (and the fog, which belongs to the same "atmosphere")
+    void FillFogFrameData(FrameData& frame) const;           // fog in the air, or the water's own fog when the camera is under water
     bool ComputeShadowBounds(DirectX::XMFLOAT3& center, float& radius) const;
     SceneObject* Adopt(std::unique_ptr<SceneObject> object);
 
