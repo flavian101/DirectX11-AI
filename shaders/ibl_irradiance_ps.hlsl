@@ -19,8 +19,11 @@ float4 main(PS_IN input) : SV_Target
 
     // Walk the hemisphere on a regular grid of angles (midpoints of equal steps). The sky is smooth,
     // so a coarse grid is enough; reading a small mip of the sky keeps a bright speck from sparkling.
-    const int phiSteps = 128;
-    const int thetaSteps = 32;
+    // bakeParams.w = 1 means "fast": a sky that changes with the time of day is baked again and again, and a smooth sky needs a
+    // tenth of the samples (the same grid, coarser). A still sky is baked once, with the full grid.
+    const bool fast = bakeParams.w > 0.5f;
+    const int phiSteps = fast ? 40 : 128;
+    const int thetaSteps = fast ? 10 : 32;
     float3 sum = float3(0.0f, 0.0f, 0.0f);
     [loop] for (int i = 0; i < phiSteps; ++i) {
         const float phi = (i + 0.5f) * (2.0f * kPi / phiSteps);

@@ -18,7 +18,7 @@ cbuffer PerFrame : register(b0) {
     float4   reflectionParams; // x = 1 when a planar reflection was rendered this frame (the water may use t3), y = 1 when the scene copy for refraction is bound (t14)
     float4   iblParams;     // x = image-based lighting on (1/0), y = diffuse intensity, z = specular intensity, w = last prefilter mip
     float4   iblDebug;      // x = sky background: 0 sky, 1 irradiance, 2 prefiltered; y = mip to show
-    float4   skyParams;     // x = cos(sky yaw), y = sin(sky yaw)
+    float4   skyParams;     // x = cos(sky yaw), y = sin(sky yaw), z = 1 when the sky is procedural (see sky_procedural.hlsli)
     float4   skyTint;       // rgb = sky tint (linear), w = sky intensity
     float4   fogParams;     // x = density (0 = no fog), y = start distance, z = height falloff, w = height of full density
     float4   fogColor;      // rgb = fog colour (linear), w = most opaque the fog may get

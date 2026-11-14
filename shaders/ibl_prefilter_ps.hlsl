@@ -17,7 +17,7 @@ float4 main(PS_IN input) : SV_Target
     // Assume the viewer looks straight down the normal (V = N = R). That is the "split sum" shortcut:
     // it is exact there and a good approximation elsewhere (the BRDF table corrects the rest).
     const float3 V = N;
-    const uint sampleCount = 1024u;
+    const uint sampleCount = bakeParams.w > 0.5f ? 96u : 1024u;   // w = 1: "fast", for a sky that is baked again and again (see ibl_irradiance_ps.hlsl)
     const float sourceFaceSize = bakeParams.z;
     const float texelSolidAngle = 4.0f * kPi / (6.0f * sourceFaceSize * sourceFaceSize);
 

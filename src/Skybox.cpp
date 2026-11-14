@@ -3,6 +3,7 @@
 #include "Logger.h"
 #include "Mesh.h"
 #include "SkyFaces.h"
+#include "ShaderSlots.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -104,9 +105,35 @@ bool Skybox::LoadFromFolder(const std::string& requested)
 
 bool Skybox::IsValid() const
 {
-	return renderable_ && renderable_->IsValid() && cubemap_ && cubemap_->IsValid() &&
+	const bool hasSky = IsProcedural() ? (procedural_ && procedural_->IsReady()) : (cubemap_ && cubemap_->IsValid());
+	return renderable_ && renderable_->IsValid() && hasSky &&
 		   material_.IsValid() && material_.HasDepthStencilState() &&
 		   material_.HasRasterizerState();
+}
+
+ID3D11ShaderResourceView* Skybox::GetCubemapView() const
+{
+	if (IsProcedural()) return procedural_ ? procedural_->GetCubemapView() : nullptr;
+	return cubemap_ ? cubemap_->GetShaderResourceView() : nullptr;
+}
+
+bool Skybox::SetMode(SkyMode mode)
+{
+	if (mode == SkyMode::Procedural && !procedural_) {
+		auto made = std::make_unique<ProceduralSky>();
+		if (!device_ || !made->Initialize(device_)) {
+			LOG_ERROR("Skybox: could not create the procedural sky");
+			return false;
+		}
+		procedural_ = std::move(made);
+	}
+	mode_ = mode;
+	return true;
+}
+
+bool Skybox::UpdateProcedural(ID3D11Device* device, ID3D11DeviceContext* ctx, const SkyModel::Params& params, float minSecondsBetweenRedraws) const
+{
+	return IsProcedural() && procedural_ && procedural_->Update(device, ctx, params, minSecondsBetweenRedraws);
 }
 
 void Skybox::SetIntensity(float intensity)
@@ -142,6 +169,10 @@ void Skybox::Render(ID3D11DeviceContext* ctx, const RenderView& /*view*/) const
 {
 	if (!IsValid() || !ctx) return;
 	material_.Apply(ctx);
-	renderable_->SetTexture(ctx, cubemap_->GetShaderResourceView());
+	if (IsProcedural()) {
+		ID3D11Buffer* skyConstants = procedural_->GetParamsBuffer();   // this frame's sky colours (b6)
+		ctx->PSSetConstantBuffers(Slots::kCbSky, 1, &skyConstants);
+	}
+	renderable_->SetTexture(ctx, GetCubemapView());   // the shader ignores it in Procedural mode, but a valid cube is always bound
 	renderable_->Render(ctx);
 }

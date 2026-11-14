@@ -1,5 +1,6 @@
 #pragma once
 #include "LightAngles.h"
+#include "TimeOfDay.h"
 #include "SceneObject.h"
 #include <DirectXMath.h>
 #include <memory>
@@ -36,6 +37,10 @@ public:
     void SetColor(const DirectX::XMFLOAT3& color);
     float GetIntensity() const { return intensity_; }
     void SetIntensity(float intensity);
+    // Which time-of-day light this is (Weather > Time of day): the Sun or the Moon follow the clock (direction, colour and strength are
+    // computed from it, the light's own are the noon values); None is an ordinary light that stays as it is.
+    LightRole GetRole() const { return role_; }
+    void SetRole(LightRole role) { role_ = role; }
     float GetRange() const { return range_; }   // point lights: distance at which the light has faded to nothing
     void SetRange(float range);
     const DirectX::XMFLOAT3& GetPosition() const { return position_; }
@@ -69,4 +74,5 @@ private:
     float range_ = 12.0f;
     DirectX::XMFLOAT3 position_ = { 0.0f, 4.0f, 0.0f };
     DirectX::XMFLOAT3 rotation_ = { 0.0f, 0.0f, 0.0f };   // radians; only a directional light uses it
+    LightRole role_ = LightRole::None;
 };

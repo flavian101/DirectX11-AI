@@ -101,6 +101,7 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
         entry["name"] = sky->GetName();            // a scene can hold several skies ("Day", "Night"): they keep their names
         entry["active"] = sky->IsActive();         // the one that is showing
         entry["intensity"] = sky->GetIntensity();
+        if (sky->IsProcedural()) entry["mode"] = SkyMode::Procedural;   // absent = a cubemap sky, as every scene before this was
         // Turn and tint are written only when they are not the defaults, so a plain sky saves exactly what it always did.
         if (sky->GetYawDegrees() != 0.0f) entry["yaw"] = sky->GetYawDegrees();
         if (sky->GetTint().x != 1.0f || sky->GetTint().y != 1.0f || sky->GetTint().z != 1.0f) {
@@ -121,6 +122,7 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
         entry["type"] = "Light";
         entry["name"] = light->GetName();   // "Sun", "Moon", "Campfire": a light is told apart by its name
         entry["kind"] = light->GetKind();
+        if (light->GetRole() != LightRole::None) entry["role"] = light->GetRole();   // absent = an ordinary light
         entry["color"] = light->GetColor();
         entry["intensity"] = light->GetIntensity();
         if (!light->IsDirectional()) entry["range"] = light->GetRange();
@@ -256,6 +258,7 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
         water->SetSettings(loaded);
     } else if (auto* sky = dynamic_cast<Skybox*>(&object)) {
         sky->SetIntensity(entry.value("intensity", 1.0f));
+        if (!sky->SetMode(entry.value("mode", SkyMode::Cubemap))) warnings.push_back("The procedural sky could not be created: the sky stays a cubemap.");
         // Absent keys mean the defaults (no turn, no tint, active): matters for undo, and for scenes saved before these existed.
         if (entry.contains("name") && entry["name"].is_string()) sky->SetName(entry["name"].get<std::string>());
         sky->SetActive(entry.value("active", true));
@@ -275,6 +278,7 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
     } else if (auto* light = dynamic_cast<LightObject*>(&object)) {
         // The kind first: the transform (applied after this) only takes a rotation for a directional light.
         light->SetKind(entry.value("kind", LightKind::Point));
+        light->SetRole(entry.value("role", LightRole::None));
         if (entry.contains("name") && entry["name"].is_string()) light->SetName(entry["name"].get<std::string>());
         light->SetColor(entry.value("color", DirectX::XMFLOAT3(1.0f, 0.85f, 0.6f)));
         light->SetIntensity(entry.value("intensity", 2.0f));

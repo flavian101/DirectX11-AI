@@ -154,6 +154,7 @@ void WaterSettings::Clamp()
 	bodyType = static_cast<WaterBodyType>(std::clamp(static_cast<int>(bodyType), 0, 3));
 	flowSpeed = std::clamp(flowSpeed, 0.0f, kFlowSpeedMax);
 	shoreWaves = clamp01(shoreWaves);
+	underwater.Clamp();
 	swash = std::clamp(swash, 0.0f, kSwashMax);
 	flowAngle = std::fmod(flowAngle, 360.0f);   // an angle: wrap into (-180, 180] instead of clamping
 	if (flowAngle > 180.0f) flowAngle -= 360.0f;

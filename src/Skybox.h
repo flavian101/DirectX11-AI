@@ -3,10 +3,14 @@
 #include "SceneObject.h"
 #include "Texture.h"
 #include "Material.h"
+#include "ProceduralSky.h"
 #include <DirectXMath.h>
 #include <array>
 #include <memory>
 #include <string>
+
+// Where the sky comes from. Saved by name (see SceneJson.h): only ever ADD to the end.
+enum class SkyMode : int { Cubemap = 0, Procedural = 1 };
 
 class Skybox final : public SceneObject {
 public:
@@ -25,7 +29,18 @@ public:
 	DirectX::XMFLOAT3 GetSortPosition() const override { return {}; }
 	bool IsValid() const;
 	float GetIntensity() const { return intensity_; }
-	ID3D11ShaderResourceView* GetCubemapView() const { return cubemap_ ? cubemap_->GetShaderResourceView() : nullptr; }
+	// The cube map that stands for this sky: the loaded images, or (Procedural) the cube drawn from the time of day. The water's
+	// mirror and the sky lighting bake read this.
+	ID3D11ShaderResourceView* GetCubemapView() const;
+
+	// Cubemap: six images from a folder (below). Procedural: a sky computed from the time of day (SkyModel.h): a gradient, a sunrise
+	// and sunset glow, the sun and moon, stars. It lives in world space, so it does not turn with Rotation.
+	SkyMode GetMode() const { return mode_; }
+	bool IsProcedural() const { return mode_ == SkyMode::Procedural; }
+	bool SetMode(SkyMode mode);   // false (and no change) if the procedural sky could not be created
+	// Once per frame, outside any render pass: gives a procedural sky this frame's colours. True when its cube was redrawn, and the
+	// sky lighting must be baked again. Does nothing for a cubemap sky.
+	bool UpdateProcedural(ID3D11Device* device, ID3D11DeviceContext* ctx, const SkyModel::Params& params, float minSecondsBetweenRedraws) const;
 	void SetIntensity(float intensity);
 
 	// Turning and tinting the sky. Both are applied when the sky is LOOKED UP (see SkyDirection in common.hlsli), so neither
@@ -56,6 +71,8 @@ public:
 private:
 	std::unique_ptr<Renderable> renderable_;
 	std::unique_ptr<Texture> cubemap_;
+	std::unique_ptr<ProceduralSky> procedural_;   // made the first time the mode is Procedural
+	SkyMode mode_ = SkyMode::Cubemap;
 	Material material_;
 	float intensity_ = 1.0f;
 	float yawDegrees_ = 0.0f;

@@ -103,7 +103,7 @@ float4 main(PS_IN input) : SV_Target
         const float3 bent = refract(-V, downNormal, 1.33f);
         const float3 skyDirection = dot(bent, bent) > 1e-4f ? normalize(bent) : float3(0.0f, 1.0f, 0.0f);
         const float3 skySeen = environmentMap.SampleLevel(linearSampler, SkyDirection(skyDirection), 1.0f).rgb * skyTint.rgb * skyTint.w;
-        const float3 mirror = fogColor.rgb * 0.9f;
+        const float3 mirror = fogColor.rgb * fogExtra.w;   // underwater, fogExtra.w is the surface mirror's brightness (Underwater settings)
         const float3 underColor = lerp(mirror, skySeen, window);
         const float underAlpha = lerp(1.0f, 0.9f, window);   // the window lets a little of what is above the water through
         float3 underFog;

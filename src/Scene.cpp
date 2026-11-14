@@ -8,6 +8,7 @@
 #include "Skybox.h"
 #include "Water.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <vector>
 
@@ -150,6 +151,10 @@ void Scene::ProcessInput(const InputState& input, float dt)
 void Scene::Update(float dt)
 {
     time_ += dt;
+    // The time of day: runs by itself when Animate is set; otherwise it stands at the saved hour (so dragging the slider is immediate).
+    // The saved hour is never changed here: the clock does not edit the scene, only the person does.
+    if (weather_.timeOfDay.enabled && weather_.timeOfDay.animate) clockHour_ = TimeOfDay::AdvanceHour(clockHour_, dt, weather_.timeOfDay.dayLengthMinutes);
+    else clockHour_ = weather_.timeOfDay.hour;
     for (auto& obj : objects_) if (obj) obj->Update(dt);
     // The scene's wind goes to every water body that follows it (each rebuilds its waves only if the wind changed).
     weather_.Clamp();
@@ -273,31 +278,68 @@ void Scene::PrepareEnvironment(ID3D11DeviceContext* ctx) const
 {
     const Skybox* skybox = GetSkybox();
     if (!ctx || !skybox || !skybox->IsValid()) return;
-    ID3D11ShaderResourceView* sky = skybox->GetCubemapView();
-    if (environmentLighting_.IsBaked() && environmentLighting_.GetSource() == sky) return;   // up to date
-
     ID3D11Device* device = nullptr;
-    ctx->GetDevice(&device);
-    if (device) {
-        environmentLighting_.Bake(device, ctx, sky);
-        device->Release();   // GetDevice added a reference
+    ctx->GetDevice(&device);   // adds a reference: released below
+    if (!device) return;
+
+    // A procedural sky is redrawn (a few times a second, only while it changes) into its own cube map. The cube keeps its address,
+    // so "the source is the same" no longer means "nothing changed": the redraw itself says the lighting must be baked again.
+    const auto started = std::chrono::steady_clock::now();
+    bool skyRedrawn = false;
+    if (skybox->IsProcedural()) {
+        SkyModel::Params params;
+        BuildSkyParams(params);
+        skyRedrawn = skybox->UpdateProcedural(device, ctx, params, weather_.timeOfDay.skyUpdateSeconds);
     }
+
+    ID3D11ShaderResourceView* sky = skybox->GetCubemapView();
+    const bool sameSource = environmentLighting_.IsBaked() && environmentLighting_.GetSource() == sky;
+    if (sameSource && !skyRedrawn) { device->Release(); return; }   // up to date
+    environmentLighting_.Bake(device, ctx, sky, /*refresh=*/sameSource, /*fast=*/skybox->IsProcedural());
+    device->Release();
+    if (skyRedrawn) lastSkyUpdateMs_ = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - started).count();
 }
 
 // How strong a directional light is, for choosing which one is the sun: strength times how bright its colour is.
-static float DirectionalStrength(const LightObject& light)
+static float DirectionalStrength(const Scene::EffectiveLight& light)
 {
-    const DirectX::XMFLOAT3 c = SrgbToLinear(light.GetColor());
-    return light.GetIntensity() * (0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z);
+    const DirectX::XMFLOAT3 c = SrgbToLinear(light.color);
+    return light.intensity * (0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z);
+}
+
+Scene::EffectiveLight Scene::GetEffectiveLight(const LightObject& light) const
+{
+    EffectiveLight effective;
+    effective.direction = light.GetDirection();
+    effective.color = light.GetColor();
+    effective.intensity = light.GetIntensity();
+
+    const TimeOfDaySettings& clock = weather_.timeOfDay;
+    if (!clock.enabled || !light.IsDirectional() || light.GetRole() == LightRole::None) return effective;
+
+    const LightAngles::Vec3 toSun = TimeOfDay::SunToLight(clock, clockHour_);
+    effective.driven = true;
+    if (light.GetRole() == LightRole::Sun) {
+        effective.direction = { -toSun.x, -toSun.y, -toSun.z };
+        const TimeOfDay::Rgb color = TimeOfDay::SunColor({ light.GetColor().x, light.GetColor().y, light.GetColor().z }, toSun.y);
+        effective.color = { color.r, color.g, color.b };
+        effective.intensity = light.GetIntensity() * TimeOfDay::SunFactor(toSun.y);
+    } else {   // the moon: opposite the sun, so it travels the way the sun is "toward"
+        effective.direction = { toSun.x, toSun.y, toSun.z };
+        effective.intensity = light.GetIntensity() * TimeOfDay::MoonFactor(-toSun.y, toSun.y);
+    }
+    return effective;
 }
 
 const LightObject* Scene::PrimaryDirectional() const
 {
     const LightObject* best = nullptr;
+    float bestStrength = 0.0f;
     for (const auto& object : objects_) {
         const auto* light = dynamic_cast<const LightObject*>(object.get());
         if (!light || !light->IsDirectional()) continue;
-        if (!best || DirectionalStrength(*light) > DirectionalStrength(*best)) best = light;
+        const float strength = DirectionalStrength(GetEffectiveLight(*light));
+        if (!best || strength > bestStrength) { best = light; bestStrength = strength; }
     }
     return best;
 }
@@ -305,13 +347,14 @@ const LightObject* Scene::PrimaryDirectional() const
 int Scene::DirectionalRank(const LightObject& light) const
 {
     if (!light.IsDirectional()) return -1;
+    const float mine = DirectionalStrength(GetEffectiveLight(light));
     int stronger = 0;
     for (const auto& object : objects_) {
         const auto* other = dynamic_cast<const LightObject*>(object.get());
         if (!other || other == &light || !other->IsDirectional()) continue;
-        const float a = DirectionalStrength(*other), b = DirectionalStrength(light);
+        const float theirs = DirectionalStrength(GetEffectiveLight(*other));
         // Equal strength: the one earlier in the scene wins, the same way ApplyLights chooses.
-        if (a > b || (a == b && other->GetId() < light.GetId())) ++stronger;
+        if (theirs > mine || (theirs == mine && other->GetId() < light.GetId())) ++stronger;
     }
     return stronger;
 }
@@ -325,25 +368,62 @@ std::vector<LightObject*> Scene::GetLights()
     return lights;
 }
 
+float Scene::SurfaceLightStrength() const
+{
+    float total = 0.0f;
+    for (const auto& object : objects_) {
+        const auto* light = dynamic_cast<const LightObject*>(object.get());
+        if (!light || !light->IsDirectional()) continue;
+        const EffectiveLight effective = GetEffectiveLight(*light);
+        const float overhead = std::clamp(-effective.direction.y * 3.0f, 0.0f, 1.0f);   // a light low in the sky barely reaches under the water
+        total += DirectionalStrength(effective) * overhead;
+    }
+    return total;
+}
+
+void Scene::BuildSkyParams(SkyModel::Params& out) const
+{
+    const TimeOfDaySettings& clock = weather_.timeOfDay;
+    SkyModel::Look look;
+    look.sunSize = clock.sunSize; look.moonSize = clock.moonSize; look.starBrightness = clock.starBrightness;
+    look.sunsetStrength = clock.sunsetStrength; look.skyBrightness = clock.skyBrightness;
+
+    LightAngles::Vec3 toSun = TimeOfDay::SunToLight(clock, clockHour_);
+    LightAngles::Vec3 toMoon = { -toSun.x, -toSun.y, -toSun.z };
+    bool moon = true;
+    if (!clock.enabled) {
+        // No clock: the sky follows the sun light, so what you see matches how the scene is lit. No moon.
+        moon = false;
+        const LightObject* sun = PrimaryDirectional();
+        if (sun) {
+            const DirectX::XMFLOAT3 d = GetEffectiveLight(*sun).direction;
+            toSun = { -d.x, -d.y, -d.z };
+        }
+    }
+    out = SkyModel::Evaluate(toSun, moon, toMoon, look);
+}
+
 void Scene::ApplyLights(ID3D11DeviceContext* ctx) const
 {
     if (!lights_) return;
     // The two strongest directional lights: the first is the sun (shadows), the second lights without shadows.
-    const LightObject* first = nullptr;
-    const LightObject* second = nullptr;
+    struct Directional { const LightObject* light; EffectiveLight effective; };
+    Directional first{ nullptr, {} }, second{ nullptr, {} };
     std::vector<const LightObject*> points;
     for (const auto& object : objects_) {
         const auto* light = dynamic_cast<const LightObject*>(object.get());
         if (!light) continue;
         if (!light->IsDirectional()) { points.push_back(light); continue; }
-        if (!first || DirectionalStrength(*light) > DirectionalStrength(*first)) { second = first; first = light; }
-        else if (!second || DirectionalStrength(*light) > DirectionalStrength(*second)) second = light;
+        Directional candidate{ light, GetEffectiveLight(*light) };
+        const float strength = DirectionalStrength(candidate.effective);
+        if (!first.light || strength > DirectionalStrength(first.effective)) { second = first; first = candidate; }
+        else if (!second.light || strength > DirectionalStrength(second.effective)) second = candidate;
     }
-    auto copyDirectional = [](DirectionalLight& target, const LightObject* source) {
-        if (!source) { target.intensity = 0.0f; return; }   // no light of this kind: it contributes nothing
-        target.direction = source->GetDirection();
-        target.color = source->GetColor();
-        target.intensity = source->GetIntensity();
+    auto copyDirectional = [](DirectionalLight& target, const Directional& source) {
+        if (!source.light) { target.intensity = 0.0f; return; }   // no light of this kind: it contributes nothing
+        target.direction = source.effective.direction;
+        target.color = source.effective.color;
+        target.intensity = source.effective.intensity;
     };
     copyDirectional(lights_->Directional(), first);
     copyDirectional(lights_->Secondary(), second);
@@ -367,31 +447,41 @@ void Scene::FillFogFrameData(FrameData& frame) const
 {
     const DirectX::XMFLOAT3 camera = camera_.GetPosition();
 
-    // Under water the water body is the medium: thick, coloured by the body's own colours, getting darker with depth.
-    const Water* water = FindWaterAt(camera.x, camera.y, camera.z);
+    // Under water the water body is the medium: thick, coloured by the body's own colours (or its Underwater settings), darker with
+    // depth and at night. The editor can also ask to PREVIEW this from above, to tune it without diving.
+    const Water* water = nullptr;
+    float depth = 0.0f;
+    if (const Water* found = FindWaterAt(camera.x, camera.y, camera.z)) {
+        const float surface = found->SampleHeight(camera.x, camera.z, time_);
+        if (camera.y < surface) { water = found; depth = surface - camera.y; }
+    }
+    if (!water && underwaterPreviewId_ != 0) {
+        water = dynamic_cast<const Water*>(Find(underwaterPreviewId_));
+        depth = underwaterPreviewDepth_;
+    }
     if (water) {
-        const float surface = water->SampleHeight(camera.x, camera.z, time_);
-        if (camera.y < surface) {
-            const WaterSettings& settings = water->GetSettings();
-            const float depth = surface - camera.y;
-            const float absorption = (std::max)(settings.absorption, 0.02f);
-            const DirectX::XMFLOAT3 shallow = SrgbToLinear(settings.shallowColor);
-            const DirectX::XMFLOAT3 deep = SrgbToLinear(settings.color);
-            const float blend = (std::min)(depth * absorption * 0.15f, 1.0f);   // shallow colour near the surface, deep colour far down
-            const LightObject* sun = PrimaryDirectional();
-            const float sunLevel = sun ? (std::min)(0.3f + 0.5f * DirectionalStrength(*sun), 1.6f) : 0.3f;   // night under water is dark
-            const float dim = sunLevel * std::exp(-depth * absorption * 0.1f);
-            frame.fogParams = DirectX::XMFLOAT4(absorption * 0.6f, 0.0f, 0.0f, 0.0f);
-            frame.fogColor = DirectX::XMFLOAT4((shallow.x + (deep.x - shallow.x) * blend) * dim, (shallow.y + (deep.y - shallow.y) * blend) * dim,
-                                               (shallow.z + (deep.z - shallow.z) * blend) * dim, 1.0f);
-            frame.fogExtra = DirectX::XMFLOAT4(0.0f, 0.0f, 1.0f, 0.0f);
-            return;
-        }
+        const WaterSettings& settings = water->GetSettings();
+        UnderwaterBody body;
+        body.shallowColor = { settings.shallowColor.x, settings.shallowColor.y, settings.shallowColor.z };
+        body.deepColor = { settings.color.x, settings.color.y, settings.color.z };
+        body.absorption = settings.absorption;
+        const UnderwaterLook look = UnderwaterMath::Compute(settings.underwater, body, depth, SurfaceLightStrength());
+        frame.fogParams = DirectX::XMFLOAT4(look.density, look.startDistance, 0.0f, 0.0f);
+        frame.fogColor = DirectX::XMFLOAT4(look.color[0], look.color[1], look.color[2], 1.0f);
+        frame.fogExtra = DirectX::XMFLOAT4(look.sunGlow, 0.0f, 1.0f, look.surfaceMirror);
+        return;
     }
 
     const FogSettings& fog = weather_.fog;
     if (!fog.enabled) return;   // FrameData's defaults are "no fog"
-    const DirectX::XMFLOAT3 color = SrgbToLinear(DirectX::XMFLOAT3(fog.color[0], fog.color[1], fog.color[2]));
+    DirectX::XMFLOAT3 color = SrgbToLinear(DirectX::XMFLOAT3(fog.color[0], fog.color[1], fog.color[2]));
+    // With a procedural sky the fog can take the colour of the sky's horizon, so it is dark at night and orange at sunset.
+    const Skybox* skybox = GetSkybox();
+    if (fog.followSky && skybox && skybox->IsProcedural()) {
+        SkyModel::Params sky;
+        BuildSkyParams(sky);
+        color = { sky.horizon[0], sky.horizon[1], sky.horizon[2] };
+    }
     frame.fogParams = DirectX::XMFLOAT4(fog.Density(), fog.startDistance, fog.heightFalloff, fog.baseHeight);
     frame.fogColor = DirectX::XMFLOAT4(color.x * fog.brightness, color.y * fog.brightness, color.z * fog.brightness, fog.maxOpacity);
     frame.fogExtra = DirectX::XMFLOAT4(fog.sunGlow, fog.skyBlend, 0.0f, 0.0f);
@@ -404,8 +494,9 @@ void Scene::FillEnvironmentFrameData(FrameData& frame) const
     // The sky's turn and tint reach every shader that looks the sky up (the water's mirror of it works even before the
     // baked lighting exists). FrameData's defaults are "no turn, no tint".
     if (skybox) {
-        const float yaw = DirectX::XMConvertToRadians(skybox->GetYawDegrees());
-        frame.skyParams = DirectX::XMFLOAT4(std::cos(yaw), std::sin(yaw), 0.0f, 0.0f);
+        // A procedural sky lives in world space (its sun is where the sun light is): it never turns.
+        const float yaw = skybox->IsProcedural() ? 0.0f : DirectX::XMConvertToRadians(skybox->GetYawDegrees());
+        frame.skyParams = DirectX::XMFLOAT4(std::cos(yaw), std::sin(yaw), skybox->IsProcedural() ? 1.0f : 0.0f, 0.0f);
         const DirectX::XMFLOAT3 tint = SrgbToLinear(skybox->GetTint());
         frame.skyTint = DirectX::XMFLOAT4(tint.x, tint.y, tint.z, skybox->GetIntensity());
     }

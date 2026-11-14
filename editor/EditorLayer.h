@@ -59,6 +59,9 @@ private:
     void DrawObjectInspector(SceneObject* object);
     void DrawCameraInspector();
     void DrawPostInspector();      // exposure, tone mapping, gamma
+    void DrawTimeOfDayInspector();   // the clock, the sun and moon path, and how the procedural sky looks
+    bool SetSkyMode(Skybox* sky, SkyMode mode);   // Cubemap <-> Procedural: ONE undo step
+    float underwaterPreviewDepth_ = 3.0f;   // the water inspector's "preview from above" depth, in metres
     void DrawWeatherInspector();   // the scene's wind (and, later, fog and rain)
     void DrawLightsInspector();
     void DrawShadowInspector();

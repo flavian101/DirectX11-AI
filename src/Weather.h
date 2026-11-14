@@ -2,6 +2,7 @@
 // The weather of the whole scene (lesson 35). Wind is not a property of one water body: it moves the sea, the grass, the
 // smoke and the clouds. So it lives here, once, and everything that is blown about reads it. (Fog and rain will join it.)
 // Not to be confused with EnvironmentSettings, which is the sky's LIGHTING.
+#include "TimeOfDay.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -28,6 +29,7 @@ struct WindSettings {
 struct FogSettings {
 	bool enabled = false;
 	std::array<float, 3> color = { 0.66f, 0.74f, 0.86f };   // what the picker shows (sRGB)
+	bool followSky = true;         // with a procedural sky: the fog takes the sky's horizon colour (so it is dark at night, orange at sunset) instead of `color`
 	float brightness = 1.0f;       // multiplies the colour: the scene is HDR, so fog in strong sun may need to be brighter than 1
 	float visibility = 400.0f;     // distance at which the fog hides 95% of what is behind it (density = 3 / visibility)
 	float startDistance = 0.0f;    // nothing nearer than this is fogged
@@ -56,7 +58,8 @@ struct FogSettings {
 struct WeatherSettings {
 	WindSettings wind;
 	FogSettings fog;
-	void Clamp() { wind.Clamp(); fog.Clamp(); }
+	TimeOfDaySettings timeOfDay;
+	void Clamp() { wind.Clamp(); fog.Clamp(); timeOfDay.Clamp(); }
 };
 
 // How much taller than its own setting a water body's waves are under this wind. Only the height follows the wind's

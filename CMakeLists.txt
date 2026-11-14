@@ -107,6 +107,7 @@ add_library(Engine STATIC
 	src/Skybox.cpp
 	src/SkyFaces.cpp
 	src/LightObject.cpp
+	src/ProceduralSky.cpp
 	src/EnvironmentLighting.cpp
 	src/libs/stb_image.cpp
 )
@@ -211,6 +212,13 @@ if(BUILD_TESTS)
     add_executable(LightAnglesTests tests/light_angles_test.cpp)
     target_include_directories(LightAnglesTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME LightAngles COMMAND LightAnglesTests)
+    # The sun's path, the light fades and the procedural sky's colours; and the underwater fog look. Pure maths: no GPU.
+    add_executable(TimeOfDayTests tests/time_of_day_test.cpp)
+    target_include_directories(TimeOfDayTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME TimeOfDay COMMAND TimeOfDayTests)
+    add_executable(UnderwaterLookTests tests/underwater_look_test.cpp)
+    target_include_directories(UnderwaterLookTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME UnderwaterLook COMMAND UnderwaterLookTests)
     add_executable(ImageDownscaleTests tests/image_downscale_test.cpp)
     target_include_directories(ImageDownscaleTests PRIVATE ${CMAKE_SOURCE_DIR}/editor)
     add_test(NAME ImageDownscale COMMAND ImageDownscaleTests)

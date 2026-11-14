@@ -8,6 +8,7 @@
 #include "ModelObject.h"
 #include "ScatterObject.h"
 #include "ShadowMap.h"
+#include "Skybox.h"
 #include "SurfaceMaterial.h"
 #include "Terrain.h"
 #include "Water.h"
@@ -34,6 +35,8 @@ NLOHMANN_JSON_SERIALIZE_ENUM(WaterShape, { { WaterShape::Rectangle, "rectangle" 
 NLOHMANN_JSON_SERIALIZE_ENUM(WaterBodyType, { { WaterBodyType::Ocean, "ocean" }, { WaterBodyType::Lake, "lake" },
                                               { WaterBodyType::River, "river" }, { WaterBodyType::Pond, "pond" },
                                               { WaterBodyType::Custom, "custom" } })
+NLOHMANN_JSON_SERIALIZE_ENUM(LightRole, { { LightRole::None, "none" }, { LightRole::Sun, "sun" }, { LightRole::Moon, "moon" } })
+NLOHMANN_JSON_SERIALIZE_ENUM(SkyMode, { { SkyMode::Cubemap, "cubemap" }, { SkyMode::Procedural, "procedural" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(LightKind, { { LightKind::Directional, "directional" }, { LightKind::Point, "point" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(WindSource, { { WindSource::Scene, "scene" }, { WindSource::Custom, "custom" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, { ReflectionMode::PlanarHalf, "planar_half" },
@@ -45,8 +48,9 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PostSettings, srgbEncode, exposureEV, toneMapper)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ShadowSettings, enabled, resolution, depthBias, slopeBias, normalOffset, strength)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WindSettings, direction, strength)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FogSettings, enabled, color, brightness, visibility, startDistance, heightFalloff, baseHeight, sunGlow, skyBlend, maxOpacity)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WeatherSettings, wind, fog)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FogSettings, enabled, color, followSky, brightness, visibility, startDistance, heightFalloff, baseHeight, sunGlow, skyBlend, maxOpacity)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TimeOfDaySettings, enabled, hour, animate, dayLengthMinutes, noonAzimuth, maxElevation, sunSize, moonSize, starBrightness, sunsetStrength, skyBrightness, skyUpdateSeconds)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WeatherSettings, wind, fog, timeOfDay)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(EnvironmentSettings, enabled, diffuseIntensity, specularIntensity)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DirectionalLight, direction, color, intensity)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PointLight, position, color, intensity, range)
@@ -54,12 +58,13 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SurfaceSettings, baseColor, alph
                                                 roughnessScale, metallicScale, fallbackRoughness, fallbackMetallic, aoStrength,
                                                 emissiveIntensity)
 // (WaterSettings::debugView and ::wireframe are debug-only and deliberately not listed.)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(UnderwaterSettings, custom, shallowColor, deepColor, visibility, colorDepth, lightDepth, brightness, nightBrightness, sunGlow, startDistance, surfaceMirror)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpeed, flowAngle, shoreWaves, swash, height, size, sizeZ, shape, color, alpha, shallowColor, absorption, fadeDistance,
                                                 foamDistance, foamStrength, waveAmplitude, waveSpeed, waveFrequency, windSource, windDirection, shoreShelter,
                                                 directionalSpread, choppiness, waveCount, waveStyle, waveRoughness, swell, swellAngle, swellLength, waveGroups, waveSeed, detailNormal, detailScale, detailDistance,
                                                 reflectivity, reflectionMode, reflectionDistortion, refraction, scatter,
                                                 glintStrength, glintSharpness, crestFoam, crestFoamThreshold,
-                                                meshDetail, lodDistance, frustumCulling)
+                                                meshDetail, lodDistance, frustumCulling, underwater)
 // Culling and level of detail of a model (lesson 31), and the scatter that grows trees and rocks on the terrain.
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ModelRenderSettings, frustumCulling, lodEnabled, lodBias, lodScreen, cullScreen)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FloatingSettings, enabled, draft, responsiveness, damping, tilt, hullMask, maskPart, maskHeight, maskInset)

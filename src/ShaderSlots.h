@@ -9,6 +9,8 @@ namespace Slots {
     constexpr unsigned int kCbPerObject = 2;  // world, material             -> Renderable
     constexpr unsigned int kCbPost      = 3;  // post-process settings (PS)  -> PostProcess
     constexpr unsigned int kCbMaterial  = 4;  // material-specific block     -> Renderable::SetMaterialBlock
+    constexpr unsigned int kCbBake      = 5;  // one IBL bake / sky-cube draw (PS) -> EnvironmentLighting, ProceduralSky
+    constexpr unsigned int kCbSky       = 6;  // procedural sky colours (PS) -> ProceduralSky (shaders/sky_procedural.hlsli)
 
     // Shader resource views (PS)
     constexpr unsigned int kSrvAlbedo      = 0;  // Texture2D / skybox TextureCube, set per draw

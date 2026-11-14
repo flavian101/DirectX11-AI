@@ -126,7 +126,8 @@ void DrawLightMarkers(ImDrawList* list, const Scene& scene, SceneObjectId select
         ImVec2 center;
         if (!ProjectPoint(light->GetPosition(), view, projection, x, y, width, height, center)) continue;
         const bool selected = light->GetId() == selectedId;
-        const XMFLOAT3 c = light->GetColor();
+        const Scene::EffectiveLight shining = scene.GetEffectiveLight(*light);   // follows the clock for a sun or moon
+        const XMFLOAT3 c = shining.color;
         auto channel = [](float v) { return static_cast<int>((0.35f + 0.65f * v) * 255.0f); };   // pulled toward white so a dark colour still shows
         const ImU32 tint = IM_COL32(channel(c.x), channel(c.y), channel(c.z), 255);
         const float radius = 14.0f;
@@ -136,7 +137,7 @@ void DrawLightMarkers(ImDrawList* list, const Scene& scene, SceneObjectId select
         if (!selected) continue;
 
         if (light->IsDirectional()) {
-            const XMFLOAT3 d = light->GetDirection();
+            const XMFLOAT3 d = shining.direction;
             const XMFLOAT3 p = light->GetPosition();
             ImVec2 tip;
             if (ProjectPoint({ p.x + d.x * 8.0f, p.y + d.y * 8.0f, p.z + d.z * 8.0f }, view, projection, x, y, width, height, tip)) {
@@ -832,6 +833,7 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
             RecordAdded(cube, "Add cube");
         }
     }
+    if (scene_->GetUnderwaterPreview() != 0 && selectedId_ != scene_->GetUnderwaterPreview()) scene_->SetUnderwaterPreview(0, underwaterPreviewDepth_);   // the preview is for tuning the selected water
     if (addLightKind_ >= 0) {
         const int kind = addLightKind_;
         addLightKind_ = -1;
@@ -2271,6 +2273,7 @@ void EditorLayer::DrawSceneSettingsPanel()
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Lighting")) { DrawLightsInspector(); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Time of Day")) { DrawTimeOfDayInspector(); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Post")) { DrawPostInspector(); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Weather")) { DrawWeatherInspector(); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Camera")) { DrawCameraInspector(); ImGui::EndTabItem(); }
@@ -2345,11 +2348,27 @@ void EditorLayer::DrawLightInspector(LightObject* light)
     ImGui::SetItemTooltip("The scene is HDR: a sun is around 2.5, far above 1 = white. The tone mapper (Camera tab) brings it back.");
 
     if (light->IsDirectional()) {
+        static const char* const kRoles[] = { "None (an ordinary light)", "Sun", "Moon" };
+        int role = static_cast<int>(light->GetRole());
+        if (ImGui::Combo("Time of day role", &role, kRoles, IM_ARRAYSIZE(kRoles))) light->SetRole(static_cast<LightRole>(role));
+        ImGui::SetItemTooltip("Sun or Moon: while the time of day is on (Time of Day tab), this light follows the clock: it rises and sets, and fades and\nchanges colour with its height. Its own colour and intensity are then its NOON values.");
+
+        const Scene::EffectiveLight shining = scene_->GetEffectiveLight(*light);
         float azimuth = light->GetAzimuth(), elevation = light->GetElevation();
+        if (shining.driven) {
+            float nowAzimuth = 0.0f, nowElevation = 0.0f;
+            LightAngles::FromTravel({ shining.direction.x, shining.direction.y, shining.direction.z }, nowAzimuth, nowElevation);
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "Following the clock (%s): azimuth %.0f, elevation %.0f deg, strength %.2f",
+                               TimeOfDay::FormatHour(scene_->GetClockHour()).c_str(), nowAzimuth, nowElevation, shining.intensity);
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::BeginDisabled(shining.driven);   // the clock sets the aim: the sliders would do nothing
         bool aimed = ImGui::SliderFloat("Azimuth", &azimuth, 0.0f, 360.0f, "%.0f deg");
         ImGui::SetItemTooltip("Which way round the compass the light is, in the sky. 0 = toward +X, 90 = toward +Z (the wind's convention).");
         aimed = ImGui::SliderFloat("Elevation", &elevation, -90.0f, 90.0f, "%.0f deg") || aimed;
         ImGui::SetItemTooltip("How high above the horizon: 0 = on the horizon, 90 = straight overhead. Below 0 the light shines from under the ground.");
+        ImGui::EndDisabled();
         if (aimed) light->SetAngles(azimuth, elevation);
 
         const int rank = scene_->DirectionalRank(*light);
@@ -2995,6 +3014,57 @@ void EditorLayer::DrawWaterInspector(Water* water)
     }
 
     // The things you set once and rarely touch again live together, folded away.
+    if (ImGui::CollapsingHeader("Underwater")) {
+        UnderwaterSettings& u = s.underwater;
+        UnderwaterBody body;
+        body.shallowColor = { s.shallowColor.x, s.shallowColor.y, s.shallowColor.z };
+        body.deepColor = { s.color.x, s.color.y, s.color.z };
+        body.absorption = s.absorption;
+
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("How the world looks with the camera UNDER this water: the fog, its colour, and the light. Automatic matches the water's colours and absorption.");
+        ImGui::PopTextWrapPos();
+        bool custom = u.custom;
+        if (ImGui::Checkbox("Customize", &custom)) {
+            if (custom) u = UnderwaterMath::Derived(body, u);   // start from exactly what you were seeing
+            else u.custom = false;                              // the custom numbers are kept for next time
+            changed = true;
+        }
+        ImGui::SetItemTooltip("Off: derived from this water's colours and Absorption. On: you set them here (they start at the automatic values).");
+
+        ImGui::BeginDisabled(!u.custom);
+        changed |= ImGui::ColorEdit3("Near the surface", u.shallowColor.data());
+        changed |= ImGui::ColorEdit3("Far down", u.deepColor.data());
+        changed |= ImGui::SliderFloat("Visibility", &u.visibility, 1.0f, 200.0f, "%.1f m", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("How far you can see. The fog hides 95%% of what is this far away: murky pond about 3, clear ocean 30 or more.");
+        changed |= ImGui::SliderFloat("Colour depth", &u.colorDepth, 0.5f, 100.0f, "%.1f m", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("The depth over which the near-the-surface colour turns into the far-down one.");
+        changed |= ImGui::SliderFloat("Light depth", &u.lightDepth, 1.0f, 200.0f, "%.1f m", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("The depth at which the light has dimmed to about a third. Smaller = it gets dark quickly as you dive.");
+        ImGui::EndDisabled();
+
+        ImGui::SeparatorText("Light and surface");
+        changed |= ImGui::SliderFloat("Brightness", &u.brightness, 0.0f, 3.0f, "%.2f");
+        ImGui::SetItemTooltip("How much light reaches under the surface in daylight.");
+        changed |= ImGui::SliderFloat("Night brightness", &u.nightBrightness, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("The light level when no sun or moon is up. 0 = pitch dark.");
+        changed |= ImGui::SliderFloat("Sun glow", &u.sunGlow, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Looking up toward the sun glows with its colour.");
+        changed |= ImGui::SliderFloat("Clear radius", &u.startDistance, 0.0f, 30.0f, "%.1f m");
+        ImGui::SetItemTooltip("Nothing nearer than this is fogged: a bubble of clear water around the camera.");
+        changed |= ImGui::SliderFloat("Surface from below", &u.surfaceMirror, 0.0f, 2.0f, "%.2f");
+        ImGui::SetItemTooltip("How bright the surface looks from underneath, outside the round window onto the sky.");
+
+        // Tune it without diving: look at the whole scene as if the camera were under this water.
+        bool previewing = scene_->GetUnderwaterPreview() == water->GetId();
+        if (ImGui::Checkbox("Preview from above", &previewing)) scene_->SetUnderwaterPreview(previewing ? water->GetId() : 0, underwaterPreviewDepth_);
+        ImGui::SetItemTooltip("Shows the whole view as if the camera were under this water, without moving it. Not saved; it ends when you select something else.");
+        if (previewing) {
+            if (ImGui::SliderFloat("Preview depth", &underwaterPreviewDepth_, 0.0f, 60.0f, "%.1f m")) scene_->SetUnderwaterPreview(water->GetId(), underwaterPreviewDepth_);
+        }
+        u.Clamp();
+    }
+
     if (ImGui::CollapsingHeader("Advanced")) {
         if (ImGui::TreeNode("Performance")) {
             static const char* const kMeshNames[] = { "Low (16 cells per tile)", "Medium (32 cells per tile)", "High (64 cells per tile)" };
@@ -3077,6 +3147,8 @@ void EditorLayer::DrawWeatherInspector()
     ImGui::Checkbox("Fog", &fog.enabled);
     ImGui::SetItemTooltip("The farther away something is, the more it takes the fog's colour: far hills melt into the sky.");
     ImGui::BeginDisabled(!fog.enabled);
+    ImGui::Checkbox("Follow the sky colour", &fog.followSky);
+    ImGui::SetItemTooltip("With a procedural sky: the fog takes the colour of the sky's horizon, so it is dark at night and orange at sunset.\nWith any other sky, the Colour below is used.");
     ImGui::ColorEdit3("Colour##fog", fog.color.data());
     ImGui::SetItemTooltip("Pick something close to the sky's horizon colour: the sky's horizon is blended toward it (Horizon blend).");
     ImGui::SliderFloat("Brightness##fog", &fog.brightness, 0.0f, 4.0f, "%.2f");
@@ -3262,6 +3334,106 @@ void EditorLayer::DrawSkiesSection()
     ImGui::TextDisabled("%d %s in this scene.", static_cast<int>(count), count == 1 ? "sky" : "skies");
 }
 
+bool EditorLayer::SetSkyMode(Skybox* sky, SkyMode mode)
+{
+    if (!sky || sky->GetMode() == mode) return true;
+    const std::string before = CaptureObjectState(*sky);
+    if (!sky->SetMode(mode)) {
+        ShowMessage("Could not switch the sky", "The procedural sky could not be created. See the log for the Direct3D error.");
+        return false;
+    }
+    const std::string after = CaptureObjectState(*sky);
+    RecordPropertyChange(sky->GetId(), mode == SkyMode::Procedural ? "Procedural sky" : "Cubemap sky", before, after);
+    objectDetector_.Reset();
+    scene_->InvalidateEnvironment();   // a different sky: the lighting is baked from the new one next frame
+    return true;
+}
+
+void EditorLayer::DrawTimeOfDayInspector()
+{
+    TimeOfDaySettings& tod = scene_->GetWeather().timeOfDay;
+    ImGui::SeparatorText("Clock");
+    ImGui::Checkbox("Follow the clock", &tod.enabled);
+    ImGui::SetItemTooltip("On: the lights that have a Sun or Moon role rise and set with the time, and fade and change colour with their height.\nA procedural sky shows the same sun, moon and stars.\nOff: every light stays exactly as you set it.");
+
+    // The time itself. While the clock runs this shows where it is; dragging jumps it.
+    float hour = (tod.enabled && tod.animate) ? scene_->GetClockHour() : tod.hour;
+    const LightAngles::Vec3 sunNow = TimeOfDay::SunToLight(tod, hour);
+    const std::string timeText = TimeOfDay::FormatHour(hour);
+    if (ImGui::SliderFloat("Time", &hour, 0.0f, 24.0f, timeText.c_str())) {
+        tod.hour = TimeOfDay::WrapHour(hour);
+        scene_->SetClockHour(tod.hour);
+    }
+    ImGui::SetItemTooltip("Hours, 0 to 24. 6:00 is sunrise and 18:00 sunset (day and night are always 12 hours).");
+    static const struct { const char* label; float hour; } kPresets[] = { { "Dawn", 6.0f }, { "Morning", 9.0f }, { "Noon", 12.0f }, { "Dusk", 18.0f }, { "Midnight", 0.0f } };
+    for (size_t i = 0; i < IM_ARRAYSIZE(kPresets); ++i) {
+        if (i > 0) ImGui::SameLine();
+        if (ImGui::SmallButton(kPresets[i].label)) { tod.hour = kPresets[i].hour; scene_->SetClockHour(tod.hour); }
+    }
+
+    ImGui::BeginDisabled(!tod.enabled);
+    if (tod.animate) {
+        if (ImGui::Button("Pause")) { tod.hour = scene_->GetClockHour(); tod.animate = false; }   // freeze where it is
+    } else if (ImGui::Button("Play")) {
+        tod.animate = true;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::SliderFloat("##dayLength", &tod.dayLengthMinutes, 0.2f, 60.0f, "a day lasts %.1f min", ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Real minutes for a whole 24 hours. Play runs the clock by itself, in the editor and in the game.");
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Sun and moon");
+    ImGui::SliderFloat("Noon direction", &tod.noonAzimuth, 0.0f, 360.0f, "%.0f deg");
+    ImGui::SetItemTooltip("The compass direction of the sun at noon (the wind's convention: 0 = +X, 90 = +Z). It rises 90 degrees one side and sets 90 degrees the other.");
+    ImGui::SliderFloat("Noon height", &tod.maxElevation, 10.0f, 90.0f, "%.0f deg");
+    ImGui::SetItemTooltip("How high the sun climbs at noon. 90 = straight overhead (the tropics); lower = a northern or winter sun.");
+    ImGui::TextDisabled("The sun is %.0f deg %s the horizon; the moon is opposite.", std::abs(LightAngles::Degrees(std::asin(std::clamp(sunNow.y, -1.0f, 1.0f)))),
+                        sunNow.y >= 0.0f ? "above" : "below");
+
+    int sunLights = 0, moonLights = 0;
+    for (LightObject* light : scene_->GetLights()) {
+        if (!light->IsDirectional()) continue;
+        sunLights += light->GetRole() == LightRole::Sun ? 1 : 0;
+        moonLights += light->GetRole() == LightRole::Moon ? 1 : 0;
+    }
+    ImGui::PushTextWrapPos(0.0f);
+    if (tod.enabled && sunLights == 0) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "No light has the Sun role, so nothing lights the day. Add one (Add > Light > Sun) or set a directional light's \"Time of day role\" in the Inspector.");
+    }
+    if (tod.enabled && moonLights == 0) ImGui::TextDisabled("No Moon light: the nights are lit only by the sky. Add > Light > Moon adds one.");
+    ImGui::TextDisabled("%d sun light%s and %d moon light%s follow the clock.", sunLights, sunLights == 1 ? "" : "s", moonLights, moonLights == 1 ? "" : "s");
+    ImGui::PopTextWrapPos();
+
+    ImGui::SeparatorText("Sky");
+    if (Skybox* sky = scene_->GetSkybox()) {
+        ImGui::PushTextWrapPos(0.0f);
+        if (sky->IsProcedural()) {
+            ImGui::TextDisabled("The active sky (%s) is procedural: it draws the sun, the moon and the stars, and lights the scene to match.", sky->GetEditorName());
+        } else {
+            ImGui::TextDisabled("The active sky (%s) is a cubemap: its picture never changes with the time of day.", sky->GetEditorName());
+        }
+        ImGui::PopTextWrapPos();
+        if (!sky->IsProcedural() && ImGui::Button("Make the active sky procedural")) SetSkyMode(sky, SkyMode::Procedural);
+        if (sky->IsProcedural() && ImGui::Button("Back to the cubemap")) SetSkyMode(sky, SkyMode::Cubemap);
+    } else {
+        ImGui::TextDisabled("This scene has no sky.");
+    }
+    ImGui::BeginDisabled(!(scene_->GetSkybox() && scene_->GetSkybox()->IsProcedural()));
+    ImGui::SliderFloat("Sun size", &tod.sunSize, 0.2f, 6.0f, "%.2f");
+    ImGui::SliderFloat("Moon size", &tod.moonSize, 0.2f, 6.0f, "%.2f");
+    ImGui::SliderFloat("Stars", &tod.starBrightness, 0.0f, 4.0f, "%.2f");
+    ImGui::SliderFloat("Sunset glow", &tod.sunsetStrength, 0.0f, 3.0f, "%.2f");
+    ImGui::SetItemTooltip("The warm colour along the horizon at sunrise and sunset.");
+    ImGui::SliderFloat("Sky brightness", &tod.skyBrightness, 0.1f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip("Brightens or darkens the whole sky AND the light it casts on the scene.");
+    ImGui::SliderFloat("Lighting update", &tod.skyUpdateSeconds, 0.1f, 5.0f, "every %.1f s", ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("While the sky changes, the light it casts on the scene is recalculated at most this often. Raise it if a running day\ncosts frames; lower it for smoother changes in the light. The sky you SEE is always exact.");
+    if (scene_->GetLastSkyUpdateMs() > 0.0f) ImGui::TextDisabled("Last update: %.1f ms of CPU time", scene_->GetLastSkyUpdateMs());
+    ImGui::EndDisabled();
+    tod.Clamp();
+}
+
 void EditorLayer::DrawSkyboxPicker(Skybox* skybox)
 {
     namespace fs = std::filesystem;
@@ -3336,9 +3508,19 @@ void EditorLayer::DrawSkyboxInspector(Skybox* skybox)
         pendingActiveSkyId_ = skybox->GetId();
     }
 
-    ImGui::SeparatorText("Cubemap");
-    DrawSkyboxPicker(skybox);
-    if (!skybox->GetFaceScheme().empty()) ImGui::TextDisabled("Face names: %s", skybox->GetFaceScheme().c_str());
+    ImGui::SeparatorText("Source");
+    static const char* const kModes[] = { "Cubemap (six images)", "Procedural (follows the time of day)" };
+    int mode = static_cast<int>(skybox->GetMode());
+    if (ImGui::Combo("Sky", &mode, kModes, IM_ARRAYSIZE(kModes))) SetSkyMode(skybox, static_cast<SkyMode>(mode));
+    ImGui::SetItemTooltip("Cubemap: a fixed picture. Procedural: computed from the time of day (Time of Day tab): a gradient, sunrise and sunset glow, the sun, the moon and stars.");
+    if (skybox->IsProcedural()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("Drawn from the time of day: set the clock, the sun's path and how it looks in the Time of Day tab. Its sun is where the Sun light is, so it never turns with a rotation.");
+        ImGui::PopTextWrapPos();
+    } else {
+        DrawSkyboxPicker(skybox);
+        if (!skybox->GetFaceScheme().empty()) ImGui::TextDisabled("Face names: %s", skybox->GetFaceScheme().c_str());
+    }
 
     ImGui::SeparatorText("Look");
     float intensity = skybox->GetIntensity();
@@ -3346,8 +3528,10 @@ void EditorLayer::DrawSkyboxInspector(Skybox* skybox)
     ImGui::SetItemTooltip("Brightness of the sky. Dimming it dims the light it casts on the scene as well.");
 
     float yaw = skybox->GetYawDegrees();
+    ImGui::BeginDisabled(skybox->IsProcedural());   // a procedural sky lives in world space
     if (ImGui::SliderFloat("Rotation", &yaw, 0.0f, 360.0f, "%.0f deg")) skybox->SetYawDegrees(yaw);
     ImGui::SetItemTooltip("Turns the sky around the vertical axis: the background, its light and its reflections together.\nThe sun (Lighting tab) does not turn with it: aim it separately.");
+    ImGui::EndDisabled();
 
     const XMFLOAT3 tint = skybox->GetTint();
     float tintValues[3] = { tint.x, tint.y, tint.z };

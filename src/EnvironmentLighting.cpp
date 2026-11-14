@@ -59,15 +59,20 @@ bool EnvironmentLighting::CreateCube(ID3D11Device* device, UINT size, UINT mips,
     return true;
 }
 
-bool EnvironmentLighting::Bake(ID3D11Device* device, ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* sourceCube)
+bool EnvironmentLighting::Bake(ID3D11Device* device, ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* sourceCube, bool refresh, bool fast)
 {
-    Release();
     if (!device || !ctx || !sourceCube) return false;
+    const bool reuse = refresh && IsBaked();   // keep the targets and the BRDF table: only the sky-dependent maps are redrawn
+    if (reuse) SafeRelease(source_);           // the old source reference; the new one is taken at the end
+    else Release();
 
     // The full-screen triangle vertex shader is the same one the post-process uses.
-    auto irradianceShader = ShaderCache::Get(device, L"shaders/fullscreen_vs.hlsl", L"shaders/ibl_irradiance_ps.hlsl");
-    auto prefilterShader = ShaderCache::Get(device, L"shaders/fullscreen_vs.hlsl", L"shaders/ibl_prefilter_ps.hlsl");
-    auto brdfShader = ShaderCache::Get(device, L"shaders/fullscreen_vs.hlsl", L"shaders/ibl_brdf_ps.hlsl");
+    if (!irradianceShader_) irradianceShader_ = ShaderCache::Get(device, L"shaders/fullscreen_vs.hlsl", L"shaders/ibl_irradiance_ps.hlsl");
+    if (!prefilterShader_) prefilterShader_ = ShaderCache::Get(device, L"shaders/fullscreen_vs.hlsl", L"shaders/ibl_prefilter_ps.hlsl");
+    if (!brdfShader_) brdfShader_ = ShaderCache::Get(device, L"shaders/fullscreen_vs.hlsl", L"shaders/ibl_brdf_ps.hlsl");
+    const auto& irradianceShader = irradianceShader_;
+    const auto& prefilterShader = prefilterShader_;
+    const auto& brdfShader = brdfShader_;
     if (!irradianceShader || !prefilterShader || !brdfShader) {
         LOG_ERROR("IBL: bake shaders failed to load; lighting falls back to the flat ambient colour");
         return false;
@@ -89,9 +94,9 @@ bool EnvironmentLighting::Bake(ID3D11Device* device, ID3D11DeviceContext* ctx, I
     }
 
     // ---- create the targets ----
-    bool ok = CreateCube(device, kIrradianceSize, 1, irradiance_, irradianceSrv_) &&
-              CreateCube(device, kPrefilterSize, kPrefilterMips, prefiltered_, prefilteredSrv_);
-    if (ok) {
+    bool ok = reuse || (CreateCube(device, kIrradianceSize, 1, irradiance_, irradianceSrv_) &&
+                        CreateCube(device, kPrefilterSize, kPrefilterMips, prefiltered_, prefilteredSrv_));
+    if (ok && !reuse) {
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width = kBrdfSize;
         desc.Height = kBrdfSize;
@@ -151,7 +156,7 @@ bool EnvironmentLighting::Bake(ID3D11Device* device, ID3D11DeviceContext* ctx, I
     auto draw = [&](ID3D11RenderTargetView* target, UINT size, UINT face, float roughness) {
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (SUCCEEDED(ctx->Map(paramsBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-            static_cast<CBBake*>(mapped.pData)->params = DirectX::XMFLOAT4(static_cast<float>(face), roughness, sourceFaceSize, 0.0f);
+            static_cast<CBBake*>(mapped.pData)->params = DirectX::XMFLOAT4(static_cast<float>(face), roughness, sourceFaceSize, fast ? 1.0f : 0.0f);
             ctx->Unmap(paramsBuffer, 0);
         }
         ctx->OMSetRenderTargets(1, &target, nullptr);
@@ -197,9 +202,9 @@ bool EnvironmentLighting::Bake(ID3D11Device* device, ID3D11DeviceContext* ctx, I
         }
     }
 
-    // ---- 3. BRDF table: one draw ----
+    // ---- 3. BRDF table: one draw (it does not depend on the sky, so a refresh keeps it) ----
     brdfShader->Apply(ctx);
-    {
+    if (!reuse) {
         ID3D11RenderTargetView* view = nullptr;
         if (SUCCEEDED(device->CreateRenderTargetView(brdf_, nullptr, &view))) {
             draw(view, kBrdfSize, 0, 0.0f);
@@ -223,6 +228,6 @@ bool EnvironmentLighting::Bake(ID3D11Device* device, ID3D11DeviceContext* ctx, I
 
     source_ = sourceCube;
     source_->AddRef();   // so we notice when the sky changes (a stale pointer could look "the same")
-    LOG_INFO("IBL baked: irradiance 32, prefiltered 128 x 5 mips, BRDF table 256");
+    if (!reuse) LOG_INFO("IBL baked: irradiance 32, prefiltered 128 x 5 mips, BRDF table 256");
     return true;
 }

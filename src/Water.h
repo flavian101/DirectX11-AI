@@ -3,6 +3,7 @@
 #include "SceneObject.h"
 #include "Material.h"
 #include "RenderView.h"
+#include "UnderwaterLook.h"
 #include "WaterBodyType.h"
 #include "WaterMesh.h"
 #include "WaterPlan.h"
@@ -60,6 +61,7 @@ struct WaterSettings {
 	// --- depth: how the water changes between shore and open sea ---
 	DirectX::XMFLOAT3 shallowColor = { 0.10f, 0.55f, 0.60f };
 	float absorption = 0.35f;     // how fast light is absorbed with depth (per world unit)
+	UnderwaterSettings underwater;   // how the world looks from UNDER this water (fog, light): automatic from the colours above, or custom
 	float fadeDistance = 2.5f;    // depth at which the water becomes fully opaque (shore softness)
 	float foamDistance = 0.9f;    // width of the shoreline foam band, in depth units
 	float foamStrength = 0.9f;

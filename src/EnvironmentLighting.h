@@ -34,7 +34,11 @@ public:
 
     // Builds all three maps from `sourceCube` (the sky). Call from the immediate context OUTSIDE any
     // render pass; it leaves the pipeline in the neutral state the renderer expects. False on failure.
-    bool Bake(ID3D11Device* device, ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* sourceCube);
+    // `refresh` = the SAME cube map, with new contents (a procedural sky changing with the time of day): keeps the textures and the
+    // BRDF table, and only redraws the irradiance and prefiltered maps. It does nothing special if nothing was baked yet.
+    // `fast` = about a tenth of the samples: for a sky that changes with the time of day and is baked again and again. It is smooth, so
+    // the difference is invisible, and a bake that took a frame's worth of GPU time takes a fraction of that.
+    bool Bake(ID3D11Device* device, ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* sourceCube, bool refresh = false, bool fast = false);
     void Release();
     bool IsBaked() const { return irradianceSrv_ && prefilteredSrv_ && brdfSrv_; }
 
@@ -48,6 +52,10 @@ public:
     static constexpr float MaxPrefilterMip() { return static_cast<float>(kPrefilterMips - 1); }
 
 private:
+    // ShaderCache keeps only WEAK references: a shader that nobody holds is compiled from disk AGAIN on the next Get. The bake runs again
+    // and again for a sky that changes with the time of day, so it keeps its own shaders alive.
+    std::shared_ptr<Shader> irradianceShader_, prefilterShader_, brdfShader_;
+
     struct BakeContext;
     bool CreateCube(ID3D11Device* device, UINT size, UINT mips, ID3D11Texture2D*& texture, ID3D11ShaderResourceView*& srv);
 

@@ -26,6 +26,7 @@ void LightObject::SetRange(float range) { range_ = std::clamp(range, kRangeMin, 
 void LightObject::ApplySunPreset(LightObject& light)
 {
     light.kind_ = LightKind::Directional;
+    light.role_ = LightRole::Sun;
     light.color_ = { 1.0f, 0.95f, 0.85f };
     light.intensity_ = 2.5f;   // HDR: the sun is far brighter than "1 = white"; the tone mapper brings it back
     light.position_ = { 0.0f, 40.0f, 0.0f };
@@ -35,6 +36,7 @@ void LightObject::ApplySunPreset(LightObject& light)
 void LightObject::ApplyMoonPreset(LightObject& light)
 {
     light.kind_ = LightKind::Directional;
+    light.role_ = LightRole::Moon;
     light.color_ = { 0.62f, 0.72f, 1.0f };
     light.intensity_ = 0.25f;
     light.position_ = { 0.0f, 40.0f, 0.0f };
@@ -103,5 +105,6 @@ std::unique_ptr<SceneObject> LightObject::Clone(ID3D11Device*) const
     copy->range_ = range_;
     copy->position_ = position_;
     copy->rotation_ = rotation_;
+    copy->role_ = role_;
     return copy;
 }

@@ -18,7 +18,7 @@ struct CBPerFrame {
     DirectX::XMFLOAT4   reflectionParams; // x = planar reflection available this frame, y = scene copy for refraction available
     DirectX::XMFLOAT4   iblParams;    // x = image-based lighting on (1/0), y = diffuse intensity, z = specular intensity, w = last prefilter mip
     DirectX::XMFLOAT4   iblDebug;     // x = sky background: 0 sky, 1 irradiance, 2 prefiltered; y = mip to show
-    DirectX::XMFLOAT4   skyParams;    // x = cos(sky yaw), y = sin(sky yaw): the sky turns around +Y without being re-baked
+    DirectX::XMFLOAT4   skyParams;    // x = cos(sky yaw), y = sin(sky yaw): the sky turns around +Y without being re-baked; z = 1 for a procedural sky
     DirectX::XMFLOAT4   skyTint;      // rgb = sky tint (LINEAR), w = sky intensity
     DirectX::XMFLOAT4   fogParams;    // x = density (0 = no fog), y = start distance, z = height falloff, w = height of full density
     DirectX::XMFLOAT4   fogColor;     // rgb = fog colour (LINEAR, brightness applied), w = most opaque the fog may get

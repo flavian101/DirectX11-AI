@@ -3,6 +3,7 @@
 #include "SceneObject.h"
 #include "Light.h"
 #include "LightObject.h"
+#include "SkyModel.h"
 #include "Terrain.h"
 #include "Water.h"
 #include "Skybox.h"
@@ -59,6 +60,30 @@ public:
     // directional light, and the point lights nearest the camera fill the point light slots.
     void ApplyLights(ID3D11DeviceContext* ctx) const;
     const LightObject* PrimaryDirectional() const;   // the strongest directional light; null when there is none
+
+    // A light as it shines RIGHT NOW. For an ordinary light these are its own settings. A light with a Sun or Moon role, while the
+    // time of day is on, follows the clock instead: its direction, colour and strength are computed (the light's own colour and
+    // strength are then the noon values). Nothing is written back into the light, so the clock never edits the scene.
+    struct EffectiveLight {
+        DirectX::XMFLOAT3 direction{};   // the way the light TRAVELS
+        DirectX::XMFLOAT3 color{};       // sRGB, as a picker shows it
+        float intensity = 0.0f;
+        bool driven = false;             // true when the clock is setting it
+    };
+    EffectiveLight GetEffectiveLight(const LightObject& light) const;
+
+    // The clock. While the time of day is on and Animate is set, it runs by itself; otherwise it stands at the saved hour.
+    float GetClockHour() const { return clockHour_; }
+    void SetClockHour(float hour) { clockHour_ = TimeOfDay::WrapHour(hour); }   // jump the running clock (the slider)
+    // The colours of the procedural sky right now (from the clock, or from the sun light when the clock is off).
+    void BuildSkyParams(SkyModel::Params& out) const;
+    // Editor aid: look at the scene as if the camera were under this water body, at this depth, without moving the camera.
+    // Not saved. Pass 0 to stop.
+    void SetUnderwaterPreview(SceneObjectId waterId, float depth) { underwaterPreviewId_ = waterId; underwaterPreviewDepth_ = depth; }
+    SceneObjectId GetUnderwaterPreview() const { return underwaterPreviewId_; }
+    // How long the last redraw of the procedural sky and bake of its lighting took the CPU to submit, in ms (0 = none yet). Shown in the
+    // Time of Day tab: a big number there means the update itself is costly, not the drawing of the sky.
+    float GetLastSkyUpdateMs() const { return lastSkyUpdateMs_; }
     // 0 = this light is the sun (casts shadows), 1 = the second directional light, 2 or more = a weaker one that is not used
     // (only two directional lights shine). -1 for a point light.
     int DirectionalRank(const LightObject& light) const;
@@ -167,6 +192,11 @@ private:
     WeatherSettings weather_;
     mutable EnvironmentLighting environmentLighting_;   // a cache of the baked sky: rebuilt on demand, so "mutable" even in const methods
     float time_ = 0.0f;      // scene clock shared by every animated material
+    float clockHour_ = 10.0f;   // the time of day (0..24); see GetClockHour
+    mutable float lastSkyUpdateMs_ = 0.0f;
+    SceneObjectId underwaterPreviewId_ = 0;
+    float underwaterPreviewDepth_ = 3.0f;
+    float SurfaceLightStrength() const;   // how much sun and moon light there is overhead, for the water's light under the surface
     std::unique_ptr<LightSystem> lights_;
     std::unique_ptr<ShadowMap> shadow_;
     ID3D11Device* device_ = nullptr; // non-owning; Scene is destroyed before the D3D device
