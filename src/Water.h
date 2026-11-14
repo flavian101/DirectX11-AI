@@ -5,6 +5,7 @@
 #include "RenderView.h"
 #include "UnderwaterLook.h"
 #include "WaterBodyType.h"
+#include "WaterFlow.h"
 #include "WaterMesh.h"
 #include "WaterPlan.h"
 #include "WaterShore.h"
@@ -45,6 +46,11 @@ struct WaterSettings {
 	WaterBodyType bodyType = WaterBodyType::Ocean;
 	float flowSpeed = 2.0f;       // river: how fast the surface is carried downstream, world units per second
 	float flowAngle = 0.0f;       // river: degrees away from the body's own +Z axis (its length). 0 = flows toward +Z of the body
+	// A current is not one speed across the whole river (lesson 37): the water drags on its bed and banks.
+	float bankDrag = 0.6f;        // 0 = the bed does not slow the water; 1 = at a shallow bank it crawls
+	float channelProfile = 0.5f;  // 0 = one speed across the plane; 1 = the sides of the plane are much slower than the middle
+	float rippleStretch = 3.0f;   // how much longer than wide the ripples are along the flow (1 = round blobs)
+	float rapids = 0.5f;          // 0 = foam only at the very edge; 1 = foam spreads into fast shallow water
 
 	// --- the shore: how the water reacts to the ground under it (needs a terrain) ---
 	float shoreWaves = 1.0f;      // 0 = waves identical everywhere (the old look); 1 = they grow in shallow water, then break and die at the shore
@@ -65,6 +71,8 @@ struct WaterSettings {
 	float fadeDistance = 2.5f;    // depth at which the water becomes fully opaque (shore softness)
 	float foamDistance = 0.9f;    // width of the shoreline foam band, in depth units
 	float foamStrength = 0.9f;
+	float foamScale = 1.0f;       // size of the bubbles: larger = finer bubbles (lesson 37)
+	float foamTrail = 1.5f;       // seconds the foam of a breaking crest lingers behind it (0 = only while it is breaking)
 
 	// --- waves ---
 	float waveAmplitude = 0.35f;
@@ -112,6 +120,8 @@ struct WaterSettings {
 	bool wireframe = false;       // draw the mesh as wires: shows the level-of-detail tiles
 
 	static constexpr float kFlowSpeedMax = 10.0f;
+	static constexpr float kRippleStretchMax = 8.0f;
+	static constexpr float kFoamScaleMin = 0.3f, kFoamScaleMax = 3.0f, kFoamTrailMax = 4.0f;
 	static constexpr float kSwashMax = 1.5f;
 	static constexpr float kHeightMin = -100.0f, kHeightMax = 200.0f;
 	static constexpr float kSizeMin = 2.0f, kSizeMax = 2000.0f;
@@ -194,6 +204,10 @@ public:
 	DirectX::XMFLOAT3 SampleNormal(float x, float z, float time) const;
 	// Is (x, z) inside this body's outline (rectangle or ellipse, turned and scaled like the object)?
 	bool IsOverWater(float x, float z) const;
+	// How the water MOVES at (x, z): the horizontal velocity of the current in world units per second (x, z), (0, 0) when this
+	// body has no current or the point is off it. Faster in the middle of a river, slower at its banks: what the shader draws.
+	// Waves are not part of it (they move the surface, not the water along). A boat that drifts downstream adds this.
+	DirectX::XMFLOAT2 SampleFlow(float x, float z) const;
 	// Distance from a point to the nearest part of this body's box (0 inside it). Used to decide which bodies get mirrors.
 	float DistanceTo(const DirectX::XMFLOAT3& point) const;
 

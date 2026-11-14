@@ -27,6 +27,9 @@ struct WaterMaterialCB {
 	XMFLOAT4 flow;           // x = ripple drift multiplier (1 = wind-blown), y = sideways ripple drift (1 on, 0 river), z = body type, w = flow speed
 	XMFLOAT4 shore;          // x = a depth map is bound (t15), y = shore wave strength, z = swash, w = unused
 	XMFLOAT4 groupInfo;      // wave groups: strength (0 = off), k of the pattern, its speed
+	XMFLOAT4 river;          // x = bank drag, y = how much slower the sides of the plane are, zw = unit vector ACROSS the flow in the body's own (x, z) space
+	XMFLOAT4 river2;         // x = ripple stretch along the flow, y = rapids, zw unused
+	XMFLOAT4 foam2;          // x = foam bubble scale, y = seconds crest foam lingers, zw unused
 	XMFLOAT4 waveDirK[WaterWaves::kMaxWaves];     // xy = direction, z = k, w = amplitude
 	XMFLOAT4 waveMotion[WaterWaves::kMaxWaves];   // x = omega, y = steepness, z = phase offset
 };
@@ -156,6 +159,12 @@ void WaterSettings::Clamp()
 	shoreWaves = clamp01(shoreWaves);
 	underwater.Clamp();
 	swash = std::clamp(swash, 0.0f, kSwashMax);
+	bankDrag = clamp01(bankDrag);
+	channelProfile = clamp01(channelProfile);
+	rippleStretch = std::clamp(rippleStretch, 1.0f, kRippleStretchMax);
+	rapids = clamp01(rapids);
+	foamScale = std::clamp(foamScale, kFoamScaleMin, kFoamScaleMax);
+	foamTrail = std::clamp(foamTrail, 0.0f, kFoamTrailMax);
 	flowAngle = std::fmod(flowAngle, 360.0f);   // an angle: wrap into (-180, 180] instead of clamping
 	if (flowAngle > 180.0f) flowAngle -= 360.0f;
 	if (flowAngle <= -180.0f) flowAngle += 360.0f;
@@ -247,6 +256,7 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 		waveRoughness = 0.5f; swell = 0.5f; swellAngle = 35.0f; swellLength = 2.5f; waveGroups = 0.4f;
 		detailNormal = 0.5f; detailScale = 0.8f; crestFoam = 0.5f; crestFoamThreshold = 0.25f;
 		shoreWaves = 1.0f; swash = 0.6f;   // swells shoal, break and wash up the beach
+		foamScale = 1.0f; foamTrail = 1.8f;   // big white caps that linger behind the crest
 		break;
 	case WaterBodyType::Lake:
 		// Short wind chop that hardly ever breaks: wavelengths a third of the ocean's, a fraction of its height.
@@ -255,6 +265,7 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 		waveRoughness = 0.55f; swell = 0.1f; swellAngle = 25.0f; swellLength = 2.0f; waveGroups = 0.3f;
 		detailNormal = 0.6f; detailScale = 1.2f; crestFoam = 0.1f; crestFoamThreshold = 0.4f;
 		shoreWaves = 0.8f; swash = 0.3f;
+		foamScale = 1.3f; foamTrail = 0.8f;   // finer bubbles, short-lived
 		break;
 	case WaterBodyType::River:
 		// A current, not a swell: low waves that all travel one way, fast ripples carried downstream, no white caps.
@@ -265,6 +276,8 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 		detailNormal = 1.2f; detailScale = 1.6f; crestFoam = 0.0f; crestFoamThreshold = 0.5f;
 		flowSpeed = 2.5f; flowAngle = 0.0f;
 		shoreWaves = 0.5f; swash = 0.1f;   // a current laps at its banks; it does not surf
+		bankDrag = 0.6f; channelProfile = 0.5f; rippleStretch = 3.0f; rapids = 0.5f;   // fastest in the deep middle, streaming along the flow
+		foamScale = 1.1f; foamTrail = 0.6f;
 		break;
 	case WaterBodyType::Custom:
 		// A blank slate that shows every setting. It starts as a lake with the full sea model: a sensible middle to bend either way.
@@ -274,6 +287,7 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 		detailNormal = 0.6f; detailScale = 1.2f; crestFoam = 0.2f; crestFoamThreshold = 0.35f;
 		shoreWaves = 0.8f; swash = 0.3f;
 		flowSpeed = 0.0f;   // no current until the user asks for one
+		foamScale = 1.0f; foamTrail = 1.2f;
 		break;
 	case WaterBodyType::Pond:
 		ApplyLook(WaterLook::Lake);
@@ -282,6 +296,7 @@ void WaterSettings::ApplyBodyType(WaterBodyType type)
 		waveRoughness = 0.4f; swell = 0.0f; waveGroups = 0.2f;
 		detailNormal = 0.7f; detailScale = 1.8f; crestFoam = 0.0f; crestFoamThreshold = 0.5f;
 		shoreWaves = 0.5f; swash = 0.15f;
+		foamScale = 1.4f; foamTrail = 0.5f;
 		break;
 	}
 }
@@ -448,6 +463,11 @@ void Water::UploadMaterial(bool mirrored) const
 	// so asking for flowSpeed world units per second means a multiplier of flowSpeed * detailScale / 0.35.
 	block.shore = { depthView_ ? 1.0f : 0.0f, settings_.shoreWaves, settings_.swash, settings_.shoreShelter };
 	block.groupInfo = { waves_.groupStrength, waves_.groupK, waves_.groupSpeed, 0.0f };
+	// The flow runs along the body's own (sin a, cos a) in (x, z); "across" is turned a quarter: (cos a, -sin a).
+	const float flowRadians = XMConvertToRadians(settings_.flowAngle);
+	block.river = { settings_.bankDrag, settings_.channelProfile, std::cos(flowRadians), -std::sin(flowRadians) };
+	block.river2 = { settings_.rippleStretch, settings_.rapids, 0.0f, 0.0f };
+	block.foam2 = { settings_.foamScale, settings_.foamTrail, 0.0f, 0.0f };
 	block.flow = { river ? settings_.flowSpeed * settings_.detailScale / 0.35f : 1.0f, river ? 0.0f : 1.0f,
 				   static_cast<float>(static_cast<int>(settings_.bodyType)), river ? settings_.flowSpeed : 0.0f };
 	// The rim of a round body fades over about 40 cm (as a fraction of its radius; the plane's own space is -1..1).
@@ -650,6 +670,17 @@ XMFLOAT3 Water::SampleNormal(float x, float z, float time) const
 	XMFLOAT3 n;
 	XMStoreFloat3(&n, XMVector3Normalize(XMVectorSet(-hx, 2.0f * e, -hz, 0.0f)));
 	return n;
+}
+
+XMFLOAT2 Water::SampleFlow(float x, float z) const
+{
+	if (!settings_.HasCurrent() || !IsOverWater(x, z) || !worldToLocalValid_) return { 0.0f, 0.0f };
+	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), XMLoadFloat4x4(&worldToLocal_));
+	const float flowRadians = XMConvertToRadians(settings_.flowAngle);
+	const float across = XMVectorGetX(local) * std::cos(flowRadians) - XMVectorGetZ(local) * std::sin(flowRadians);   // the shader's dot(local, river.zw)
+	const float speed = settings_.flowSpeed * WaterFlow::SpeedFactor(across, DepthAtWorld(x, z), settings_.bankDrag, settings_.channelProfile);
+	const float travel = XMConvertToRadians(GetTravelDegrees());
+	return { std::cos(travel) * speed, std::sin(travel) * speed };
 }
 
 bool Water::GetEditorTransform(XMFLOAT3& position, XMFLOAT3& rotation, XMFLOAT3& scale) const

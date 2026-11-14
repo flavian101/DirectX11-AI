@@ -19,6 +19,9 @@ cbuffer WaterMaterial : register(b4) {
     float4 waterFlow;           // x = ripple drift multiplier (1 = wind-blown, river = rides the current), y = sideways ripple drift (1 on, 0 river), z = body type (0 ocean, 1 lake, 2 river, 3 pond), w = flow speed
     float4 waterShore;          // x = 1 when this body's depth map is bound to t15, y = shore wave strength (0 = waves identical everywhere), z = swash, w = shelter (0 = off)
     float4 waterGroupInfo;      // wave groups (WaveGroupFactor): x = strength (0 = off), y = k of the pattern, z = its speed (radians per second)
+    float4 waterRiver;          // lesson 37: x = bank drag, y = how much slower the sides of the plane are, zw = unit vector ACROSS the flow in the body's own (x, z) space
+    float4 waterRiver2;         // x = ripple stretch along the flow, y = rapids (foam in fast shallow water), zw unused
+    float4 waterFoam2;          // x = foam bubble scale, y = seconds crest foam lingers, zw unused
     float4 waterWaveDirK[WATER_MAX_WAVES];     // xy = unit direction, z = k (radians per unit), w = amplitude
     float4 waterWaveMotion[WATER_MAX_WAVES];   // x = omega (radians per second), y = steepness Q, z = phase offset
 };

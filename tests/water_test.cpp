@@ -4,6 +4,7 @@
 //  - the tile grid chosen for a body's proportions
 //  - the wave table: the height-at-a-position inversion, no folding at full choppiness, and the exact normal/Jacobian the
 //    pixel shader uses against a finite-difference normal of the real displaced surface
+#include "WaterFlow.h"
 #include "WaterMesh.h"
 #include "WaterShore.h"
 #include "WaterWaves.h"
@@ -666,6 +667,147 @@ static void TestTypeUiAndWeather()
 	CHECK(WindWaveScale(normal) == 1.0f);
 }
 
+// ---- Lesson 37: how a river runs, and the trail of crest foam --------------------------------------------------------
+
+static void TestCurrentProfile()
+{
+	// Deep water in the middle of the plane is the full speed, whatever the drag settings.
+	for (float drag : { 0.0f, 0.5f, 1.0f })
+		for (float profile : { 0.0f, 0.5f, 1.0f })
+			CHECK(std::abs(WaterFlow::SpeedFactor(0.0f, 10.0f, drag, profile) - 1.0f) < 1e-6f);
+
+	// No drag and no profile: one speed everywhere (the old look).
+	for (float across : { -1.0f, -0.4f, 0.0f, 0.7f, 1.0f })
+		for (float depth : { -1.0f, 0.0f, 0.5f, 3.0f })
+			CHECK(std::abs(WaterFlow::SpeedFactor(across, depth, 0.0f, 0.0f) - 1.0f) < 1e-6f);
+
+	// A dry or shallow bank at full drag crawls, but never stops.
+	CHECK(std::abs(WaterFlow::SpeedFactor(0.0f, 0.0f, 1.0f, 0.0f) - WaterFlow::kMinSpeedFactor) < 1e-6f);
+	CHECK(WaterFlow::SpeedFactor(1.0f, -2.0f, 1.0f, 1.0f) >= WaterFlow::kMinSpeedFactor);
+
+	// Always in range, symmetric across the river, never faster for being shallower or nearer the side.
+	std::uint32_t state = 7;
+	for (int i = 0; i < 2000; ++i) {
+		const float across = Random01(state) * 2.0f - 1.0f;
+		const float depth = Random01(state) * 4.0f - 0.5f;
+		const float drag = Random01(state), profile = Random01(state);
+		const float v = WaterFlow::SpeedFactor(across, depth, drag, profile);
+		CHECK(v >= WaterFlow::kMinSpeedFactor - 1e-6f && v <= 1.0f + 1e-6f);
+		CHECK(std::abs(v - WaterFlow::SpeedFactor(-across, depth, drag, profile)) < 1e-6f);
+		CHECK(WaterFlow::SpeedFactor(across, depth + 0.3f, drag, profile) >= v - 1e-6f);
+		const float nearer = across >= 0.0f ? std::min(across + 0.1f, 1.0f) : std::max(across - 0.1f, -1.0f);
+		CHECK(WaterFlow::SpeedFactor(nearer, depth, drag, profile) <= v + 1e-6f);
+	}
+}
+
+static void TestFlowingLayers()
+{
+	// The two layers always add up to a whole (one fades in exactly as the other fades out), and a layer is invisible at the
+	// very moment it is reset to its start: that is what hides the jump.
+	std::uint32_t state = 11;
+	for (int i = 0; i < 2000; ++i) {
+		const float time = Random01(state) * 500.0f;
+		float f0, w0, f1, w1;
+		WaterFlow::PhaseWeight(time, 0, f0, w0);
+		WaterFlow::PhaseWeight(time, 1, f1, w1);
+		CHECK(f0 >= 0.0f && f0 < 1.0f && f1 >= 0.0f && f1 < 1.0f);
+		CHECK(w0 >= 0.0f && w0 <= 1.0f && w1 >= 0.0f && w1 <= 1.0f);
+		CHECK(std::abs(w0 + w1 - 1.0f) < 1e-4f);
+	}
+	for (int cycle = 0; cycle < 5; ++cycle) {
+		float f, w;
+		WaterFlow::PhaseWeight(WaterFlow::kPhaseCycle * static_cast<float>(cycle), 0, f, w);   // layer 0 starts over
+		CHECK(f < 1e-5f && w < 1e-5f);
+		WaterFlow::PhaseWeight(WaterFlow::kPhaseCycle * (static_cast<float>(cycle) + 0.5f), 1, f, w);   // layer 1 starts over
+		CHECK(f < 1e-4f && w < 1e-4f);
+	}
+	{   // just before the reset the layer is nearly invisible too: no jump on either side
+		float f, w;
+		WaterFlow::PhaseWeight(WaterFlow::kPhaseCycle * 0.999f, 0, f, w);
+		CHECK(f > 0.99f && w < 0.01f);
+	}
+	// The contrast restore: 1 when one layer is alone, the biggest when the two are equal; blended unrelated unit-variance
+	// layers come out with unit variance again.
+	CHECK(std::abs(WaterFlow::ContrastRestore(1.0f, 0.0f) - 1.0f) < 1e-6f);
+	CHECK(std::abs(WaterFlow::ContrastRestore(0.5f, 0.5f) - std::sqrt(2.0f)) < 1e-5f);
+	for (float w0 : { 0.1f, 0.3f, 0.5f, 0.8f }) {
+		const float w1 = 1.0f - w0;
+		double sum = 0.0, sumSquares = 0.0;
+		const int n = 20000;
+		for (int i = 0; i < n; ++i) {
+			const double a = Random01(state) * 2.0 - 1.0, b = Random01(state) * 2.0 - 1.0;
+			const double blended = (w0 * a + w1 * b) * WaterFlow::ContrastRestore(w0, w1);
+			sum += blended;
+			sumSquares += blended * blended;
+		}
+		const double variance = sumSquares / n - (sum / n) * (sum / n);
+		CHECK(std::abs(variance - 1.0 / 3.0) < 0.02);   // uniform -1..1 has variance 1/3: the restore keeps it, whatever the weights
+	}
+}
+
+// How squeezed the surface is at a REST position (the shader's Jacobian), from finite differences of the real displacement.
+static float FoldAt(const WaterWaves::Table& t, float x, float z, float time)
+{
+	const float e = 0.01f;
+	float dx0, dy, dz0, dx1, dz1, dx2, dz2, dx3, dz3;
+	WaterWaves::Displacement(t, x + e, z, time, dx0, dy, dz0);
+	WaterWaves::Displacement(t, x - e, z, time, dx1, dy, dz1);
+	WaterWaves::Displacement(t, x, z + e, time, dx2, dy, dz2);
+	WaterWaves::Displacement(t, x, z - e, time, dx3, dy, dz3);
+	const float a = 1.0f + (dx0 - dx1) / (2.0f * e), b = (dx2 - dx3) / (2.0f * e);
+	const float c = (dz0 - dz1) / (2.0f * e), d = 1.0f + (dz2 - dz3) / (2.0f * e);
+	return a * d - b * c;
+}
+
+static void TestFoamTrail()
+{
+	CHECK(WaterFlow::kTrailSamples == 3);
+	float previous = 1.0f;
+	for (int k = 1; k <= WaterFlow::kTrailSamples; ++k) {
+		const float w = WaterFlow::TrailWeight(k);
+		CHECK(w > 0.0f && w < previous);   // older foam is thinner
+		previous = w;
+	}
+	CHECK(std::abs(WaterFlow::TrailWeight(WaterFlow::kTrailSamples) - 0.15f) < 0.01f);
+	CHECK(std::abs(WaterFlow::TrailTime(10.0f, 1.5f, WaterFlow::kTrailSamples) - 8.5f) < 1e-5f);   // the last sample is a whole trail ago
+	CHECK(WaterFlow::TrailTime(10.0f, 1.5f, 1) < 10.0f);
+
+	// The idea itself: waves are written in REST positions, which label a parcel of water, so "was this parcel squeezed a moment
+	// ago?" is the squeeze at an EARLIER time at the same rest position. One sharp wave, one parcel.
+	WaterWaves::Params p;
+	p.count = 1; p.style = WaterWaves::Style::Classic; p.choppiness = 1.0f; p.amplitude = 1.5f; p.frequency = 0.6f;   // k * a = 0.9: the crest squeezes the surface by up to 0.9
+	const WaterWaves::Table table = WaterWaves::Build(p);
+	const float x = 3.0f, z = 1.0f, threshold = 0.5f;
+	auto foam = [&](float time) { return std::clamp(((1.0f - FoldAt(table, x, z, time)) - threshold) * 5.0f, 0.0f, 1.0f); };
+
+	// The moment this parcel is squeezed the most, within one wave period.
+	const float period = 6.2831853f / table.waves[0].omega;
+	float tCrest = 0.0f, worst = 1.0f;
+	for (float time = 0.0f; time < period; time += 0.01f) {
+		const float fold = FoldAt(table, x, z, time);
+		if (fold < worst) { worst = fold; tCrest = time; }
+	}
+	CHECK(1.0f - worst > threshold);                      // the parcel does fold at its crest...
+	CHECK(foam(tCrest) > 0.5f);
+
+	// ...a second later the crest has moved on and the instant squeeze is gone, but the trail still sees it.
+	const float later = tCrest + 1.2f, trail = 1.5f;   // 1.2 s at about 1 rad/s: 1.2 rad past the crest
+	CHECK(foam(later) < 1e-4f);
+	float seen = 0.0f;
+	for (int k = 1; k <= WaterFlow::kTrailSamples; ++k)
+		seen = std::max(seen, foam(WaterFlow::TrailTime(later, trail, k)) * WaterFlow::TrailWeight(k));
+	CHECK(seen > 0.1f);
+	// A trail of 0 looks only at the present: nothing left behind.
+	float none = 0.0f;
+	for (int k = 1; k <= WaterFlow::kTrailSamples; ++k) none = std::max(none, foam(WaterFlow::TrailTime(later, 0.0f, k)));
+	CHECK(none < 1e-4f);
+	// And the trail fades out: long after the crest nothing is left within one trail length.
+	const float muchLater = tCrest + 1.2f + trail + 0.5f;
+	float gone = foam(muchLater);
+	for (int k = 1; k <= WaterFlow::kTrailSamples; ++k) gone = std::max(gone, foam(WaterFlow::TrailTime(muchLater, trail, k)));
+	CHECK(gone < 1e-4f);
+}
+
 int main()
 {
 	TestTileIndices();
@@ -680,6 +822,9 @@ int main()
 	TestShelter();
 	TestTypeUiAndWeather();
 	TestMaxDepthIn();
+	TestCurrentProfile();
+	TestFlowingLayers();
+	TestFoamTrail();
 	if (g_failures == 0) std::printf("water tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;
 }

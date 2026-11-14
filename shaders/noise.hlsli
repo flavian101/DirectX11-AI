@@ -31,4 +31,41 @@ float3 ValueNoiseD(float2 p)
                   du * float2(k1 + k4 * u.y, k2 + k4 * u.x));
 }
 
+// ---- Cellular noise (lesson 37): the bubbles of foam ----
+// An integer hash (PCG): unlike sin()-based hashes it stays random far from the origin, where the water's coordinates live.
+uint PcgHash(uint v)
+{
+    const uint state = v * 747796405u + 2891336453u;
+    const uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// Two random numbers in 0..1 for one grid cell.
+float2 CellHash(int2 cell)
+{
+    const uint h = PcgHash(asuint(cell.x) + PcgHash(asuint(cell.y)));
+    return float2(h & 0xFFFFu, h >> 16u) * (1.0f / 65535.0f);
+}
+
+// Distance to the nearest (x) and the second nearest (y) of a set of random points, one per grid cell. Round bubbles are
+// where x is small; the thin walls between bubbles are where y - x is small.
+float2 Voronoi(float2 p)
+{
+    const float2 cell = floor(p);
+    const float2 f = p - cell;
+    float nearest = 8.0f, second = 8.0f;
+    [unroll]
+    for (int y = -1; y <= 1; ++y) {
+        [unroll]
+        for (int x = -1; x <= 1; ++x) {
+            const float2 g = float2(x, y);
+            const float2 d = g + CellHash((int2)cell + int2(x, y)) - f;
+            const float dist = dot(d, d);
+            if (dist < nearest) { second = nearest; nearest = dist; }
+            else if (dist < second) { second = dist; }
+        }
+    }
+    return sqrt(float2(nearest, second));
+}
+
 #endif

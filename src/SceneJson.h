@@ -59,8 +59,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SurfaceSettings, baseColor, alph
                                                 emissiveIntensity)
 // (WaterSettings::debugView and ::wireframe are debug-only and deliberately not listed.)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(UnderwaterSettings, custom, shallowColor, deepColor, visibility, colorDepth, lightDepth, brightness, nightBrightness, sunGlow, startDistance, surfaceMirror)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpeed, flowAngle, shoreWaves, swash, height, size, sizeZ, shape, color, alpha, shallowColor, absorption, fadeDistance,
-                                                foamDistance, foamStrength, waveAmplitude, waveSpeed, waveFrequency, windSource, windDirection, shoreShelter,
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpeed, flowAngle, bankDrag, channelProfile, rippleStretch, rapids, shoreWaves, swash, height, size, sizeZ, shape, color, alpha, shallowColor, absorption, fadeDistance,
+                                                foamDistance, foamStrength, foamScale, foamTrail, waveAmplitude, waveSpeed, waveFrequency, windSource, windDirection, shoreShelter,
                                                 directionalSpread, choppiness, waveCount, waveStyle, waveRoughness, swell, swellAngle, swellLength, waveGroups, waveSeed, detailNormal, detailScale, detailDistance,
                                                 reflectivity, reflectionMode, reflectionDistortion, refraction, scatter,
                                                 glintStrength, glintSharpness, crestFoam, crestFoamThreshold,

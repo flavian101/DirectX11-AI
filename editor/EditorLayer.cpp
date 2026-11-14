@@ -2876,6 +2876,15 @@ void EditorLayer::DrawWaterInspector(Water* water)
         changed |= ImGui::SliderFloat("Flow direction", &s.flowAngle, -180.0f, 180.0f, "%.0f deg");
         ImGui::SetItemTooltip("Measured from the river's own length: 0 = toward the +Z end of the body, 180 = the other way.\nTurning the river with Rotation Y turns the current with it.");
         ImGui::TextDisabled("Flows toward %.0f deg in the world (0 = +X, 90 = +Z)", water->GetTravelDegrees());
+        ImGui::SeparatorText("How it runs");
+        changed |= ImGui::SliderFloat("Bank drag", &s.bankDrag, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("The water drags on its bed: where the ground rises toward a bank (needs a terrain under the river)\nthe current slows down. 0 = the same speed everywhere. 1 = it crawls along the banks.");
+        changed |= ImGui::SliderFloat("Slower at the sides", &s.channelProfile, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("Also slows the water toward the two long edges of the plane, whatever the ground does.\nUseful on flat ground, or when the plane is wider than the channel.");
+        changed |= ImGui::SliderFloat("Ripple stretch", &s.rippleStretch, 1.0f, WaterSettings::kRippleStretchMax, "x %.1f");
+        ImGui::SetItemTooltip("Flowing water streams: its ripples are longer than they are wide. 1 = round blobs.");
+        changed |= ImGui::SliderFloat("Rapids", &s.rapids, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("How far foam spreads into fast, shallow water (over rocks, along the banks). 0 = only the very edge.");
     }
 
     if (ImGui::CollapsingHeader("Waves", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -2994,10 +3003,14 @@ void EditorLayer::DrawWaterInspector(Water* water)
     if (ImGui::CollapsingHeader("Foam")) {
         changed |= ImGui::SliderFloat("Shore width", &s.foamDistance, 0.0f, WaterSettings::kFoamDistanceMax, "%.2f");
         changed |= ImGui::SliderFloat("Shore strength", &s.foamStrength, 0.0f, 1.0f);
+        changed |= ImGui::SliderFloat("Bubble size", &s.foamScale, WaterSettings::kFoamScaleMin, WaterSettings::kFoamScaleMax, "x %.2f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Higher = finer bubbles. Foam is a pattern of bubbles that only the strong parts of the foam fill completely:\nthe weak edges show up as thin, lacy islands.");
         changed |= ImGui::SliderFloat("Crest foam", &s.crestFoam, 0.0f, 1.0f);
         ImGui::SetItemTooltip("White caps where a wave is squeezed to its sharpest. Needs Choppiness above 0.");
         changed |= ImGui::SliderFloat("Crest threshold", &s.crestFoamThreshold, 0.0f, 1.0f);
         ImGui::SetItemTooltip("Higher = only the very sharpest crests get foam.");
+        changed |= ImGui::SliderFloat("Foam trail", &s.foamTrail, 0.0f, WaterSettings::kFoamTrailMax, "%.1f s");
+        ImGui::SetItemTooltip("How long the foam of a breaking crest lingers behind it, thinning out. 0 = only while it breaks (the old look).\nCosts three extra looks at the wave table per foamy pixel, close to the camera only.");
     }
 
     if (shows(Control::ShoreSection) && ImGui::CollapsingHeader("Shore")) {

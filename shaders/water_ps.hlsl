@@ -40,6 +40,99 @@ float2 RippleSlope(float2 xz, float time)
     return (n1.yz * scale + n2.yz * (scale * 2.3f * 0.4f)) * 0.3f;
 }
 
+// ---- A river's current (lesson 37) ----
+// Same numbers as src/WaterFlow.h: keep them in step.
+static const float kBankDepth = 1.5f;     // WaterFlow::kBankDepth: shallower than this the bed drags the water
+static const float kRiverCycle = 2.4f;    // WaterFlow::kPhaseCycle: seconds one layer of ripples lives
+static const float kFoamBubbleScale = 2.6f;   // the bubbles are this many times finer than the clumps
+
+// How fast the current runs HERE, as a fraction of the river's flow speed. It is not one speed across the whole river: the
+// water drags on the bed and the banks, so it is fastest in the deep middle and creeps along at the edges. `local` is the
+// position on the plane (-1..1); the shallow bed comes from the depth map.
+float RiverSpeedFactor(float2 local, float mapDepth)
+{
+    const float across = clamp(dot(local, waterRiver.zw), -1.0f, 1.0f);
+    const float middle = 1.0f - across * across;                         // 1 in the middle of the plane, 0 at its sides
+    const float shallow = saturate(mapDepth / kBankDepth);               // 0 at a bank, 1 in deep water
+    const float byDepth = lerp(1.0f - 0.92f * waterRiver.x, 1.0f, smoothstep(0.0f, 1.0f, shallow));
+    const float byWidth = lerp(1.0f - 0.8f * waterRiver.y, 1.0f, middle);
+    return max(byDepth * byWidth, 0.08f);
+}
+
+// Where one layer of a flowing pattern is in its life, and how visible it is. Two layers live half a cycle apart: one fades in
+// while the other fades out, and each is reset to its start while it is invisible. So the pattern is carried downstream by the
+// water, never slides forever (which is what a plain scrolling texture looks like), and the speed may differ from place to place
+// (the current is faster in the middle) without the pattern tearing: this is the "flow map" technique.
+void FlowLayer(float time, int layer, out float travelFraction, out float weight)
+{
+    travelFraction = frac(time / kRiverCycle + 0.5f * layer);
+    weight = 1.0f - abs(2.0f * travelFraction - 1.0f);   // 0 at the reset, 1 half way through
+}
+
+// Ripples on a river: the same two noise layers as RippleSlope, but carried downstream at the LOCAL speed, stretched along the
+// flow (water streams, it does not make round blobs), and evolving instead of sliding.
+float2 RiverRippleSlope(float2 xz, float time, float2 flowDir, float speed)
+{
+    const float2 side = float2(-flowDir.y, flowDir.x);
+    const float scale = waterWaveInfo.z;
+    const float stretch = max(waterRiver2.x, 1.0f);
+    float2 slope = float2(0.0f, 0.0f);
+    float weightSquares = 0.0f;
+    [unroll]
+    for (int layer = 0; layer < 2; ++layer) {
+        float fraction, weight;
+        FlowLayer(time, layer, fraction, weight);
+        const float travel = speed * kRiverCycle * fraction;                  // how far the water has carried this layer
+        const float2 q = float2(dot(xz, side), (dot(xz, flowDir) - travel) / stretch) * scale + layer * 17.3f;
+        const float3 n1 = ValueNoiseD(q);
+        const float3 n2 = ValueNoiseD(q * 2.3f + 7.3f);
+        const float2 g = n1.yz * scale + n2.yz * (scale * 2.3f * 0.4f);       // slope in the (across, along / stretch) frame
+        slope += weight * (side * g.x + flowDir * (g.y / stretch));
+        weightSquares += weight * weight;
+    }
+    // Blending two unrelated layers lowers the contrast half way through a cycle (the weights are 0.5 and 0.5): divide by the
+    // spread the blend has, so the ripples are equally strong all the time.
+    return slope * (0.3f / sqrt(max(weightSquares, 1e-4f)));
+}
+
+// ---- Foam (lesson 37) ----
+// The foam pattern, 0..1 (about 0.5 on average). The caller turns it into foam by keeping only the part ABOVE a threshold that
+// falls as the foam gets stronger: weak foam is a few lacy islands of bubbles, medium foam is a clumpy sheet with gaps, strong
+// foam is nearly solid with a fine web. (Tuned on the CPU first: the bubbles ALONE look like confetti, so they are only the
+// texture on top of organic clumps.)
+float FoamTexture(float2 p, float time)
+{
+    // A gentle warp, so the clumps are organic rather than grid-shaped.
+    const float2 warp = float2(ValueNoise(p * 0.7f + 3.1f), ValueNoise(p * 0.7f + 8.7f)) - 0.5f;
+    const float2 q = p + warp;
+    // Clumps: smooth noise of three sizes.
+    const float clumps = ValueNoise(q * 0.5f) * 0.5f + ValueNoise(q * 1.1f + 4.0f) * 0.3f + ValueNoise(q * 2.3f + 9.0f) * 0.2f;
+    // Bubbles: round in the middle of a cell (the speckle), thin walls between neighbours (the lace).
+    const float2 v = Voronoi(q * kFoamBubbleScale + float2(time * 0.05f, 0.0f));
+    const float bubble = 1.0f - saturate(v.x * 1.3f);
+    const float lace = saturate((v.y - v.x) * 3.0f);
+    return saturate(clumps * (0.6f + 0.55f * bubble) * (0.8f + 0.2f * lace) * 1.3f);
+}
+
+// The same on a river: stretched along the flow and carried by the local current (two layers, as for the ripples).
+float RiverFoamTexture(float2 xz, float freq, float time, float2 flowDir, float speed)
+{
+    const float2 side = float2(-flowDir.y, flowDir.x);
+    const float stretch = 1.0f + 0.5f * (max(waterRiver2.x, 1.0f) - 1.0f);
+    float sum = 0.0f, weightSquares = 0.0f;
+    [unroll]
+    for (int layer = 0; layer < 2; ++layer) {
+        float fraction, weight;
+        FlowLayer(time, layer, fraction, weight);
+        const float travel = speed * kRiverCycle * fraction;
+        const float2 p = float2(dot(xz, side), (dot(xz, flowDir) - travel) / stretch) * freq + layer * 29.1f;
+        sum += weight * FoamTexture(p, time);
+        weightSquares += weight * weight;
+    }
+    const float mean = 0.5f;
+    return saturate(mean + (sum - mean) / sqrt(max(weightSquares, 1e-4f)));   // restore the contrast the blend loses
+}
+
 float4 main(PS_IN input) : SV_Target
 {
     const float reflectivity   = waterOptics.x;
@@ -81,11 +174,23 @@ float4 main(PS_IN input) : SV_Target
     const float mapDepth = shore.x;                     // vertical depth under this pixel
     EvaluateWaveShading(input.rest.xy, time, pixelsPerUnit, shore, N, jacobian);
 
+    // A river (or a Custom body with a current): how fast the water runs at THIS pixel, and which way.
+    const bool river = waterFlow.w > 0.001f;
+    const float2 flowDir = waterWind.xy;
+    float speedFactor = 1.0f;
+    [branch]
+    if (river) speedFactor = RiverSpeedFactor(input.local, mapDepth);
+    const float localSpeed = waterFlow.w * speedFactor;
+
     const float detailStrength = waterWaveInfo.y;
     const float detailFade = 1.0f - smoothstep(0.35f * waterWaveInfo.w, waterWaveInfo.w, distanceToEye);
     [branch]
     if (detailStrength > 0.001f && detailFade > 0.001f) {
-        const float2 slope = RippleSlope(input.rest.xy, time) * (detailStrength * detailFade);
+        float2 slope;
+        [branch]
+        if (river) slope = RiverRippleSlope(input.rest.xy, time, flowDir, localSpeed);
+        else       slope = RippleSlope(input.rest.xy, time);
+        slope *= detailStrength * detailFade;
         N = normalize(N + float3(-slope.x, 0.0f, -slope.y));
     }
 
@@ -212,22 +317,58 @@ float4 main(PS_IN input) : SV_Target
     const float edgeFade = saturate(shoreDepth / (0.35f * fadeDistance)) * shapeFade;
     const float waterAlpha = saturate(lerp(alphaBody, 1.0f, fresnel) + dot(glint, float3(0.333f, 0.333f, 0.333f)));
 
-    // ---- Foam: where the water is shallow (the shore) and on the steepest crests ----
-    const float foamBand = (1.0f - saturate(shoreDepth / max(foamDistance, 0.001f))) * foamStrength;
-    const float breakFoam = breaking * foamStrength * waterShore.y;   // surf: waves tripping over the bottom
+    // ---- Foam (lesson 37) ----
+    // Three sources, each an AMOUNT from 0 to 1 (how much of the surface it covers), then ONE bubble pattern that all three share:
+    //  * the shore: a band where the water is shallow (wider and stronger in the fast shallows of a river),
+    //  * surf: waves tripping over the bottom,
+    //  * crests: where the surface is squeezed together (Jacobian below 1), PLUS the trail the crest leaves. Because the waves
+    //    are written in rest positions, "was this parcel of water squeezed 0.5 s ago?" is just the Jacobian at an earlier time.
+    const float rapids = river ? waterRiver2.y * speedFactor : 0.0f;
+    const float reach = foamDistance * (1.0f + 2.0f * rapids);
+    const float shoreAmount = pow(1.0f - saturate(shoreDepth / max(reach, 0.001f)), 1.3f) * foamStrength;
+    const float breakAmount = breaking * foamStrength * waterShore.y;
     // Jacobian < 1 means the surface is being squeezed together: that is where real waves break.
-    const float crestFoam = saturate(((1.0f - jacobian) - waterFoamInfo.y) * 5.0f) * waterFoamInfo.x;
-    float foam = 0.0f;
+    float crestAmount = saturate(((1.0f - jacobian) - waterFoamInfo.y) * 5.0f) * waterFoamInfo.x;
+    const float trailSeconds = waterFoam2.y;
     [branch]
-    if (foamBand > 0.001f || crestFoam > 0.001f || breakFoam > 0.001f) {   // open water without crests skips all the noise
-        const float2 foamUV = input.worldPos.xz * 0.9f + float2(time * 0.25f, -time * 0.18f);
-        const float noise = ValueNoise(foamUV) * 0.65f + ValueNoise(foamUV * 2.7f + 17.0f) * 0.35f;
-        const float crestNoise = ValueNoise(input.rest.xy * 1.6f - waterWind.xy * (time * 0.4f) + 31.0f);
-        foam = saturate(foamBand * smoothstep(0.25f, 0.7f, noise + foamBand * 0.35f) +
-                        crestFoam * smoothstep(0.35f, 0.75f, crestNoise * 0.6f + noise * 0.4f) +
-                        breakFoam * smoothstep(0.3f, 0.7f, crestNoise * 0.5f + noise * 0.5f));
+    // Up close only (far away it is too small to see), and only where the surface is being squeezed at least a little right now:
+    // a parcel that folded a moment ago is still tightened (the squeeze changes smoothly), a surface that is stretching cannot
+    // be carrying a fresh trail. That skips about half of the pixels, and each skipped pixel saves three passes over the waves.
+    if (waterFoamInfo.x > 0.001f && trailSeconds > 0.01f && distanceToEye < 0.7f * waterWaveInfo.w &&
+        (1.0f - jacobian) > 0.2f * waterFoamInfo.y) {
+        [unroll]
+        for (int k = 1; k <= 3; ++k) {
+            const float earlier = time - trailSeconds * (k / 3.0f);
+            const float fold = WaveFold(input.rest.xy, earlier, pixelsPerUnit, shore);
+            const float fading = exp(-1.9f * k / 3.0f);   // WaterFlow::TrailWeight: the older the foam, the thinner
+            crestAmount = max(crestAmount, saturate(((1.0f - fold) - waterFoamInfo.y) * 5.0f) * waterFoamInfo.x * fading);
+        }
     }
-    const float3 foamColor = float3(0.9f, 0.95f, 1.0f) * lightColor;
+    // Any of the three is enough to make foam: combine them as chances (1 - none of them).
+    const float amount = 1.0f - (1.0f - shoreAmount) * (1.0f - breakAmount) * (1.0f - crestAmount);
+
+    float foam = 0.0f;
+    float thick = 0.0f;   // how thick the foam is here: thin foam is see-through and bluish, thick foam is white
+    [branch]
+    if (amount > 0.01f) {   // open water without foam skips all the noise
+        const float freq = 1.1f * waterFoam2.x;                                      // bubbles per world unit
+        // The pattern is drawn on the water's REST position, so it travels with the water instead of sliding over it. A river
+        // carries it downstream at the local speed.
+        float tex;
+        [branch]
+        if (river) tex = RiverFoamTexture(input.rest.xy, freq, time, flowDir, localSpeed);
+        else       tex = FoamTexture(input.rest.xy * freq, time);
+        // Keep only the part of the pattern above a threshold that falls as the amount rises: the fringe of weak foam is a
+        // few lacy islands (thin), the middle of strong foam is a sheet (thick).
+        thick = saturate((tex - (1.0f - amount * 1.15f)) / 0.35f);
+        // Bubbles smaller than about two pixels cannot be drawn (they shimmer): far away, fade to an even cover instead.
+        const float detail = saturate((pixelsPerUnit / (freq * kFoamBubbleScale) - 1.5f) * 0.5f);
+        thick = lerp(saturate(amount * 0.7f), thick, detail);
+        foam = saturate(thick * 1.35f);
+    }
+    const float3 foamColor = lerp(float3(0.60f, 0.72f, 0.78f), float3(0.96f, 0.98f, 1.0f), thick) * lightColor;
+    const float crestFoam = crestAmount;   // (the names the debug view uses)
+    const float foamBand = shoreAmount;
 
     // ---- Debug views (editor: Water > Debug view) ----
     [branch]

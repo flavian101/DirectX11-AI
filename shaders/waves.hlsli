@@ -133,4 +133,31 @@ void EvaluateWaveShading(float2 restXZ, float time, float pixelsPerUnit, float3 
     J = n.y;
     N = normalize(float3(n.x, max(n.y, 0.02f), n.z));
 }
+
+// How squeezed the surface is at a REST position at `time`: only the Jacobian of EvaluateWaveShading, with no normal, so it
+// costs less. Gerstner waves are written in REST positions, which label a PARCEL of water and keep following it as the surface
+// moves. So asking this for an EARLIER time at the same rest position asks "was this parcel squeezed a moment ago?": that is
+// what a trail of foam behind a crest is (lesson 37). Same amplitudes as EvaluateWaveShading, so the two always agree.
+float WaveFold(float2 restXZ, float time, float pixelsPerUnit, float3 shore)
+{
+    float sxx = 0.0f, sxz = 0.0f, szz = 0.0f;
+    const int count = (int)waterWaveInfo.x;
+    const float group = WaveGroupFactor(restXZ, time);
+    [loop]
+    for (int i = 0; i < count; ++i) {
+        const float4 dirK = waterWaveDirK[i];
+        const float4 motion = waterWaveMotion[i];
+        const float k = dirK.z;
+        const float fade = saturate(((kTwoPi / k) * pixelsPerUnit - 2.0f) * 0.25f);
+        if (fade <= 0.0f) continue;
+        const float shoaled = ShoalAmplitude(dirK.w, k, shore.x, waterShore.y);
+        const float aSide = min(shoaled, dirK.w) * fade * group * ShelterFactor(dirK.xy, k, shore);
+        const float phase = k * dot(dirK.xy, restXZ) + motion.x * time + motion.z;
+        const float q = motion.y * k * aSide * sin(phase);
+        sxx += q * dirK.x * dirK.x;
+        sxz += q * dirK.x * dirK.y;
+        szz += q * dirK.y * dirK.y;
+    }
+    return (1.0f - sxx) * (1.0f - szz) - sxz * sxz;
+}
 #endif
