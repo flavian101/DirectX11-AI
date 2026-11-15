@@ -166,6 +166,7 @@ struct WaterViewStats {
 	int tilesTotal = 0;
 	int tilesDrawn = 0;
 	int tilesDry = 0;          // tiles skipped because the ground under them stands above the water (nothing to show)
+	int tilesOffRiver = 0;     // tiles skipped because no part of the river's corridor reaches them (lesson 40)
 	int tilesPerLod[kWaterLodCount] = {};
 	int trianglesDrawn = 0;
 	int reflectionSlot = -1;   // which planar reflection image this body read (-1 = the sky cubemap)
@@ -261,6 +262,7 @@ private:
 	void ChooseTiles(const RenderView& view) const;
 	void UpdateDryTiles();                // flags the tiles that lie wholly under dry ground (needs the shore map and the wave table)
 	bool TileOutsideOutline(size_t index) const;   // a corner tile of a round body: wholly outside the ellipse
+	void UpdateRiverTiles();              // flags the tiles that no part of the river's corridor reaches (needs the curve in the world)
 
 	struct Tile {
 		DirectX::XMFLOAT3 localMin, localMax;   // the tile's box in the plane's own space ([-1, 1] across)
@@ -293,6 +295,7 @@ private:
 	std::vector<Tile> tiles_;
 	WindSettings sceneWind_;                // the scene's wind as last pushed by the scene (SetSceneWind)
 	std::vector<unsigned char> tileDry_;   // per tile: 1 = ground stands above the highest the surface can reach, nothing to draw
+	std::vector<unsigned char> tileOffRiver_;   // per tile: 1 = a river with a curve, and the corridor never comes near this tile
 	int builtMeshDetail_ = -1;
 	WaterMesh::TileGrid builtGrid_;
 	bool gridBuilt_ = false;

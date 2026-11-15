@@ -29,9 +29,7 @@ The viewport draws what the next click would do (a ring on the curve, or a line 
 
 ## What this patch does not do
 
-**The river is still level and still a plane.** Water outside the corridor is hidden, but the mesh is still a rectangle, the ends are still round, and the level is still one number. Roadmap item 20 (b to d) fixes that.
-
-**Boats and buoyancy.** `Water::IsOverWater` still answers for the whole rectangle, so something floating outside the corridor floats on water that is no longer drawn. The ribbon mesh makes the two agree.
+**The river is still level.** The water outside the corridor is hidden (and, since lesson 40, not drawn or counted as water at all), but the level is still one number. Roadmap item 20 (c, d) fixes that.
 
 ## Questions before you read the code
 

@@ -101,6 +101,7 @@ void Water::ReleaseRiverFlow()
 	if (flowTexture_) { flowTexture_->Release(); flowTexture_ = nullptr; }
 	riverWorld_.clear();
 	riverKey_.clear();
+	tileOffRiver_.clear();   // no curve: every tile counts again
 }
 
 void Water::ReleaseShoreMap()
@@ -425,6 +426,7 @@ void Water::RebuildMesh(const WaterMesh::TileGrid& grid)
 	tileLod_.assign(tiles_.size(), Model::kSkipMesh);   // "no level chosen yet": the first frame picks without hysteresis
 	tileDry_.clear();
 	UpdateDryTiles();
+	tileOffRiver_.assign(tiles_.size(), 0);   // new tiles: show all until RefreshRiverFlow measures them (its key includes the grid)
 }
 
 float Water::GetTravelDegrees() const
@@ -525,9 +527,12 @@ void Water::ChooseTiles(const RenderView& view) const
 
 	drawList_.assign(tiles_.size(), Model::kSkipMesh);
 	const bool dryKnown = tileDry_.size() == tiles_.size();
+	const bool offRiverKnown = tileOffRiver_.size() == tiles_.size();
 	for (size_t i = 0; i < tiles_.size(); ++i) {
 		// Under dry ground: the terrain would hide every pixel of this tile. Skip it before any other work.
 		if (dryKnown && tileDry_[i]) { ++stats.tilesDry; continue; }
+		// A river is only where its curve is: the shader clips the rest, so do not even send the tile.
+		if (offRiverKnown && tileOffRiver_[i]) { ++stats.tilesOffRiver; continue; }
 
 		XMFLOAT3 worldMin, worldMax;
 		TransformBounds(world, tiles_[i].localMin, tiles_[i].localMax, worldMin, worldMax);
@@ -619,6 +624,24 @@ void Water::UpdateDryTiles()
 	}
 }
 
+// A tile is OFF THE RIVER when no part of the river's corridor reaches it (WaterRiver::CorridorReaches; the shader clips the water
+// beyond the corridor, so such a tile could not show a pixel anyway). The waves push the surface sideways, so the tile's reach
+// is grown by the wave margin like the frustum test. Decided when the curve, the body or the mesh changes, not every frame.
+void Water::UpdateRiverTiles()
+{
+	tileOffRiver_.assign(tiles_.size(), 0);
+	if (!settings_.HasRiverPath() || riverWorld_.size() < 2 || tiles_.empty() || !renderable_ || !renderable_->GetModel()) return;
+	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
+	const float margin = waves_.heightBound + 0.25f;
+	for (size_t i = 0; i < tiles_.size(); ++i) {
+		XMFLOAT3 worldMin, worldMax;
+		TransformBounds(world, tiles_[i].localMin, tiles_[i].localMax, worldMin, worldMax);   // (a box in the world, turned or not)
+		const float cx = 0.5f * (worldMin.x + worldMax.x), cz = 0.5f * (worldMin.z + worldMax.z);
+		const float radius = 0.5f * std::hypot(worldMax.x - worldMin.x, worldMax.z - worldMin.z) + margin;
+		tileOffRiver_[i] = WaterRiver::CorridorReaches(riverWorld_, cx, cz, radius) ? 0 : 1;
+	}
+}
+
 bool Water::IsWetVisible(const Frustum& frustum) const
 {
 	if (!IsVisible(frustum)) return false;   // the whole body is off screen: the cheap test first
@@ -628,6 +651,7 @@ bool Water::IsWetVisible(const Frustum& frustum) const
 	const bool round = settings_.shape == WaterShape::Ellipse;
 	for (size_t i = 0; i < tiles_.size(); ++i) {
 		if (tileDry_[i]) continue;
+		if (tileOffRiver_.size() == tiles_.size() && tileOffRiver_[i]) continue;
 		if (round && TileOutsideOutline(i)) continue;
 		if (!settings_.frustumCulling) return true;
 		XMFLOAT3 worldMin, worldMax;
@@ -662,8 +686,12 @@ bool Water::IsOverWater(float x, float z) const
 	if (std::abs(XMVectorGetX(determinant)) < 1e-12f) return false;
 	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), inverse);
 	const float lx = XMVectorGetX(local), lz = XMVectorGetZ(local);
-	if (settings_.shape == WaterShape::Ellipse) return lx * lx + lz * lz <= 1.0f;
-	return std::abs(lx) <= 1.0f && std::abs(lz) <= 1.0f;
+	const bool onPlane = settings_.shape == WaterShape::Ellipse ? lx * lx + lz * lz <= 1.0f : (std::abs(lx) <= 1.0f && std::abs(lz) <= 1.0f);
+	if (!onPlane) return false;
+	// A river with a curve is water only inside its corridor (the shader clips the rest): a boat, a wave query or the camera
+	// out beside it is not on water.
+	if (settings_.HasRiverPath() && riverWorld_.size() >= 2) return WaterRiver::InCorridor(riverWorld_, x, z);
+	return true;
 }
 
 float Water::DistanceTo(const XMFLOAT3& point) const
@@ -722,7 +750,8 @@ void Water::RefreshRiverFlow()
 	}
 	// Measure again only when something that decides the numbers changed: the curve, or where the body is and how big.
 	std::vector<float> key = { position_.x, position_.y, position_.z, rotation_.x, rotation_.y, rotation_.z,
-							   scale_.x, scale_.y, scale_.z, settings_.size, settings_.sizeZ, static_cast<float>(settings_.riverPath.size()) };
+							   scale_.x, scale_.y, scale_.z, settings_.size, settings_.sizeZ, static_cast<float>(settings_.riverPath.size()),
+							   static_cast<float>(builtGrid_.x), static_cast<float>(builtGrid_.z), static_cast<float>(settings_.meshDetail) };   // (a rebuilt mesh has new tiles to measure)
 	for (const RiverPoint& p : settings_.riverPath) { key.push_back(p.x); key.push_back(p.z); key.push_back(p.width); }
 	if (key == riverKey_) return;
 	riverKey_ = std::move(key);
@@ -735,6 +764,7 @@ void Water::RefreshRiverFlow()
 		worldPoints.push_back({ w.x, w.y, p.width });
 	}
 	riverWorld_ = RiverPath::Build(worldPoints, 1.0f);
+	UpdateRiverTiles();   // which tiles the corridor reaches: decided here, once per change, not once per frame
 
 	int width = 0, height = 0;
 	WaterShore::ChooseResolution(ExtentX(), ExtentZ(), width, height);   // the same texel grid as the depth map
@@ -825,6 +855,7 @@ bool Water::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotatio
 	if (settings_.HasCurrent()) RebuildWaves();   // a current's flow follows the way the body is turned
 	EnsureMesh();                      // scaling can change the body's proportions: a river needs a different grid than a pond
 	tileDry_.assign(tiles_.size(), 0);   // moving or scaling changes which ground is under each tile: show all until the map is re-measured
+	tileOffRiver_.assign(tiles_.size(), 0);   // ...and where the corridor lies relative to them (RefreshRiverFlow measures again: the key has the placement)
 	UpdateWorldTransform();
 	UploadMaterial(false);             // the grid cell size depends on the scale
 	return true;

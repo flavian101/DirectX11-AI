@@ -3412,6 +3412,7 @@ void EditorLayer::DrawWaterInspector(Water* water)
                 else ImGui::TextDisabled("Mirror: sky only (over the budget of %d planar images, or camera below)", WaterFramePlan::kMaxReflections);
             }
             if (stats.tilesDry > 0) ImGui::TextDisabled("%d tiles skipped: under dry ground", stats.tilesDry);
+            if (stats.tilesOffRiver > 0) ImGui::TextDisabled("%d tiles skipped: away from the river", stats.tilesOffRiver);
             if (gpuTimings_.valid) {
                 using P = GpuPass;
                 const float* ms = gpuTimings_.ms;

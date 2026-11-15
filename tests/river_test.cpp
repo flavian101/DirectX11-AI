@@ -324,6 +324,47 @@ static void TestClickSequence()
 	CHECK(placed.front().x == 5.0f && placed.back().x == -80.0f);
 }
 
+// Lesson 40: the corridor. InCorridor must say exactly what the flow map says (the shader clips by the map); CorridorReaches
+// must never say "no" about a patch that holds a spot of the corridor (a tile skipped on it would hide water).
+static void TestCorridor()
+{
+	// A winding river whose width changes along it.
+	const std::vector<RiverPath::Sample> path = RiverPath::Build({ { -60, 0, 6 }, { -20, 18, 10 }, { 20, 10, 24 }, { 60, -20, 14 }, { 90, -50, 6 } }, 1.0f);
+	std::uint32_t state = 12345u;
+	int disagree = 0;
+	for (int i = 0; i < 4000; ++i) {
+		const float x = -120.0f + 260.0f * Random01(state), z = -110.0f + 200.0f * Random01(state);
+		const RiverPath::Hit hit = RiverPath::Closest(path, x, z);
+		const bool map = WaterRiver::Decode(WaterRiver::MakeTexel(hit)).inRiver;
+		if (map != WaterRiver::InCorridor(path, x, z)) ++disagree;
+	}
+	CHECK(disagree == 0);
+	CHECK(WaterRiver::InCorridor(path, 0.0f, 14.0f) || WaterRiver::InCorridor(path, -20.0f, 18.0f));   // on the river
+	CHECK(!WaterRiver::InCorridor(path, 0.0f, 150.0f));                                                 // far from it
+	// A round end: just past the last point is still corridor (within 1.5 half widths), well past it is not.
+	CHECK(WaterRiver::InCorridor(path, 92.0f, -52.0f));
+	CHECK(!WaterRiver::InCorridor(path, 120.0f, -75.0f));
+
+	// Conservative: whenever some spot of a patch is in the corridor, the patch reaches it.
+	int violations = 0, reached = 0, missed = 0;
+	for (int i = 0; i < 600; ++i) {
+		const float cx = -120.0f + 260.0f * Random01(state), cz = -110.0f + 200.0f * Random01(state);
+		const float radius = 1.0f + 25.0f * Random01(state);
+		bool anyInside = false;
+		for (int k = 0; k < 60 && !anyInside; ++k) {
+			const float angle = 6.2831853f * Random01(state), r = radius * std::sqrt(Random01(state));
+			anyInside = WaterRiver::InCorridor(path, cx + r * std::cos(angle), cz + r * std::sin(angle));
+		}
+		const bool reaches = WaterRiver::CorridorReaches(path, cx, cz, radius);
+		if (anyInside && !reaches) ++violations;
+		if (reaches) ++reached; else ++missed;
+	}
+	CHECK(violations == 0);
+	CHECK(reached > 50 && missed > 50);   // and it does skip things: not a function that always says yes
+	// No curve: nothing is skipped.
+	CHECK(WaterRiver::CorridorReaches({}, 500.0f, 500.0f, 1.0f));
+}
+
 int main()
 {
 	TestCurve();
@@ -335,6 +376,7 @@ int main()
 	TestPlace();
 	TestAnalyse();
 	TestClickSequence();
+	TestCorridor();
 	if (g_failures == 0) std::printf("river tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;
 }

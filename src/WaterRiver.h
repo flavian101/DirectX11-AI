@@ -155,4 +155,41 @@ inline std::vector<float> Bake(int width, int height, const std::vector<RiverPat
 	return texels;
 }
 
+// ---- Where a curved river is water at all (lesson 40) ----------------------------------------------------------------------
+//
+// The flow map is empty beyond the river's corridor, and the pixel shader clips the water there (shaders/water_ps.hlsl). Every
+// other part of the system has to agree with that: tiles that no part of the corridor reaches are not drawn, and a boat or the
+// camera outside it is not on water. This is the CPU twin of that clip.
+//
+// The flow map's strength is (floor + (1 - floor) * profile) * mask. Out at the bank the profile is 0, so the strength is
+// floor * mask, and "is there a river" (Decode: strength > 0.05) turns false where the mask falls to a half: the middle of the
+// smoothstep between kCorridorFull and kCorridorEnd.
+constexpr float kClipAcross = 0.5f * (kCorridorFull + kCorridorEnd);   // 1.5 half widths from the middle line
+
+// Is this spot inside the river's corridor?
+inline bool InCorridor(const std::vector<RiverPath::Sample>& path, float x, float z)
+{
+	const RiverPath::Hit hit = RiverPath::Closest(path, x, z);
+	return hit.found && std::abs(hit.across) < kClipAcross;
+}
+
+// Can any spot of a round patch (centre, radius; world units) lie in the corridor? Conservative: false only when NONE can, so a
+// tile that is skipped on this answer never hides water. With no curve there is no corridor to test, and everything counts.
+inline bool CorridorReaches(const std::vector<RiverPath::Sample>& path, float cx, float cz, float radius)
+{
+	if (path.size() < 2) return true;
+	for (size_t i = 0; i + 1 < path.size(); ++i) {
+		const RiverPath::Sample& a = path[i];
+		const RiverPath::Sample& b = path[i + 1];
+		const float ex = b.x - a.x, ez = b.z - a.z;
+		const float length2 = ex * ex + ez * ez;
+		const float t = length2 > 1e-12f ? std::clamp(((cx - a.x) * ex + (cz - a.z) * ez) / length2, 0.0f, 1.0f) : 0.0f;
+		const float dx = cx - (a.x + ex * t), dz = cz - (a.z + ez * t);
+		// The widest the water is anywhere on this piece, so a spot whose nearest point is here cannot be missed.
+		const float reach = kClipAcross * std::max(a.halfWidth, b.halfWidth) + radius;
+		if (dx * dx + dz * dz <= reach * reach) return true;
+	}
+	return false;
+}
+
 }   // namespace WaterRiver
