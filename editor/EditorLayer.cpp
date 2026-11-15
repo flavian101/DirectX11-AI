@@ -886,6 +886,7 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
             water->SetEditorTransform(position, rotation, scale);
             Select(water);
             RecordAdded(water, "Add water body");
+            if (type == WaterBodyType::River) { riverEditMode_ = true; riverDragIndex_ = -1; riverStatus_.clear(); }   // a river starts as a curve to draw, not a plane to set up
         }
     }
     if (duplicateRequested_) {
@@ -2827,6 +2828,8 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
         const float t = (level - ray.origin.y) / ray.direction.y;
         if (t > 0.0f) { hitX = ray.origin.x + ray.direction.x * t; hitZ = ray.origin.z + ray.direction.z * t; onPlane = true; }
     }
+    float mouseBodyX = 0.0f, mouseBodyZ = 0.0f;   // the same spot in the body's frame, where the control points live
+    const bool mouseOnBody = onPlane && water->WorldToBody(hitX, hitZ, mouseBodyX, mouseBodyZ);
 
     // The control points on the screen, and which one the mouse is near (within 14 pixels).
     const size_t count = edited.riverPath.size();
@@ -2870,39 +2873,118 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
         std::snprintf(label, sizeof(label), "%d", static_cast<int>(i) + 1);
         list->AddText(ImVec2(handle[i].x + 10.0f, handle[i].y - 8.0f), IM_COL32(255, 255, 255, 230), label);
     }
+
+    // What the next click would do, drawn before it is made (lesson 39): on the water it adds a bend point to the curve, anywhere
+    // else it extends whichever end of the river is nearer. The order the points are clicked in no longer matters.
+    if (mouseOnBody && hovered < 0 && riverDragIndex_ < 0 && count < static_cast<size_t>(RiverPath::kMaxPoints)) {
+        const RiverPath::Placement next = RiverPath::Place(edited.riverPath, RiverPath::Build(edited.riverPath, 1.0f), mouseBodyX, mouseBodyZ);
+        const ImU32 ghost = IM_COL32(255, 255, 255, 170);
+        const char* what = "start the river here";
+        if (count >= 1) {
+            if (next.kind == RiverPath::Placement::Kind::Insert) {
+                const XMFLOAT2 on = water->BodyToWorld(next.point.x, next.point.z);
+                ImVec2 at;
+                if (project(on.x, level + 0.15f, on.y, at)) list->AddCircle(at, 9.0f, ghost, 0, 2.0f);
+                what = "add a bend point here";
+            } else {
+                const bool upstream = next.kind == RiverPath::Placement::Kind::Prepend;
+                const size_t endIndex = upstream ? 0 : count - 1;
+                if (visible[endIndex]) list->AddLine(handle[endIndex], io.MousePos, ghost, 1.5f);
+                list->AddCircle(io.MousePos, 7.0f, ghost, 0, 2.0f);
+                what = upstream ? "extend upstream" : "extend downstream";
+            }
+        } else {
+            list->AddCircle(io.MousePos, 7.0f, ghost, 0, 2.0f);
+        }
+        list->AddText(ImVec2(io.MousePos.x + 14.0f, io.MousePos.y + 10.0f), ghost, what);
+    }
+
+    // Problems with the curve, marked where they are while the points are still being placed.
+    const RiverPath::Problems problems = RiverPath::Analyse(path);
+    auto ring = [&](int sampleIndex, const char* text) {
+        const RiverPath::Sample& sample = path[static_cast<size_t>(sampleIndex)];
+        ImVec2 at;
+        if (!project(sample.x, level + 0.15f, sample.z, at)) return;
+        list->AddCircle(at, 16.0f, IM_COL32(255, 70, 60, 255), 0, 3.0f);
+        if (text) list->AddText(ImVec2(at.x + 20.0f, at.y - 8.0f), IM_COL32(255, 110, 100, 255), text);
+    };
+    if (problems.tightIndex >= 0) ring(problems.tightIndex, "bend too tight");
+    if (problems.overlapA >= 0) { ring(problems.overlapA, "river overlaps itself"); ring(problems.overlapB, nullptr); }
+    if (problems.Any())
+        list->AddText(ImVec2(x + 8.0f, y + height - 42.0f), IM_COL32(255, 110, 100, 240),
+                      problems.overlapA >= 0 ? "The river lies on top of itself: drag the marked points apart or delete one."
+                                             : "A bend is tighter than the river is wide: space the points out or narrow the river.");
     list->AddText(ImVec2(x + 8.0f, y + height - 22.0f), IM_COL32(255, 220, 80, 230),
-                  "River: click = add a point | drag a point = move | right-click a point = delete | Esc = done");
+                  count == 0 ? "River: click where it should start | Esc or Enter = done"
+                             : "River: click = extend (or bend the curve on the water) | drag a point = move | right-click a point = delete | Enter / Esc = done");
     list->PopClipRect();
 
     // Input.
     bool modified = false;
+    bool refit = false;   // the set of points changed shape: re-centre the body and size the plane to cover them
     if (viewportHovered_ && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             if (hovered >= 0) {
                 riverDragIndex_ = hovered;
-            } else if (onPlane && edited.riverPath.size() < static_cast<size_t>(RiverPath::kMaxPoints)) {
-                RiverPoint point;
-                point.width = edited.riverPath.empty() ? 8.0f : edited.riverPath.back().width;
-                if (water->WorldToBody(hitX, hitZ, point.x, point.z)) { edited.riverPath.push_back(point); modified = true; }
+            } else if (mouseOnBody && edited.riverPath.size() < static_cast<size_t>(RiverPath::kMaxPoints)) {
+                // Where the new point goes in the list is decided by RiverPath::Place (tested in tests/river_test.cpp).
+                const RiverPath::Placement placement =
+                    RiverPath::Place(edited.riverPath, RiverPath::Build(edited.riverPath, 1.0f), mouseBodyX, mouseBodyZ);
+                edited.riverPath.insert(edited.riverPath.begin() + static_cast<std::ptrdiff_t>(placement.index), placement.point);
+                riverDragIndex_ = static_cast<int>(placement.index);   // keep the button down and drag to fine-tune the new point
+                modified = true;
+                refit = true;
             }
         }
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hovered >= 0) {
             edited.riverPath.erase(edited.riverPath.begin() + hovered);
             riverDragIndex_ = -1;
             modified = true;
+            refit = true;
         }
     }
     if (riverDragIndex_ >= 0) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && riverDragIndex_ < static_cast<int>(edited.riverPath.size())) {
             RiverPoint& point = edited.riverPath[static_cast<size_t>(riverDragIndex_)];
-            float bodyX = 0.0f, bodyZ = 0.0f;
-            if (onPlane && water->WorldToBody(hitX, hitZ, bodyX, bodyZ)) { point.x = bodyX; point.z = bodyZ; modified = true; }
+            // Only once the mouse has really moved: a plain click on the water must not push the point it just inserted off the
+            // line (and a click on a handle must not nudge it).
+            if (mouseOnBody && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 3.0f)) { point.x = mouseBodyX; point.z = mouseBodyZ; modified = true; }
         } else {
-            riverDragIndex_ = -1;   // released (or the point is gone)
+            if (riverDragIndex_ < static_cast<int>(edited.riverPath.size())) { modified = true; refit = true; }   // released: fit once, not every frame of the drag
+            riverDragIndex_ = -1;
         }
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { riverEditMode_ = false; riverDragIndex_ = -1; }
-    if (modified) water->SetSettings(edited);
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) || (viewportHovered_ && ImGui::IsKeyPressed(ImGuiKey_Enter))) { riverEditMode_ = false; riverDragIndex_ = -1; }
+    if (modified) {
+        if (refit && riverAutoFit_) FitRiverPlane(water, edited);
+        water->SetSettings(edited);
+    }
+}
+
+// Centres the water body on its river and sizes the plane to cover it: the water exists only where the plane does. The points
+// are in the body's frame, so moving the body by the middle of their box and shifting every point the other way leaves the river
+// exactly where it was in the world. (Before, "Fit plane" grew the plane around wherever the body happened to be.)
+void EditorLayer::FitRiverPlane(Water* water, WaterSettings& settings)
+{
+    if (settings.riverPath.size() < 2) return;
+    float minX = 1e30f, maxX = -1e30f, minZ = 1e30f, maxZ = -1e30f, widest = 0.0f;
+    for (const RiverPoint& p : settings.riverPath) {
+        minX = (std::min)(minX, p.x); maxX = (std::max)(maxX, p.x);
+        minZ = (std::min)(minZ, p.z); maxZ = (std::max)(maxZ, p.z);
+        widest = (std::max)(widest, p.width);
+    }
+    const float centreX = 0.5f * (minX + maxX), centreZ = 0.5f * (minZ + maxZ);
+    const XMFLOAT2 centreInWorld = water->BodyToWorld(centreX, centreZ);   // asked before anything moves
+    const float margin = 0.5f * widest + settings.riverBank + 10.0f;
+    for (RiverPoint& p : settings.riverPath) { p.x -= centreX; p.z -= centreZ; }
+    settings.size = (std::clamp)(maxX - minX + 2.0f * margin, WaterSettings::kSizeMin, WaterSettings::kSizeMax);
+    settings.sizeZ = (std::clamp)(maxZ - minZ + 2.0f * margin, WaterSettings::kSizeMin, WaterSettings::kSizeMax);
+    XMFLOAT3 position, rotation, scale;
+    water->GetEditorTransform(position, rotation, scale);
+    water->SetSettings(settings);                      // the new size and the shifted points...
+    position.x = centreInWorld.x;
+    position.z = centreInWorld.y;                      // (BodyToWorld's second value is world z)
+    water->SetEditorTransform(position, rotation, scale);   // ...then the body to the middle of them (the level, y, stays)
 }
 
 // Digs the channel along the curve into the terrain: ONE undo step, the same kind as a sculpt stroke.
@@ -2934,7 +3016,9 @@ void EditorLayer::DrawRiverPathInspector(Water* water, WaterSettings& s, bool& c
         ImGui::SetItemTooltip("Space the points further apart, make the turn gentler, or narrow the river there.");
     }
     if (ImGui::Checkbox("Draw in viewport", &riverEditMode_)) riverDragIndex_ = -1;
-    ImGui::SetItemTooltip("Click on the water's level to add a point at the downstream end. Drag a point to move it,\nright-click one to delete it. The river runs from point 1 (upstream) to the last point.");
+    ImGui::SetItemTooltip("Click on the water's level: on the river it adds a bend point, anywhere else it extends the nearer end.\nDrag a point to move it, right-click one to delete it. Enter or Esc = done.\nThe river runs from point 1 (upstream) to the last point; Reverse flips it.");
+    ImGui::Checkbox("Fit the plane as I draw", &riverAutoFit_);
+    ImGui::SetItemTooltip("Re-centres the body on the river and sizes the plane to cover it whenever a point is added, moved or deleted.");
 
     int remove = -1;
     for (size_t i = 0; i < s.riverPath.size(); ++i) {

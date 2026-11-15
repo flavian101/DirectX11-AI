@@ -230,6 +230,100 @@ static void TestFlowMap()
 	CHECK(!WaterRiver::Decode(WaterRiver::MakeTexel(RiverPath::Hit{})).inRiver);
 }
 
+
+// Lesson 39: where a click puts a new point, and what is wrong with the curve as drawn.
+static std::vector<RiverPoint> ApplyPlacement(std::vector<RiverPoint> points, const RiverPath::Placement& placement)
+{
+	points.insert(points.begin() + static_cast<std::ptrdiff_t>(placement.index), placement.point);
+	return points;
+}
+
+static void TestPlace()
+{
+	// No points yet: the click is the first point, with the default width. One point: still just appended.
+	RiverPath::Placement first = RiverPath::Place({}, {}, 5.0f, 6.0f, 9.0f);
+	CHECK(first.kind == RiverPath::Placement::Kind::Append && first.index == 0);
+	CHECK(first.point.x == 5.0f && first.point.z == 6.0f && first.point.width == 9.0f);
+	const std::vector<RiverPoint> one = { { 0, 0, 12 } };
+	const RiverPath::Placement second = RiverPath::Place(one, {}, 20.0f, 0.0f);
+	CHECK(second.kind == RiverPath::Placement::Kind::Append && second.index == 1 && second.point.width == 12.0f);
+
+	// A straight river from (-40, 0) to (40, 0), 8 wide, with a middle point: three control points.
+	const std::vector<RiverPoint> river = { { -40, 0, 8 }, { 0, 0, 12 }, { 40, 0, 8 } };
+	const std::vector<RiverPath::Sample> path = RiverPath::Build(river, 1.0f);
+
+	// Control spans: samples before the middle point are on stretch 0, after it on stretch 1; the last sample is on the last stretch.
+	CHECK(path.front().span == 0 && path.back().span == 1);
+	for (size_t i = 1; i < path.size(); ++i) CHECK(path[i].span >= path[i - 1].span);
+
+	// Beyond the downstream end: appended. Beyond the upstream end: prepended, at the front.
+	const RiverPath::Placement after = RiverPath::Place(river, path, 70.0f, 5.0f);
+	CHECK(after.kind == RiverPath::Placement::Kind::Append && after.index == 3);
+	CHECK(after.point.x == 70.0f && after.point.z == 5.0f);
+	const RiverPath::Placement before = RiverPath::Place(river, path, -70.0f, 20.0f);
+	CHECK(before.kind == RiverPath::Placement::Kind::Prepend && before.index == 0);
+	CHECK(before.point.width == 8.0f);
+	// Just past the end but within the width of the water: still extends, never inserts.
+	CHECK(RiverPath::Place(river, path, 42.0f, 1.0f).kind == RiverPath::Placement::Kind::Append);
+	CHECK(RiverPath::Place(river, path, -42.0f, 1.0f).kind == RiverPath::Placement::Kind::Prepend);
+
+	// On the water, between the first and middle points: inserted at index 1, ONTO the middle line, with the river's width there.
+	const RiverPath::Placement low = RiverPath::Place(river, path, -20.0f, 2.5f);
+	CHECK(low.kind == RiverPath::Placement::Kind::Insert && low.index == 1);
+	CHECK(std::abs(low.point.x + 20.0f) < 0.6f && std::abs(low.point.z) < 1e-3f);
+	CHECK(low.point.width > 8.0f && low.point.width < 12.0f);
+	// And between the middle and last: index 2.
+	const RiverPath::Placement high = RiverPath::Place(river, path, 20.0f, -2.0f);
+	CHECK(high.kind == RiverPath::Placement::Kind::Insert && high.index == 2);
+	// Inserting a point on the line leaves the curve where it was (to within the spline's own change).
+	const std::vector<RiverPath::Sample> after2 = RiverPath::Build(ApplyPlacement(river, low), 1.0f);
+	CHECK(RiverPath::Closest(after2, -20.0f, 0.0f).distance < 0.05f);
+	// Beside the water, not on it: extends the nearer end instead.
+	const RiverPath::Placement beside = RiverPath::Place(river, path, 30.0f, 40.0f);
+	CHECK(beside.kind == RiverPath::Placement::Kind::Append);
+}
+
+static void TestAnalyse()
+{
+	// A straight river and a gentle curve: nothing wrong.
+	CHECK(!RiverPath::Analyse(RiverPath::Build({ { -40, 0, 8 }, { 0, 0, 8 }, { 40, 0, 8 } }, 1.0f)).Any());
+	CHECK(!RiverPath::Analyse(RiverPath::Build({ { -40, 0, 8 }, { 0, 5, 8 }, { 40, 30, 8 }, { 60, 80, 8 } }, 1.0f)).Any());
+	// A hairpin tighter than the river is wide: reported as a tight bend, with the sample where it is.
+	const std::vector<RiverPath::Sample> pin = RiverPath::Build({ { -20, 0, 10 }, { 0, 0, 10 }, { 3, 4, 10 }, { 0, 8, 10 }, { -20, 8, 10 } }, 0.5f);
+	const RiverPath::Problems tight = RiverPath::Analyse(pin);
+	CHECK(tight.tightIndex > 0 && tight.tightRatio < 1.0f);
+	// Two parts of a river lying on top of each other: reported as an overlap, between samples that are far apart along it.
+	const std::vector<RiverPath::Sample> twice = RiverPath::Build({ { 0, 0, 8 }, { 60, 0, 8 }, { 120, 0, 8 }, { 60, 2, 8 }, { 0, 3, 8 } }, 1.0f);
+	const RiverPath::Problems overlap = RiverPath::Analyse(twice);
+	CHECK(overlap.overlapA >= 0 && overlap.overlapB > overlap.overlapA);
+	CHECK(twice[static_cast<size_t>(overlap.overlapB)].s - twice[static_cast<size_t>(overlap.overlapA)].s > 12.0f);   // more than half a bend as wide as the river
+	// Two stretches running side by side with clear water between them are fine.
+	CHECK(RiverPath::Analyse(RiverPath::Build({ { 0, 0, 8 }, { 60, 0, 8 }, { 90, 25, 8 }, { 60, 50, 8 }, { 0, 50, 8 } }, 1.0f)).overlapA < 0);
+}
+
+// The author's actual sequence of clicks that went wrong: along the river from the middle to the left, then back out on the
+// right, then up round a hairpin. With the old rule (every click appended) the curve doubled back along itself; with Place the
+// same clicks make one river.
+static void TestClickSequence()
+{
+	const float clicks[][2] = { { 100, 0 }, { 40, 2 }, { -20, 3 }, { -80, 4 }, { 150, -5 }, { 120, -60 }, { 40, -90 }, { -10, -100 }, { -12, -96 }, { 5, -88 } };
+	const int sensible = 8;   // the first eight make a river; the last two squeeze a hairpin in beside the eighth
+	std::vector<RiverPoint> appended, placed;
+	for (int i = 0; i < 10; ++i) {
+		appended.push_back({ clicks[i][0], clicks[i][1], 8.0f });
+		placed = ApplyPlacement(placed, RiverPath::Place(placed, RiverPath::Build(placed, 1.0f), clicks[i][0], clicks[i][1]));
+		if (i + 1 == sensible) {
+			CHECK(!RiverPath::Analyse(RiverPath::Build(placed, 1.0f)).Any());                          // one clean river
+			CHECK(RiverPath::Analyse(RiverPath::Build({ appended.begin(), appended.end() }, 1.0f)).overlapA >= 0);   // the old way: it lies on itself
+		}
+	}
+	CHECK(placed.size() == 10);
+	// The hairpin is still a hairpin, and is reported as one (the points were meant to be that close).
+	CHECK(RiverPath::Analyse(RiverPath::Build(placed, 1.0f)).tightIndex >= 0);
+	// Everything clicked from the right-hand end went on the upstream side: the river runs from the last click to the first stretch's far end.
+	CHECK(placed.front().x == 5.0f && placed.back().x == -80.0f);
+}
+
 int main()
 {
 	TestCurve();
@@ -238,6 +332,9 @@ int main()
 	TestCarvedHeight();
 	TestCarve();
 	TestFlowMap();
+	TestPlace();
+	TestAnalyse();
+	TestClickSequence();
 	if (g_failures == 0) std::printf("river tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;
 }

@@ -50,8 +50,9 @@ static const float kFoamBubbleScale = 2.6f;   // the bubbles are this many times
 // `flowDir` = the unit direction of the flow (world x, z); `middle` = 1 in the middle of the river, 0 at its bank.
 // With a curve (lesson 38) all three come from the flow map, so ripples and foam follow the bends. Without one the river is
 // straight: d and s are measured in the plane's own frame, the direction is the body's flow direction.
-void RiverFrame(float2 rest, float2 local, out float2 flowDir, out float2 ds, out float middle)
+void RiverFrame(float2 rest, float2 local, out float2 flowDir, out float2 ds, out float middle, out float outside)
 {
+    outside = 0.0f;
     flowDir = waterWind.xy;
     ds = float2(dot(rest, float2(-flowDir.y, flowDir.x)), dot(rest, flowDir));
     const float across = clamp(dot(local, waterRiver.zw), -1.0f, 1.0f);
@@ -64,6 +65,8 @@ void RiverFrame(float2 rest, float2 local, out float2 flowDir, out float2 ds, ou
         if (strength > 0.05f) {
             flowDir = f.zw / strength;
             middle = saturate((strength - 0.1f) / 0.9f);                  // WaterRiver::kStrengthFloor
+        } else {
+            outside = 1.0f;                                               // lesson 39: beyond the river's corridor there is no river
         }
     }
 }
@@ -200,8 +203,9 @@ float4 main(PS_IN input) : SV_Target
     float speedFactor = 1.0f;
     [branch]
     if (river) {
-        float middle;
-        RiverFrame(input.rest.xy, input.local, flowDir, riverDS, middle);
+        float middle, outsideRiver;
+        RiverFrame(input.rest.xy, input.local, flowDir, riverDS, middle, outsideRiver);
+        clip(0.5f - outsideRiver);   // a river that is a curve is only where its curve is: not the whole rectangle of the plane
         speedFactor = RiverSpeedFactor(middle, mapDepth);
     }
     const float localSpeed = waterFlow.w * speedFactor;

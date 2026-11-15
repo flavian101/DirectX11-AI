@@ -120,6 +120,7 @@ private:
     void DrawRiverPathInspector(Water* water, WaterSettings& settings, bool& changed);   // the "River curve" part of the Current section
     void HandleRiverEditing(Water* water, const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& projection,
                             float imageX, float imageY, float imageWidth, float imageHeight);   // overlay + click to add, drag to move, right-click to delete
+    void FitRiverPlane(Water* water, WaterSettings& settings);   // centres the body on the river and sizes the plane to cover it (lesson 39)
     void CarveRiverChannel(Water* water);                         // digs the terrain along the curve (one undo step)
     void DiscardSculpt(Terrain* terrain);                         // back to the heightmap and noise (undoable)
     // --- terrain painting (lesson 30): the same brush tool, aimed at the layers instead of the heights ---
@@ -165,6 +166,7 @@ private:
     bool sculptStroking_ = false;   // a stroke is in progress (the button went down on the terrain)
     bool riverEditMode_ = false;    // clicks in the viewport edit the selected river's curve (lesson 38)
     int riverDragIndex_ = -1;       // the control point being dragged, -1 = none
+    bool riverAutoFit_ = true;      // keep the plane fitted to the river while its points are placed, moved and deleted
     std::string riverStatus_;       // what the last Carve did, shown under the button
     BrushSettings brush_;           // brush_.radius is in WORLD units here; Terrain::Sculpt converts it
     int brushTarget_ = 0;           // what the brush changes: 0 = the shape of the ground, 1 = its painted layers
