@@ -3,6 +3,7 @@
 #include "SceneObject.h"
 #include "Material.h"
 #include "RenderView.h"
+#include "RiverPath.h"
 #include "UnderwaterLook.h"
 #include "WaterBodyType.h"
 #include "WaterFlow.h"
@@ -51,6 +52,13 @@ struct WaterSettings {
 	float channelProfile = 0.5f;  // 0 = one speed across the plane; 1 = the sides of the plane are much slower than the middle
 	float rippleStretch = 3.0f;   // how much longer than wide the ripples are along the flow (1 = round blobs)
 	float rapids = 0.5f;          // 0 = foam only at the very edge; 1 = foam spreads into fast shallow water
+	// The river as a CURVE (lesson 38). Two or more points: the current follows the curve (the Flow direction is then ignored),
+	// and "Carve channel" digs the terrain along it. Points are in the body's own frame, so the river turns with the body.
+	std::vector<RiverPoint> riverPath;
+	float riverDepth = 1.8f;       // carve: how far below the surface the bed lies in the middle (world units)
+	float riverBank = 5.0f;        // carve: how wide the bank is beyond the water's edge
+	float riverBankHeight = 2.5f;  // carve: how high the bank has climbed by the end of that width
+	bool HasRiverPath() const { return riverPath.size() >= 2; }
 
 	// --- the shore: how the water reacts to the ground under it (needs a terrain) ---
 	float shoreWaves = 1.0f;      // 0 = waves identical everywhere (the old look); 1 = they grow in shallow water, then break and die at the shore
@@ -121,6 +129,7 @@ struct WaterSettings {
 
 	static constexpr float kFlowSpeedMax = 10.0f;
 	static constexpr float kRippleStretchMax = 8.0f;
+	static constexpr float kRiverDepthMax = 30.0f, kRiverBankMax = 60.0f, kRiverBankHeightMax = 60.0f;
 	static constexpr float kFoamScaleMin = 0.3f, kFoamScaleMax = 3.0f, kFoamTrailMax = 4.0f;
 	static constexpr float kSwashMax = 1.5f;
 	static constexpr float kHeightMin = -100.0f, kHeightMax = 200.0f;
@@ -224,6 +233,15 @@ public:
 	// or its level changed. Null = no terrain: the body then has no shore effects at all.
 	void RefreshShoreDepth(const Terrain* terrain);
 	bool HasShoreDepth() const { return depthView_ != nullptr; }
+	// The river's curve (lesson 38). Measured again when the curve, the body or its size changes (called once a frame by the scene).
+	void RefreshRiverFlow();
+	bool HasRiverFlow() const { return flowView_ != nullptr; }
+	// The curve in WORLD space, about a unit apart (empty without a path): what the terrain carve and the editor's overlay use.
+	const std::vector<RiverPath::Sample>& GetRiverWorldPath() const { return riverWorld_; }
+	// A spot of the body's frame (world units from its centre, before it is turned) to the world, and back. The control points
+	// live in the body's frame. WorldToBody is false while the body has no usable transform.
+	DirectX::XMFLOAT2 BodyToWorld(float bodyX, float bodyZ) const;
+	bool WorldToBody(float worldX, float worldZ, float& bodyX, float& bodyZ) const;
 	void GetShoreMapSize(int& width, int& height) const { width = depthField_.Width(); height = depthField_.Height(); }
 	const WaterViewStats& GetStats(ViewKind kind) const { return stats_[static_cast<int>(kind)]; }
 
@@ -259,6 +277,11 @@ private:
 	WaterWaves::Table waves_;
 	// The measured ground under the body. Three copies of one thing: the CPU map (for SampleHeight), the texture and its view.
 	WaterShore::DepthField depthField_;
+	void ReleaseRiverFlow();
+	std::vector<RiverPath::Sample> riverWorld_;   // the curve in world space (rebuilt together with the flow map)
+	std::vector<float> riverKey_;                 // what the flow map was baked from: the curve, the body's placement and size
+	ID3D11Texture2D* flowTexture_ = nullptr;
+	ID3D11ShaderResourceView* flowView_ = nullptr;
 	ID3D11Texture2D* depthTexture_ = nullptr;
 	ID3D11ShaderResourceView* depthView_ = nullptr;
 	DirectX::XMFLOAT4X4 worldToLocal_{};

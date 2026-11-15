@@ -168,7 +168,7 @@ void Scene::Update(float dt)
     }
     // Every water body measures the terrain under it (only when something changed: this is a cheap comparison otherwise).
     const Terrain* terrain = GetTerrain();
-    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) water->RefreshShoreDepth(terrain);
+    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) { water->RefreshShoreDepth(terrain); water->RefreshRiverFlow(); }
     // Scatter follows the ground the same way: it regenerates the cells whose ground changed (within a time budget).
     for (auto& obj : objects_) if (auto* scatter = dynamic_cast<ScatterObject*>(obj.get())) scatter->Refresh(terrain, camera_.GetPosition());
 }

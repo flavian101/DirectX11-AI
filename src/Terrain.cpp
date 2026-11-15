@@ -5,6 +5,7 @@
 #include "Color.h"
 #include "Logger.h"
 #include "Mesh.h"
+#include "RiverCarve.h"
 #include "ShaderSlots.h"
 #include "TerrainChunks.h"
 #include "libs/stb_image.h"
@@ -903,6 +904,36 @@ HeightfieldPatch Terrain::EndSculptStroke()
 	strokeActive_ = false;
 	if (changedGround) NewRevision();   // the ground is final now: the water's shore map can be measured again
 	return patch;
+}
+
+HeightfieldPatch Terrain::CarveRiver(const std::vector<RiverPath::Sample>& path, float waterLevelY, float depth, float bankWidth, float bankHeight)
+{
+	if (heightfield_.IsEmpty() || !renderable_ || path.size() < 2) return {};
+	if (std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.y) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return {};
+	// The carve works in the heightfield's local space (divide by the scale) and in sample values (0..1 of the full height).
+	// The river's widths are measured across the terrain's X scale (a terrain stretched unevenly in X and Z is not supported).
+	const float unit = heightfield_.GetLayout().heightScale * scale_.y;   // world height of a sample value of 1
+	if (unit < 1e-6f) return {};
+	std::vector<RiverPath::Sample> local = path;
+	for (RiverPath::Sample& s : local) {
+		s.x = (s.x - position_.x) / scale_.x;
+		s.z = (s.z - position_.z) / scale_.z;
+		s.halfWidth /= std::fabs(scale_.x);
+	}
+	RiverCarveSettings settings;
+	settings.level = (waterLevelY - position_.y) / unit;
+	settings.depth = depth / unit;
+	settings.bankWidth = bankWidth / std::fabs(scale_.x);
+	settings.bankHeight = bankHeight / unit;
+
+	BeginSculptStroke();
+	const GridRect changed = ::CarveRiver(heightfield_, local, settings, &stroke_);
+	if (!changed.IsEmpty()) {
+		sculpted_ = true;
+		RefreshChunks(changed);
+		RefreshSplat(SplatCellsForSamples(changed, heightfield_.GetLayout().cellsX, heightfield_.GetLayout().cellsZ));
+	}
+	return EndSculptStroke();   // moves the revision, so the water measures its shore again
 }
 
 bool Terrain::ApplyPatch(const HeightfieldPatch& patch, bool useAfter)

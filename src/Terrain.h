@@ -2,6 +2,7 @@
 #include "Heightfield.h"
 #include "HeightfieldEdit.h"
 #include "RayPicking.h"
+#include "RiverPath.h"
 #include "Renderable.h"
 #include "SceneObject.h"
 #include "Texture.h"
@@ -169,6 +170,10 @@ public:
 	// One step of a brush at a WORLD position; brush.radius is in world units. False if nothing changed.
 	bool Sculpt(const BrushSettings& brush, float worldX, float worldZ, float seconds);
 	HeightfieldPatch EndSculptStroke();   // the finished stroke (empty if it changed nothing)
+	// Digs a river's channel (lesson 38). `path` is the river's curve in WORLD space. The bed is `depth` below the water's surface
+	// (`waterLevelY`, world Y) in the middle, level with it at the water's edge; the banks climb `bankHeight` over `bankWidth`
+	// beyond that. Returns what changed as one patch, like a stroke, for undo (empty if the ground already had that shape).
+	HeightfieldPatch CarveRiver(const std::vector<RiverPath::Sample>& path, float waterLevelY, float depth, float bankWidth, float bankHeight);
 	// Undo / redo of a stroke: writes the patch's "before" or "after" values and refreshes the chunks it touches.
 	bool ApplyPatch(const HeightfieldPatch& patch, bool useAfter);
 	// Replaces every height at once (loading a saved sculpt, discarding or restoring one). The size must match the grid.

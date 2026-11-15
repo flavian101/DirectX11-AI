@@ -100,6 +100,7 @@ add_library(Engine STATIC
 	src/Terrain.cpp
 	src/Heightfield.cpp
 	src/HeightfieldEdit.cpp
+	src/RiverCarve.cpp
 	src/TerrainSplat.cpp
 	src/TerrainPaint.cpp
 	src/Png16.cpp
@@ -219,6 +220,9 @@ if(BUILD_TESTS)
     add_executable(UnderwaterLookTests tests/underwater_look_test.cpp)
     target_include_directories(UnderwaterLookTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME UnderwaterLook COMMAND UnderwaterLookTests)
+    add_executable(RiverTests tests/river_test.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
+    target_include_directories(RiverTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME River COMMAND RiverTests)
     add_executable(ImageDownscaleTests tests/image_downscale_test.cpp)
     target_include_directories(ImageDownscaleTests PRIVATE ${CMAKE_SOURCE_DIR}/editor)
     add_test(NAME ImageDownscale COMMAND ImageDownscaleTests)

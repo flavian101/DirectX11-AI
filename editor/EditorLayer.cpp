@@ -654,6 +654,12 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
     DrawLightMarkers(ImGui::GetWindowDrawList(), ctx.scene, selectedId_, view, projection, x, y, width, height);
 
     SceneObject* selected = SelectedObject();
+    // River drawing (lesson 38) works on the selected river and not while sculpting; it ends if either is no longer true.
+    Water* riverWater = nullptr;
+    if (riverEditMode_) {
+        riverWater = dynamic_cast<Water*>(selected);
+        if (sculptTerrain || !riverWater || !riverWater->GetSettings().HasCurrent()) { riverEditMode_ = false; riverDragIndex_ = -1; riverWater = nullptr; }
+    }
     if (selected) {
         XMFLOAT4X4 boundsWorld;
         XMFLOAT3 boundsMin, boundsMax;
@@ -665,7 +671,7 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
         }
 
         XMFLOAT3 position, rotation, scale;
-        if (!sculptTerrain && selected->GetEditorTransform(position, rotation, scale) &&   // no gizmo while sculpting
+        if (!sculptTerrain && !riverWater && selected->GetEditorTransform(position, rotation, scale) &&   // no gizmo while sculpting or drawing a river
             (gizmoTool_ != GizmoTool::Rotate || selected->SupportsRotation()) &&
             (gizmoTool_ != GizmoTool::Scale || selected->SupportsScale())) {
             XMFLOAT4X4 matrix = ComposeTransform(position, rotation, scale);
@@ -687,7 +693,7 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
 
     // Click = pick. Only when the click is not on the gizmo's handles, or grabbing an arrow would also select
     // whatever object is behind it.
-    if (!sculptTerrain && viewportHovered_ && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
+    if (!sculptTerrain && !riverWater && viewportHovered_ && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
         const ImVec2 mouse = ImGui::GetMousePos();
         const float ndcX = ((mouse.x - x) / width) * 2.0f - 1.0f;
         const float ndcY = 1.0f - ((mouse.y - y) / height) * 2.0f;   // screen y grows downward, ndc y grows upward
@@ -766,6 +772,8 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
             ImGui::GetWindowDrawList()->PopClipRect();
         }
     }
+
+    if (riverWater) HandleRiverEditing(riverWater, view, projection, x, y, width, height);
 }
 
 SceneObjectId EditorLayer::PickObject(const Ray& ray) const
@@ -920,7 +928,7 @@ void EditorLayer::TrackEdits(LayerContext& ctx)
     // "Interacting" = the user is holding a slider, dragging a gizmo or typing in a field. While they are, the
     // baseline stays frozen; the first idle frame afterwards reports ONE edit. This runs before NewFrame, so
     // IsAnyItemActive reflects the end of the previous frame.
-    const bool interacting = ImGui::IsAnyItemActive() || ImGuizmo::IsUsing();
+    const bool interacting = ImGui::IsAnyItemActive() || ImGuizmo::IsUsing() || riverDragIndex_ >= 0;
 
     std::string before;
     const std::string globals = CaptureGlobalState(ctx.scene);
@@ -2461,7 +2469,7 @@ void EditorLayer::FinishSculptStroke(Terrain* terrain)
     }
 }
 
-void EditorLayer::RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch patch)
+void EditorLayer::RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch patch, const char* name)
 {
     // The command holds the patch (not the terrain, which may be rebuilt or reloaded) and looks the terrain up by id.
     const auto shared = std::make_shared<HeightfieldPatch>(std::move(patch));
@@ -2469,7 +2477,7 @@ void EditorLayer::RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch p
         if (!scene_) return;
         if (auto* terrain = dynamic_cast<Terrain*>(scene_->Find(terrainId))) terrain->ApplyPatch(*shared, redo);
     };
-    history_.Push(std::make_unique<LambdaCommand>("Sculpt terrain", [run]() { run(false); }, [run]() { run(true); }));
+    history_.Push(std::make_unique<LambdaCommand>(name, [run]() { run(false); }, [run]() { run(true); }));
 }
 
 void EditorLayer::DiscardSculpt(Terrain* terrain)
@@ -2789,6 +2797,228 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
     ImGui::TextDisabled("Surface spans Y %.1f to %.1f", minY, maxY);
 }
 
+// ---- Rivers as curves (lesson 38) ----------------------------------------------------------------------------------------
+
+// Clicks in the viewport edit the river's control points: click on empty water level = add a point at the end, press on a point
+// and drag = move it, right-click a point = delete it, Esc = done. The points live in the body's frame, so everything goes
+// through Water::WorldToBody / BodyToWorld. The mouse is aimed at the PLANE of the water (the river is level), not the ground.
+void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const XMFLOAT4X4& projection,
+                                     float x, float y, float width, float height)
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    const XMMATRIX viewProjection = XMLoadFloat4x4(&view) * XMLoadFloat4x4(&projection);
+    auto project = [&](float wx, float wy, float wz, ImVec2& out) {
+        const XMVECTOR clip = XMVector4Transform(XMVectorSet(wx, wy, wz, 1.0f), viewProjection);
+        const float w = XMVectorGetW(clip);
+        if (w <= 0.001f) return false;   // behind the camera
+        out = ImVec2(x + (XMVectorGetX(clip) / w * 0.5f + 0.5f) * width, y + (1.0f - (XMVectorGetY(clip) / w * 0.5f + 0.5f)) * height);
+        return true;
+    };
+    WaterSettings edited = water->GetSettings();
+    const float level = edited.height;
+
+    // Where does the mouse point on the plane of the water?
+    const float ndcX = ((io.MousePos.x - x) / width) * 2.0f - 1.0f;
+    const float ndcY = 1.0f - ((io.MousePos.y - y) / height) * 2.0f;
+    const Ray ray = MakePickRay(view, projection, ndcX, ndcY);
+    bool onPlane = false;
+    float hitX = 0.0f, hitZ = 0.0f;
+    if (std::fabs(ray.direction.y) > 1e-5f) {
+        const float t = (level - ray.origin.y) / ray.direction.y;
+        if (t > 0.0f) { hitX = ray.origin.x + ray.direction.x * t; hitZ = ray.origin.z + ray.direction.z * t; onPlane = true; }
+    }
+
+    // The control points on the screen, and which one the mouse is near (within 14 pixels).
+    const size_t count = edited.riverPath.size();
+    std::vector<ImVec2> handle(count);
+    std::vector<char> visible(count, 0);
+    int hovered = -1;
+    float nearest = 14.0f * 14.0f;
+    for (size_t i = 0; i < count; ++i) {
+        const XMFLOAT2 world = water->BodyToWorld(edited.riverPath[i].x, edited.riverPath[i].z);
+        visible[i] = project(world.x, level + 0.15f, world.y, handle[i]) ? 1 : 0;
+        if (!visible[i]) continue;
+        const float dx = handle[i].x - io.MousePos.x, dy = handle[i].y - io.MousePos.y;
+        if (dx * dx + dy * dy < nearest) { nearest = dx * dx + dy * dy; hovered = static_cast<int>(i); }
+    }
+
+    // The overlay: the middle line (yellow) and both banks (cyan), then the handles.
+    ImDrawList* list = ImGui::GetWindowDrawList();
+    list->PushClipRect(ImVec2(x, y), ImVec2(x + width, y + height), true);
+    const std::vector<RiverPath::Sample>& path = water->GetRiverWorldPath();
+    ImVec2 previous[3] = {};
+    bool previousOk[3] = { false, false, false };
+    const ImU32 colors[3] = { IM_COL32(255, 220, 80, 255), IM_COL32(90, 200, 255, 200), IM_COL32(90, 200, 255, 200) };
+    for (const RiverPath::Sample& s : path) {
+        const float sideX = -s.tz, sideZ = s.tx;
+        const float px[3] = { s.x, s.x + sideX * s.halfWidth, s.x - sideX * s.halfWidth };
+        const float pz[3] = { s.z, s.z + sideZ * s.halfWidth, s.z - sideZ * s.halfWidth };
+        for (int k = 0; k < 3; ++k) {
+            ImVec2 now;
+            const bool ok = project(px[k], level + 0.15f, pz[k], now);
+            if (ok && previousOk[k]) list->AddLine(previous[k], now, colors[k], k == 0 ? 2.5f : 1.5f);
+            previous[k] = now;
+            previousOk[k] = ok;
+        }
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (!visible[i]) continue;
+        const bool active = static_cast<int>(i) == hovered || static_cast<int>(i) == riverDragIndex_;
+        list->AddCircleFilled(handle[i], active ? 8.0f : 6.0f, active ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 150, 40, 255));
+        list->AddCircle(handle[i], active ? 8.0f : 6.0f, IM_COL32(0, 0, 0, 255), 0, 1.5f);
+        char label[8];
+        std::snprintf(label, sizeof(label), "%d", static_cast<int>(i) + 1);
+        list->AddText(ImVec2(handle[i].x + 10.0f, handle[i].y - 8.0f), IM_COL32(255, 255, 255, 230), label);
+    }
+    list->AddText(ImVec2(x + 8.0f, y + height - 22.0f), IM_COL32(255, 220, 80, 230),
+                  "River: click = add a point | drag a point = move | right-click a point = delete | Esc = done");
+    list->PopClipRect();
+
+    // Input.
+    bool modified = false;
+    if (viewportHovered_ && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (hovered >= 0) {
+                riverDragIndex_ = hovered;
+            } else if (onPlane && edited.riverPath.size() < static_cast<size_t>(RiverPath::kMaxPoints)) {
+                RiverPoint point;
+                point.width = edited.riverPath.empty() ? 8.0f : edited.riverPath.back().width;
+                if (water->WorldToBody(hitX, hitZ, point.x, point.z)) { edited.riverPath.push_back(point); modified = true; }
+            }
+        }
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hovered >= 0) {
+            edited.riverPath.erase(edited.riverPath.begin() + hovered);
+            riverDragIndex_ = -1;
+            modified = true;
+        }
+    }
+    if (riverDragIndex_ >= 0) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && riverDragIndex_ < static_cast<int>(edited.riverPath.size())) {
+            RiverPoint& point = edited.riverPath[static_cast<size_t>(riverDragIndex_)];
+            float bodyX = 0.0f, bodyZ = 0.0f;
+            if (onPlane && water->WorldToBody(hitX, hitZ, bodyX, bodyZ)) { point.x = bodyX; point.z = bodyZ; modified = true; }
+        } else {
+            riverDragIndex_ = -1;   // released (or the point is gone)
+        }
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { riverEditMode_ = false; riverDragIndex_ = -1; }
+    if (modified) water->SetSettings(edited);
+}
+
+// Digs the channel along the curve into the terrain: ONE undo step, the same kind as a sculpt stroke.
+void EditorLayer::CarveRiverChannel(Water* water)
+{
+    Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;
+    if (!terrain || !water) return;
+    const WaterSettings& s = water->GetSettings();
+    const std::vector<RiverPath::Sample>& path = water->GetRiverWorldPath();
+    if (path.size() < 2) { riverStatus_ = "Add at least two points first."; return; }
+    HeightfieldPatch patch = terrain->CarveRiver(path, s.height, s.riverDepth, s.riverBank, s.riverBankHeight);
+    if (patch.IsEmpty()) { riverStatus_ = "Nothing to dig: the ground already has this shape."; return; }
+    RecordSculptStroke(terrain->GetId(), std::move(patch), "Carve river");
+    riverStatus_ = "Channel carved. Ctrl+Z puts the ground back.";
+}
+
+// The part of the Current section that makes a river a curve: the points, the carve, and the plane that has to cover it.
+void EditorLayer::DrawRiverPathInspector(Water* water, WaterSettings& s, bool& changed)
+{
+    ImGui::SeparatorText("River curve");
+    if (s.HasRiverPath()) {
+        ImGui::TextDisabled("%d points, %.0f units long. The current follows the curve (Flow direction is ignored).",
+                            static_cast<int>(s.riverPath.size()), RiverPath::Length(water->GetRiverWorldPath()));
+    } else {
+        ImGui::TextDisabled("No curve: the river is a straight rectangle. Place two or more points to make it wind.");
+    }
+    if (s.HasRiverPath() && RiverPath::TightestBendRatio(water->GetRiverWorldPath()) < 1.0f) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.3f, 1.0f), "A bend is tighter than the river is wide: ripples pinch on its inside.");
+        ImGui::SetItemTooltip("Space the points further apart, make the turn gentler, or narrow the river there.");
+    }
+    if (ImGui::Checkbox("Draw in viewport", &riverEditMode_)) riverDragIndex_ = -1;
+    ImGui::SetItemTooltip("Click on the water's level to add a point at the downstream end. Drag a point to move it,\nright-click one to delete it. The river runs from point 1 (upstream) to the last point.");
+
+    int remove = -1;
+    for (size_t i = 0; i < s.riverPath.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        RiverPoint& p = s.riverPath[i];
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("%d", static_cast<int>(i) + 1);
+        ImGui::SameLine(28.0f);
+        float xz[2] = { p.x, p.z };
+        ImGui::SetNextItemWidth(150.0f);
+        if (ImGui::DragFloat2("##position", xz, 0.5f, -WaterSettings::kSizeMax, WaterSettings::kSizeMax, "%.1f")) { p.x = xz[0]; p.z = xz[1]; changed = true; }
+        ImGui::SetItemTooltip("Position in the body's own frame: world units from its centre, before it is turned (x, z).");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80.0f);
+        changed |= ImGui::DragFloat("##width", &p.width, 0.2f, RiverPath::kMinWidth, RiverPath::kMaxWidth, "wide %.1f");
+        ImGui::SetItemTooltip("The width of the water here, bank to bank.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("X")) remove = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (remove >= 0) { s.riverPath.erase(s.riverPath.begin() + remove); changed = true; }
+
+    if (ImGui::Button("Add point") && s.riverPath.size() < static_cast<size_t>(RiverPath::kMaxPoints)) {
+        RiverPoint point;
+        if (!s.riverPath.empty()) {   // 20 units further along the way the river was already going
+            const RiverPoint& last = s.riverPath.back();
+            float dx = 0.0f, dz = 20.0f;
+            if (s.riverPath.size() >= 2) {
+                const RiverPoint& before = s.riverPath[s.riverPath.size() - 2];
+                const float length = std::hypot(last.x - before.x, last.z - before.z);
+                if (length > 1e-3f) { dx = (last.x - before.x) / length * 20.0f; dz = (last.z - before.z) / length * 20.0f; }
+            }
+            point = { last.x + dx, last.z + dz, last.width };
+        } else {
+            point = { 0.0f, -20.0f, 8.0f };
+        }
+        s.riverPath.push_back(point);
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reverse") && s.riverPath.size() >= 2) { std::reverse(s.riverPath.begin(), s.riverPath.end()); changed = true; }
+    ImGui::SetItemTooltip("Swap upstream and downstream: the water runs the other way.");
+    ImGui::SameLine();
+    if (ImGui::Button("Clear") && !s.riverPath.empty()) { s.riverPath.clear(); riverEditMode_ = false; riverDragIndex_ = -1; changed = true; }
+
+    if (s.HasRiverPath()) {
+        // The plane has to cover the river: the water exists only where the plane does (and the ground is below it).
+        if (ImGui::Button("Fit plane to river")) {
+            float halfX = 0.0f, halfZ = 0.0f, widest = 0.0f;
+            for (const RiverPoint& p : s.riverPath) { halfX = (std::max)(halfX, std::fabs(p.x)); halfZ = (std::max)(halfZ, std::fabs(p.z)); widest = (std::max)(widest, p.width); }
+            const float margin = 0.5f * widest + s.riverBank + 10.0f;
+            s.size = (std::clamp)(2.0f * (halfX + margin), WaterSettings::kSizeMin, WaterSettings::kSizeMax);
+            s.sizeZ = (std::clamp)(2.0f * (halfZ + margin), WaterSettings::kSizeMin, WaterSettings::kSizeMax);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("Resizes the plane (around the body's centre) to cover every point, the banks and a margin.");
+
+        ImGui::SeparatorText("Carve the channel");
+        changed |= ImGui::SliderFloat("Bed depth", &s.riverDepth, 0.1f, 12.0f, "%.1f below the water");
+        ImGui::SetItemTooltip("How far below the surface the bed lies in the middle of the river. It rises to meet the surface exactly at the water's edge.");
+        changed |= ImGui::SliderFloat("Bank width", &s.riverBank, 0.5f, 30.0f, "%.1f");
+        ImGui::SetItemTooltip("How far beyond the water's edge the bank climbs.");
+        changed |= ImGui::SliderFloat("Bank height", &s.riverBankHeight, 0.0f, 30.0f, "%.1f above the water");
+        ImGui::SetItemTooltip("How high the bank has climbed by the end of its width. Ground higher than that stays as a steep wall,\nso raise this where the land beside the river is high.");
+        Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;
+        if (terrain) {
+            // How far above the water is the ground along the middle line? (A level river through high ground is a canyon.)
+            float above = 0.0f;
+            const std::vector<RiverPath::Sample>& path = water->GetRiverWorldPath();
+            const size_t stride = (std::max<size_t>)(1, path.size() / 128);
+            for (size_t i = 0; i < path.size(); i += stride) {
+                float groundY = 0.0f;
+                if (terrain->GetHeightAt(path[i].x, path[i].z, groundY)) above = (std::max)(above, groundY - s.height);
+            }
+            ImGui::TextDisabled("Ground on the middle line: up to %.1f above the water.", above);
+        }
+        ImGui::BeginDisabled(!terrain || water->GetRiverWorldPath().size() < 2);
+        if (ImGui::Button("Carve channel into terrain")) CarveRiverChannel(water);
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Digs the terrain along the curve so the water fills a real channel with banks. The water level stays where it is:\nthe river is level, so it works best across flat or gently sloping ground. One undo step.");
+        if (!riverStatus_.empty()) ImGui::TextDisabled("%s", riverStatus_.c_str());
+    }
+}
+
 void EditorLayer::DrawWaterInspector(Water* water)
 {
     // Every water value is just a shader constant, so changes apply live - no pending copy,
@@ -2885,6 +3115,7 @@ void EditorLayer::DrawWaterInspector(Water* water)
         ImGui::SetItemTooltip("Flowing water streams: its ripples are longer than they are wide. 1 = round blobs.");
         changed |= ImGui::SliderFloat("Rapids", &s.rapids, 0.0f, 1.0f);
         ImGui::SetItemTooltip("How far foam spreads into fast, shallow water (over rocks, along the banks). 0 = only the very edge.");
+        DrawRiverPathInspector(water, s, changed);
     }
 
     if (ImGui::CollapsingHeader("Waves", ImGuiTreeNodeFlags_DefaultOpen)) {

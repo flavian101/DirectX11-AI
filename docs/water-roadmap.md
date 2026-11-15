@@ -2,12 +2,9 @@
 
 Ordered by how much each step changes what you see. Each is a patch with a lesson, like the ones before.
 
-## 15. A river that is a curve (fixes "just a plane")
-- **River spline** object: control points you drag in the viewport, width and depth per point.
-- **Carve** the terrain along it with a bank profile (steep outside of bends, gentle inside), as ONE undoable stroke. The carve is pure logic in `HeightfieldEdit` (tested), like the brushes.
-- **Ribbon mesh** that follows the curve, with a coordinate ALONG the river, so ripples and foam follow bends instead of running straight.
-- **Flow map**: flow direction and speed baked per texel from the spline (RG16F), replacing the plane-wide direction. `SampleFlow` then reads it too.
-- Confluences and a lake outlet that the spline can end in.
+## 15. A river that is a curve (DONE: lesson 38)
+- River curve through control points, drawn in the viewport; the terrain carved along it as one undo step; a flow map so ripples, foam and `SampleFlow` follow the bends.
+- Left for later, from lesson 38: a ribbon mesh (needed only if the plane's wasted area ever shows in profiling), waves that follow the curve, round river ends, confluences and a lake outlet.
 
 ## 16. Foam with memory
 - A foam texture around the camera, ping-pong: each frame it decays and gets new foam written (crests, shores, rocks), advected by the flow map.
@@ -23,8 +20,8 @@ Ordered by how much each step changes what you see. Each is a patch with a lesso
 ## 19. The shore on land
 - Wet sand band that follows the swash on the terrain, foam residue that fades, darker wet rocks.
 
-## 20. Waterfalls and drops
-- Where the river spline steps down: a falling sheet, plunge-pool foam, mist (needs the particle system).
+## 20. Sloped rivers, waterfalls and drops
+- A water LEVEL along the curve (the river falls toward its mouth), then steps in it: a falling sheet: a falling sheet, plunge-pool foam, mist (needs the particle system).
 
 ## Later
 - FFT ocean for very large open water; caustics on the bed; ice and frozen rivers.

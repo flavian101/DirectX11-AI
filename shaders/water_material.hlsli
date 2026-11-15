@@ -57,6 +57,29 @@ float SampleWaterDepth(float2 local)
     return SampleWaterShore(local).x;   // (the compiler drops the channels this does not use)
 }
 
+// A river's curve (lesson 38), baked on the CPU (src/WaterRiver.h). Same texel layout as the depth map; four floats per texel:
+// x = s (how far along the river), y = d (how far across it, signed, world units), zw = the unit flow direction (world x, z)
+// times a strength: 0.1 + 0.9 * (how fast across the width: 1 in the middle, 0 at the bank), or 0 away from the river.
+// Only bound for a body that has a curve: waterRiver2.z says so.
+Texture2D<float4> waterRiverFlow : register(t17);
+
+float4 SampleRiverFlow(float2 local)
+{
+    uint width, height;
+    waterRiverFlow.GetDimensions(width, height);
+    const float2 size = float2(width, height);
+    const float2 p = saturate(local * 0.5f + 0.5f) * size - 0.5f;
+    const float2 base = floor(p);
+    const float2 t = p - base;
+    const int2 i0 = (int2)base;
+    const int2 maxIndex = int2(width, height) - 1;
+    const float4 d00 = waterRiverFlow.Load(int3(clamp(i0, int2(0, 0), maxIndex), 0));
+    const float4 d10 = waterRiverFlow.Load(int3(clamp(i0 + int2(1, 0), int2(0, 0), maxIndex), 0));
+    const float4 d01 = waterRiverFlow.Load(int3(clamp(i0 + int2(0, 1), int2(0, 0), maxIndex), 0));
+    const float4 d11 = waterRiverFlow.Load(int3(clamp(i0 + int2(1, 1), int2(0, 0), maxIndex), 0));
+    return lerp(lerp(d00, d10, t.x), lerp(d01, d11, t.x), t.y);
+}
+
 // The depth under a point of the plane, or "very deep" when this body has no map (no terrain under it).
 float WaterDepthAt(float2 local)
 {

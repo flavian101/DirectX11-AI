@@ -115,7 +115,12 @@ private:
     // --- terrain sculpting (lesson 27) ---
     void ToggleSculptMode();                                      // on: selects the terrain; off: lets go of it
     void FinishSculptStroke(Terrain* terrain);                    // the mouse button came up: one undo step
-    void RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch patch);
+    void RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch patch, const char* name = "Sculpt terrain");
+    // --- rivers as curves (lesson 38) ---
+    void DrawRiverPathInspector(Water* water, WaterSettings& settings, bool& changed);   // the "River curve" part of the Current section
+    void HandleRiverEditing(Water* water, const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& projection,
+                            float imageX, float imageY, float imageWidth, float imageHeight);   // overlay + click to add, drag to move, right-click to delete
+    void CarveRiverChannel(Water* water);                         // digs the terrain along the curve (one undo step)
     void DiscardSculpt(Terrain* terrain);                         // back to the heightmap and noise (undoable)
     // --- terrain painting (lesson 30): the same brush tool, aimed at the layers instead of the heights ---
     void RecordPaintStroke(SceneObjectId terrainId, HeightfieldPatch patch);
@@ -158,6 +163,9 @@ private:
     bool gizmoLocal_ = false;
     bool sculptMode_ = false;       // left-drag on the terrain shapes it instead of selecting
     bool sculptStroking_ = false;   // a stroke is in progress (the button went down on the terrain)
+    bool riverEditMode_ = false;    // clicks in the viewport edit the selected river's curve (lesson 38)
+    int riverDragIndex_ = -1;       // the control point being dragged, -1 = none
+    std::string riverStatus_;       // what the last Carve did, shown under the button
     BrushSettings brush_;           // brush_.radius is in WORLD units here; Terrain::Sculpt converts it
     int brushTarget_ = 0;           // what the brush changes: 0 = the shape of the ground, 1 = its painted layers
     int brushLayer_ = 0;            // the layer being painted (0 grass, 1 rock, 2 sand, 3 snow)

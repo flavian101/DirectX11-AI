@@ -46,13 +46,33 @@ static const float kBankDepth = 1.5f;     // WaterFlow::kBankDepth: shallower th
 static const float kRiverCycle = 2.4f;    // WaterFlow::kPhaseCycle: seconds one layer of ripples lives
 static const float kFoamBubbleScale = 2.6f;   // the bubbles are this many times finer than the clumps
 
-// How fast the current runs HERE, as a fraction of the river's flow speed. It is not one speed across the whole river: the
-// water drags on the bed and the banks, so it is fastest in the deep middle and creeps along at the edges. `local` is the
-// position on the plane (-1..1); the shallow bed comes from the depth map.
-float RiverSpeedFactor(float2 local, float mapDepth)
+// Where a pixel is in the river, and which way the water runs: `ds` = (d, s), how far across the river and how far along it;
+// `flowDir` = the unit direction of the flow (world x, z); `middle` = 1 in the middle of the river, 0 at its bank.
+// With a curve (lesson 38) all three come from the flow map, so ripples and foam follow the bends. Without one the river is
+// straight: d and s are measured in the plane's own frame, the direction is the body's flow direction.
+void RiverFrame(float2 rest, float2 local, out float2 flowDir, out float2 ds, out float middle)
 {
+    flowDir = waterWind.xy;
+    ds = float2(dot(rest, float2(-flowDir.y, flowDir.x)), dot(rest, flowDir));
     const float across = clamp(dot(local, waterRiver.zw), -1.0f, 1.0f);
-    const float middle = 1.0f - across * across;                         // 1 in the middle of the plane, 0 at its sides
+    middle = 1.0f - across * across;                                      // 1 in the middle of the plane, 0 at its sides
+    [branch]
+    if (waterRiver2.z > 0.5f) {
+        const float4 f = SampleRiverFlow(local);
+        if (abs(f.x) + abs(f.y) > 1e-4f) ds = float2(f.y, f.x);          // (d, s): continuous along the whole river, no frame to turn
+        const float strength = length(f.zw);
+        if (strength > 0.05f) {
+            flowDir = f.zw / strength;
+            middle = saturate((strength - 0.1f) / 0.9f);                  // WaterRiver::kStrengthFloor
+        }
+    }
+}
+
+// How fast the current runs HERE, as a fraction of the river's flow speed. It is not one speed across the whole river: the
+// water drags on the bed and the banks, so it is fastest in the deep middle and creeps along at the edges. `middle` comes
+// from RiverFrame; the shallow bed comes from the depth map.
+float RiverSpeedFactor(float middle, float mapDepth)
+{
     const float shallow = saturate(mapDepth / kBankDepth);               // 0 at a bank, 1 in deep water
     const float byDepth = lerp(1.0f - 0.92f * waterRiver.x, 1.0f, smoothstep(0.0f, 1.0f, shallow));
     const float byWidth = lerp(1.0f - 0.8f * waterRiver.y, 1.0f, middle);
@@ -71,7 +91,7 @@ void FlowLayer(float time, int layer, out float travelFraction, out float weight
 
 // Ripples on a river: the same two noise layers as RippleSlope, but carried downstream at the LOCAL speed, stretched along the
 // flow (water streams, it does not make round blobs), and evolving instead of sliding.
-float2 RiverRippleSlope(float2 xz, float time, float2 flowDir, float speed)
+float2 RiverRippleSlope(float2 ds, float time, float2 flowDir, float speed)
 {
     const float2 side = float2(-flowDir.y, flowDir.x);
     const float scale = waterWaveInfo.z;
@@ -83,7 +103,7 @@ float2 RiverRippleSlope(float2 xz, float time, float2 flowDir, float speed)
         float fraction, weight;
         FlowLayer(time, layer, fraction, weight);
         const float travel = speed * kRiverCycle * fraction;                  // how far the water has carried this layer
-        const float2 q = float2(dot(xz, side), (dot(xz, flowDir) - travel) / stretch) * scale + layer * 17.3f;
+        const float2 q = float2(ds.x, (ds.y - travel) / stretch) * scale + layer * 17.3f;
         const float3 n1 = ValueNoiseD(q);
         const float3 n2 = ValueNoiseD(q * 2.3f + 7.3f);
         const float2 g = n1.yz * scale + n2.yz * (scale * 2.3f * 0.4f);       // slope in the (across, along / stretch) frame
@@ -115,9 +135,8 @@ float FoamTexture(float2 p, float time)
 }
 
 // The same on a river: stretched along the flow and carried by the local current (two layers, as for the ripples).
-float RiverFoamTexture(float2 xz, float freq, float time, float2 flowDir, float speed)
+float RiverFoamTexture(float2 ds, float freq, float time, float speed)
 {
-    const float2 side = float2(-flowDir.y, flowDir.x);
     const float stretch = 1.0f + 0.5f * (max(waterRiver2.x, 1.0f) - 1.0f);
     float sum = 0.0f, weightSquares = 0.0f;
     [unroll]
@@ -125,7 +144,7 @@ float RiverFoamTexture(float2 xz, float freq, float time, float2 flowDir, float 
         float fraction, weight;
         FlowLayer(time, layer, fraction, weight);
         const float travel = speed * kRiverCycle * fraction;
-        const float2 p = float2(dot(xz, side), (dot(xz, flowDir) - travel) / stretch) * freq + layer * 29.1f;
+        const float2 p = float2(ds.x, (ds.y - travel) / stretch) * freq + layer * 29.1f;
         sum += weight * FoamTexture(p, time);
         weightSquares += weight * weight;
     }
@@ -176,10 +195,15 @@ float4 main(PS_IN input) : SV_Target
 
     // A river (or a Custom body with a current): how fast the water runs at THIS pixel, and which way.
     const bool river = waterFlow.w > 0.001f;
-    const float2 flowDir = waterWind.xy;
+    float2 flowDir = waterWind.xy;
+    float2 riverDS = float2(0.0f, 0.0f);   // (across, along) the river
     float speedFactor = 1.0f;
     [branch]
-    if (river) speedFactor = RiverSpeedFactor(input.local, mapDepth);
+    if (river) {
+        float middle;
+        RiverFrame(input.rest.xy, input.local, flowDir, riverDS, middle);
+        speedFactor = RiverSpeedFactor(middle, mapDepth);
+    }
     const float localSpeed = waterFlow.w * speedFactor;
 
     const float detailStrength = waterWaveInfo.y;
@@ -188,7 +212,7 @@ float4 main(PS_IN input) : SV_Target
     if (detailStrength > 0.001f && detailFade > 0.001f) {
         float2 slope;
         [branch]
-        if (river) slope = RiverRippleSlope(input.rest.xy, time, flowDir, localSpeed);
+        if (river) slope = RiverRippleSlope(riverDS, time, flowDir, localSpeed);
         else       slope = RippleSlope(input.rest.xy, time);
         slope *= detailStrength * detailFade;
         N = normalize(N + float3(-slope.x, 0.0f, -slope.y));
@@ -356,7 +380,7 @@ float4 main(PS_IN input) : SV_Target
         // carries it downstream at the local speed.
         float tex;
         [branch]
-        if (river) tex = RiverFoamTexture(input.rest.xy, freq, time, flowDir, localSpeed);
+        if (river) tex = RiverFoamTexture(riverDS, freq, time, localSpeed);
         else       tex = FoamTexture(input.rest.xy * freq, time);
         // Keep only the part of the pattern above a threshold that falls as the amount rises: the fringe of weak foam is a
         // few lacy islands (thin), the middle of strong foam is a sheet (thick).

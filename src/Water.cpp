@@ -5,6 +5,7 @@
 #include "ShaderSlots.h"
 #include "Terrain.h"
 #include "WaterMesh.h"
+#include "WaterRiver.h"
 #include <DirectXMath.h>
 #include <algorithm>
 #include <cmath>
@@ -91,6 +92,15 @@ bool Water::GetBoundingSphere(XMFLOAT3& center, float& radius) const
 Water::~Water()
 {
 	ReleaseShoreMap();
+	ReleaseRiverFlow();
+}
+
+void Water::ReleaseRiverFlow()
+{
+	if (flowView_) { flowView_->Release(); flowView_ = nullptr; }
+	if (flowTexture_) { flowTexture_->Release(); flowTexture_ = nullptr; }
+	riverWorld_.clear();
+	riverKey_.clear();
 }
 
 void Water::ReleaseShoreMap()
@@ -163,6 +173,17 @@ void WaterSettings::Clamp()
 	channelProfile = clamp01(channelProfile);
 	rippleStretch = std::clamp(rippleStretch, 1.0f, kRippleStretchMax);
 	rapids = clamp01(rapids);
+	riverDepth = std::clamp(riverDepth, 0.1f, kRiverDepthMax);
+	riverBank = std::clamp(riverBank, 0.5f, kRiverBankMax);
+	riverBankHeight = std::clamp(riverBankHeight, 0.0f, kRiverBankHeightMax);
+	if (riverPath.size() > static_cast<size_t>(RiverPath::kMaxPoints)) riverPath.resize(RiverPath::kMaxPoints);
+	for (RiverPoint& p : riverPath) {
+		if (!std::isfinite(p.x)) p.x = 0.0f;
+		if (!std::isfinite(p.z)) p.z = 0.0f;
+		p.x = std::clamp(p.x, -kSizeMax, kSizeMax);
+		p.z = std::clamp(p.z, -kSizeMax, kSizeMax);
+		p.width = std::isfinite(p.width) ? std::clamp(p.width, RiverPath::kMinWidth, RiverPath::kMaxWidth) : 8.0f;
+	}
 	foamScale = std::clamp(foamScale, kFoamScaleMin, kFoamScaleMax);
 	foamTrail = std::clamp(foamTrail, 0.0f, kFoamTrailMax);
 	flowAngle = std::fmod(flowAngle, 360.0f);   // an angle: wrap into (-180, 180] instead of clamping
@@ -466,7 +487,7 @@ void Water::UploadMaterial(bool mirrored) const
 	// The flow runs along the body's own (sin a, cos a) in (x, z); "across" is turned a quarter: (cos a, -sin a).
 	const float flowRadians = XMConvertToRadians(settings_.flowAngle);
 	block.river = { settings_.bankDrag, settings_.channelProfile, std::cos(flowRadians), -std::sin(flowRadians) };
-	block.river2 = { settings_.rippleStretch, settings_.rapids, 0.0f, 0.0f };
+	block.river2 = { settings_.rippleStretch, settings_.rapids, flowView_ ? 1.0f : 0.0f, 0.0f };   // z: the river has a curve, read its flow map
 	block.foam2 = { settings_.foamScale, settings_.foamTrail, 0.0f, 0.0f };
 	block.flow = { river ? settings_.flowSpeed * settings_.detailScale / 0.35f : 1.0f, river ? 0.0f : 1.0f,
 				   static_cast<float>(static_cast<int>(settings_.bodyType)), river ? settings_.flowSpeed : 0.0f };
@@ -556,6 +577,8 @@ void Water::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 	ID3D11ShaderResourceView* depthMap = depthView_;
 	ctx->VSSetShaderResources(Slots::kSrvWaterDepth, 1, &depthMap);
 	ctx->PSSetShaderResources(Slots::kSrvWaterDepth, 1, &depthMap);
+	ID3D11ShaderResourceView* flowMap = flowView_;   // null for a body with no curve (the shader is told by river2.z)
+	ctx->PSSetShaderResources(Slots::kSrvWaterFlow, 1, &flowMap);
 
 	if (settings_.wireframe && wireMaterial_.HasRasterizerState()) {
 		wireMaterial_.Apply(ctx);
@@ -672,9 +695,110 @@ XMFLOAT3 Water::SampleNormal(float x, float z, float time) const
 	return n;
 }
 
+XMFLOAT2 Water::BodyToWorld(float bodyX, float bodyZ) const
+{
+	// The plane's own space is -1..1; the body's frame is the same thing in world units from its centre.
+	if (!renderable_ || !renderable_->GetModel()) return { position_.x + bodyX, position_.z + bodyZ };
+	const float lx = bodyX / (std::max)(0.5f * ExtentX(), 1e-3f), lz = bodyZ / (std::max)(0.5f * ExtentZ(), 1e-3f);
+	const XMVECTOR p = XMVector3Transform(XMVectorSet(lx, 0.0f, lz, 1.0f), XMLoadFloat4x4(&renderable_->GetModel()->GetWorld()));
+	return { XMVectorGetX(p), XMVectorGetZ(p) };
+}
+
+bool Water::WorldToBody(float worldX, float worldZ, float& bodyX, float& bodyZ) const
+{
+	if (!worldToLocalValid_) return false;
+	const XMVECTOR local = XMVector3Transform(XMVectorSet(worldX, position_.y, worldZ, 1.0f), XMLoadFloat4x4(&worldToLocal_));
+	bodyX = XMVectorGetX(local) * 0.5f * ExtentX();
+	bodyZ = XMVectorGetZ(local) * 0.5f * ExtentZ();
+	return true;
+}
+
+void Water::RefreshRiverFlow()
+{
+	if (!device_ || !renderable_ || !renderable_->GetModel() || !worldToLocalValid_) return;
+	if (!settings_.HasRiverPath()) {
+		if (flowView_ || !riverWorld_.empty() || !riverKey_.empty()) ReleaseRiverFlow();
+		return;
+	}
+	// Measure again only when something that decides the numbers changed: the curve, or where the body is and how big.
+	std::vector<float> key = { position_.x, position_.y, position_.z, rotation_.x, rotation_.y, rotation_.z,
+							   scale_.x, scale_.y, scale_.z, settings_.size, settings_.sizeZ, static_cast<float>(settings_.riverPath.size()) };
+	for (const RiverPoint& p : settings_.riverPath) { key.push_back(p.x); key.push_back(p.z); key.push_back(p.width); }
+	if (key == riverKey_) return;
+	riverKey_ = std::move(key);
+
+	// The curve in the world. A spline is the same curve whether it is built before or after a move, a turn or an even scale.
+	std::vector<RiverPoint> worldPoints;
+	worldPoints.reserve(settings_.riverPath.size());
+	for (const RiverPoint& p : settings_.riverPath) {
+		const XMFLOAT2 w = BodyToWorld(p.x, p.z);
+		worldPoints.push_back({ w.x, w.y, p.width });
+	}
+	riverWorld_ = RiverPath::Build(worldPoints, 1.0f);
+
+	int width = 0, height = 0;
+	WaterShore::ChooseResolution(ExtentX(), ExtentZ(), width, height);   // the same texel grid as the depth map
+	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
+	const XMMATRIX toLocal = XMLoadFloat4x4(&worldToLocal_);
+	const float planeY = position_.y;
+	const std::vector<float> texels = WaterRiver::Bake(width, height, riverWorld_,
+		[&world](float localX, float localZ, float& worldX, float& worldZ) {
+			const XMVECTOR p = XMVector3Transform(XMVectorSet(localX, 0.0f, localZ, 1.0f), world);
+			worldX = XMVectorGetX(p);
+			worldZ = XMVectorGetZ(p);
+		},
+		[&toLocal, planeY](float worldX, float worldZ, float& localX, float& localZ) {
+			const XMVECTOR p = XMVector3Transform(XMVectorSet(worldX, planeY, worldZ, 1.0f), toLocal);
+			localX = XMVectorGetX(p);
+			localZ = XMVectorGetZ(p);
+		});
+
+	D3D11_TEXTURE2D_DESC desc{};
+	desc.Width = static_cast<UINT>(width);
+	desc.Height = static_cast<UINT>(height);
+	desc.MipLevels = 1;
+	desc.ArraySize = 1;
+	desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;   // s, d, flow direction x, z (WaterRiver.h)
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_IMMUTABLE;             // a new map is made whenever the curve changes
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+	D3D11_SUBRESOURCE_DATA data{};
+	data.pSysMem = texels.data();
+	data.SysMemPitch = static_cast<UINT>(width * 4 * sizeof(float));
+	ID3D11Texture2D* texture = nullptr;
+	HRESULT hr = device_->CreateTexture2D(&desc, &data, &texture);
+	if (FAILED(hr)) {
+		LOG_HR(hr, "River flow map creation failed: this river has no curve to follow");
+		if (flowView_) { flowView_->Release(); flowView_ = nullptr; }
+		if (flowTexture_) { flowTexture_->Release(); flowTexture_ = nullptr; }
+		return;   // (the key stays: no retry every frame)
+	}
+	ID3D11ShaderResourceView* view = nullptr;
+	hr = device_->CreateShaderResourceView(texture, nullptr, &view);
+	if (FAILED(hr)) {
+		LOG_HR(hr, "River flow map view creation failed: this river has no curve to follow");
+		texture->Release();
+		if (flowView_) { flowView_->Release(); flowView_ = nullptr; }
+		if (flowTexture_) { flowTexture_->Release(); flowTexture_ = nullptr; }
+		return;
+	}
+	if (flowView_) flowView_->Release();
+	if (flowTexture_) flowTexture_->Release();
+	flowTexture_ = texture;
+	flowView_ = view;
+}
+
 XMFLOAT2 Water::SampleFlow(float x, float z) const
 {
 	if (!settings_.HasCurrent() || !IsOverWater(x, z) || !worldToLocalValid_) return { 0.0f, 0.0f };
+	if (settings_.HasRiverPath() && !riverWorld_.empty()) {
+		// A river with a curve: the water runs along it, fastest in the middle (the same numbers as the shader's flow map).
+		const RiverPath::Hit hit = RiverPath::Closest(riverWorld_, x, z);
+		if (!hit.found) return { 0.0f, 0.0f };
+		const float mask = 1.0f - WaterRiver::Smoothstep(WaterRiver::kCorridorFull, WaterRiver::kCorridorEnd, std::abs(hit.across));
+		const float speed = mask * settings_.flowSpeed * WaterFlow::SpeedFactor(hit.across, DepthAtWorld(x, z), settings_.bankDrag, settings_.channelProfile);
+		return { hit.tx * speed, hit.tz * speed };
+	}
 	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), XMLoadFloat4x4(&worldToLocal_));
 	const float flowRadians = XMConvertToRadians(settings_.flowAngle);
 	const float across = XMVectorGetX(local) * std::cos(flowRadians) - XMVectorGetZ(local) * std::sin(flowRadians);   // the shader's dot(local, river.zw)
