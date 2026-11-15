@@ -33,6 +33,9 @@ cbuffer WaterMaterial : register(b4) {
 // Four floats per texel: x = depth, y and z = the unit direction TOWARD the nearest land (world x and z) times how sure we are
 // of it (0 on a flat bottom), w = unused. Blended with the same bilinear weights as the depth, so a headland where two
 // directions oppose cancels to "not sure" (WaterShore::DepthField::SampleToward is the CPU twin).
+// w = how far the water's surface stands above (+) or below (-) the body's own level here, in world units (lesson 41: a river
+// that falls; 0 for every other body). The depth in x already includes it; the vertex shader lifts the surface by it
+// (WaterShore::DepthField::SampleLevel is the CPU twin).
 Texture2D<float4> waterDepthMap : register(t15);
 
 float4 SampleWaterShore(float2 local)
@@ -90,6 +93,12 @@ float WaterDepthAt(float2 local)
 float3 WaterShoreAt(float2 local)
 {
     return waterShore.x > 0.5f ? SampleWaterShore(local).xyz : float3(1000.0f, 0.0f, 0.0f);
+}
+
+// How far the surface at rest stands above or below the body's level here (a river that falls). 0 without a depth map.
+float WaterLevelAt(float2 local)
+{
+    return waterShore.x > 0.5f ? SampleWaterShore(local).w : 0.0f;
 }
 
 #endif

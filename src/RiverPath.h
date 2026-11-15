@@ -15,6 +15,7 @@ struct RiverPoint {
 	float x = 0.0f;
 	float z = 0.0f;
 	float width = 8.0f;   // the water's width here (bank to bank), world units
+	float level = 0.0f;   // the water's HEIGHT here, relative to the body's own level (world units, negative = lower). 0 everywhere = a level river (lesson 41)
 };
 
 namespace RiverPath {
@@ -30,6 +31,7 @@ struct Sample {
 	float tx = 1.0f, tz = 0.0f;     // unit direction of the flow (downstream)
 	float s = 0.0f;                 // distance travelled along the river from its start
 	int span = 0;                   // which stretch of control points it lies on: between point `span` and point `span + 1`
+	float level = 0.0f;             // the water's height here relative to the body's level (from RiverPoint::level)
 };
 
 // Where a spot is, measured against the curve.
@@ -42,6 +44,7 @@ struct Hit {
 	float tx = 1.0f, tz = 0.0f;     // unit flow direction at the nearest point
 	float halfWidth = 4.0f;
 	float qx = 0.0f, qz = 0.0f;     // the nearest point itself, on the middle line
+	float level = 0.0f;             // the water's height at the nearest point, relative to the body's level
 };
 
 namespace detail {
@@ -61,8 +64,8 @@ inline std::vector<Sample> Build(const std::vector<RiverPoint>& points, float st
 	if (n < 2) return out;
 	step = std::max(step, 0.25f);
 	auto point = [&](int i) -> RiverPoint {
-		if (i < 0) return { 2.0f * points[0].x - points[1].x, 2.0f * points[0].z - points[1].z, points[0].width };   // mirror the end: no kink there
-		if (i >= n) return { 2.0f * points[n - 1].x - points[n - 2].x, 2.0f * points[n - 1].z - points[n - 2].z, points[n - 1].width };
+		if (i < 0) return { 2.0f * points[0].x - points[1].x, 2.0f * points[0].z - points[1].z, points[0].width, points[0].level };   // mirror the end: no kink there
+		if (i >= n) return { 2.0f * points[n - 1].x - points[n - 2].x, 2.0f * points[n - 1].z - points[n - 2].z, points[n - 1].width, points[n - 1].level };
 		return points[static_cast<size_t>(i)];
 	};
 	for (int i = 0; i < n - 1; ++i) {
@@ -77,6 +80,7 @@ inline std::vector<Sample> Build(const std::vector<RiverPoint>& points, float st
 			s.z = detail::CatmullRom(p0.z, p1.z, p2.z, p3.z, t);
 			s.halfWidth = 0.5f * std::clamp(p1.width + (p2.width - p1.width) * t, kMinWidth, kMaxWidth);
 			s.span = i;
+			s.level = p1.level + (p2.level - p1.level) * t;   // straight between the two points: it can never overshoot and run uphill
 			out.push_back(s);
 		}
 	}
@@ -85,6 +89,7 @@ inline std::vector<Sample> Build(const std::vector<RiverPoint>& points, float st
 	last.z = points[static_cast<size_t>(n - 1)].z;
 	last.halfWidth = 0.5f * std::clamp(points[static_cast<size_t>(n - 1)].width, kMinWidth, kMaxWidth);
 	last.span = n - 2;
+	last.level = points[static_cast<size_t>(n - 1)].level;
 	out.push_back(last);
 
 	// Distance along, and the direction of travel (the average of the way in and the way out, so it turns smoothly).
@@ -163,6 +168,7 @@ inline Hit Closest(const std::vector<Sample>& path, float x, float z)
 	best.halfWidth = a.halfWidth + (b.halfWidth - a.halfWidth) * bestT;
 	best.across = best.signedDistance / std::max(best.halfWidth, 1e-3f);
 	best.s = a.s + (b.s - a.s) * bestT;
+	best.level = a.level + (b.level - a.level) * bestT;
 	best.tx = tx;
 	best.tz = tz;
 	return best;
@@ -192,6 +198,7 @@ inline Placement Place(const std::vector<RiverPoint>& points, const std::vector<
 	placement.index = points.size();
 	if (points.empty()) return placement;
 	placement.point.width = points.back().width;
+	placement.point.level = points.back().level;   // a new end starts level with its neighbour; the author bends it from there
 	if (points.size() < 2 || path.size() < 2) {
 		return placement;   // one point: there is no "other end" yet
 	}
@@ -207,7 +214,7 @@ inline Placement Place(const std::vector<RiverPoint>& points, const std::vector<
 		span = std::clamp(span, 0, static_cast<int>(points.size()) - 2);
 		placement.kind = Placement::Kind::Insert;
 		placement.index = static_cast<size_t>(span) + 1;
-		placement.point = { hit.qx, hit.qz, 2.0f * hit.halfWidth };
+		placement.point = { hit.qx, hit.qz, 2.0f * hit.halfWidth, hit.level };
 		return placement;
 	}
 	const RiverPoint& first = points.front();
@@ -218,6 +225,7 @@ inline Placement Place(const std::vector<RiverPoint>& points, const std::vector<
 		placement.kind = Placement::Kind::Prepend;
 		placement.index = 0;
 		placement.point.width = first.width;
+		placement.point.level = first.level;
 	}
 	return placement;
 }
@@ -257,6 +265,22 @@ inline Problems Analyse(const std::vector<Sample>& path)
 		}
 	}
 	return out;
+}
+
+// ---- A river that falls (lesson 41) ------------------------------------------------------------------------------------------
+//
+// Sets the water's level at every control point to the ground under it, but never higher than the point before it: a river
+// runs downhill, so where the ground rises the water stays level and the carve digs the channel through. `ground[i]` is the
+// ground's height (world units) at control point i; `baseLevel` is the body's own level, which the point levels are measured
+// from; `sink` is how far below the ground the surface sits.
+inline void FollowGround(std::vector<RiverPoint>& points, const std::vector<float>& ground, float baseLevel, float sink = 0.0f)
+{
+	if (ground.size() != points.size()) return;
+	float level = 1.0e30f;
+	for (size_t i = 0; i < points.size(); ++i) {
+		level = std::min(level, ground[i] - sink);
+		points[i].level = level - baseLevel;
+	}
 }
 
 }   // namespace RiverPath

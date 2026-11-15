@@ -20,7 +20,8 @@ struct RiverCarveSettings {
 // changes nothing the second time.
 float CarvedHeight(float d, float halfWidth, float ground, const RiverCarveSettings& settings);
 
-// Digs the river into the field. `path` is in the field's LOCAL space (positions and halfWidth). Returns the block of samples
+// Digs the river into the field. `path` is in the field's LOCAL space (positions and halfWidth; each sample's `level`, the
+// water's height relative to settings.level, in SAMPLE VALUES like the level). Returns the block of samples
 // that changed (empty if none did).
 GridRect CarveRiver(Heightfield& field, const std::vector<RiverPath::Sample>& path, const RiverCarveSettings& settings,
                     StrokeRecorder* recorder);

@@ -76,10 +76,48 @@ inline Read Decode(const Texel& t)
 //   toWorld(localX, localZ, worldX, worldZ)   a spot of the body to a spot of the world
 //   toLocal(worldX, worldZ, localX, localZ)   and back
 // Only texels near the river are asked about the curve: the rest stay empty.
+// Fills every texel the river did not reach with the value of the NEAREST one it did: two sweeps over the map (forward, then
+// backward), each texel taking the better of itself and its already-visited neighbours' sources. Not exact (a chamfer distance,
+// not a true one) but cheap, and it only has to be smooth: it is the water's height away from the river, which the vertex
+// shader reads at the corners of triangles that reach out past the corridor (lesson 41). Without it those corners would sit at
+// the body's own level and pull the edge of a falling river up.
+inline void SpreadToNearest(int width, int height, std::vector<float>& values, const std::vector<unsigned char>& seeded)
+{
+	const size_t count = static_cast<size_t>(width) * static_cast<size_t>(height);
+	if (values.size() != count || seeded.size() != count) return;
+	const float inf = 1.0e30f;
+	std::vector<float> distance(count, inf);
+	bool any = false;
+	for (size_t i = 0; i < count; ++i) if (seeded[i]) { distance[i] = 0.0f; any = true; }
+	if (!any) return;
+	auto relax = [&](int x, int z, int nx, int nz, float step) {
+		if (nx < 0 || nz < 0 || nx >= width || nz >= height) return;
+		const size_t n = static_cast<size_t>(nz) * static_cast<size_t>(width) + static_cast<size_t>(nx);
+		const size_t i = static_cast<size_t>(z) * static_cast<size_t>(width) + static_cast<size_t>(x);
+		if (distance[n] + step < distance[i]) { distance[i] = distance[n] + step; values[i] = values[n]; }
+	};
+	const float diagonal = 1.41421356f;
+	for (int z = 0; z < height; ++z)
+		for (int x = 0; x < width; ++x) {
+			relax(x, z, x - 1, z, 1.0f); relax(x, z, x, z - 1, 1.0f);
+			relax(x, z, x - 1, z - 1, diagonal); relax(x, z, x + 1, z - 1, diagonal);
+		}
+	for (int z = height - 1; z >= 0; --z)
+		for (int x = width - 1; x >= 0; --x) {
+			relax(x, z, x + 1, z, 1.0f); relax(x, z, x, z + 1, 1.0f);
+			relax(x, z, x + 1, z + 1, diagonal); relax(x, z, x - 1, z + 1, diagonal);
+		}
+}
+
+// `levels` (optional): filled with the water's height relative to the body's level, one float per texel (RiverPoint::level at
+// the nearest point of the river, spread to every texel by SpreadToNearest). Same layout as the returned texels.
 template <class ToWorld, class ToLocal>
-inline std::vector<float> Bake(int width, int height, const std::vector<RiverPath::Sample>& path, ToWorld&& toWorld, ToLocal&& toLocal)
+inline std::vector<float> Bake(int width, int height, const std::vector<RiverPath::Sample>& path, ToWorld&& toWorld, ToLocal&& toLocal,
+							   std::vector<float>* levels = nullptr)
 {
 	std::vector<float> texels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4, 0.0f);
+	std::vector<unsigned char> seeded;
+	if (levels) { levels->assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0.0f); seeded.assign(levels->size(), 0); }
 	if (path.size() < 2 || width < 1 || height < 1) return texels;
 	struct Best { float d2 = 3.402823466e+38f; size_t segment = 0; float t = 0.0f; };
 	std::vector<Best> best(static_cast<size_t>(width) * static_cast<size_t>(height));
@@ -150,8 +188,10 @@ inline std::vector<float> Bake(int width, int height, const std::vector<RiverPat
 			texels[index * 4 + 1] = texel.d;
 			texels[index * 4 + 2] = texel.dirX;
 			texels[index * 4 + 3] = texel.dirZ;
+			if (levels) { (*levels)[index] = a.level + (b.level - a.level) * t; seeded[index] = 1; }
 		}
 	}
+	if (levels) SpreadToNearest(width, height, *levels, seeded);
 	return texels;
 }
 

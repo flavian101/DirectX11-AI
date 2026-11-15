@@ -257,6 +257,7 @@ private:
 	void ReleaseShoreMap();
 	float DepthAtWorld(float x, float z) const;   // water depth under a world position, from the CPU copy of the map
 	WaterWaves::ShoreSample ShoreAtWorld(float x, float z) const;   // depth AND the way to the land, the same blend the shader reads
+	float LevelAtWorld(float x, float z) const;   // how far the surface stands above (+) or below (-) the body's level here: a river that falls (lesson 41)
 	float ExtentX() const { return settings_.size * std::abs(scale_.x); }   // world size along X
 	float ExtentZ() const { return settings_.sizeZ * std::abs(scale_.z); }
 	void ChooseTiles(const RenderView& view) const;
@@ -282,6 +283,9 @@ private:
 	void ReleaseRiverFlow();
 	std::vector<RiverPath::Sample> riverWorld_;   // the curve in world space (rebuilt together with the flow map)
 	std::vector<float> riverKey_;                 // what the flow map was baked from: the curve, the body's placement and size
+	std::vector<float> riverLevels_;              // the water's height relative to the body's level, per texel of the flow map (empty = level)
+	unsigned riverLevelRevision_ = 0;             // moves when riverLevels_ really changes, so the depth map (which includes them) is measured again
+	unsigned shoreLevelRevision_ = 0;             // the revision the depth map was last measured with
 	ID3D11Texture2D* flowTexture_ = nullptr;
 	ID3D11ShaderResourceView* flowView_ = nullptr;
 	ID3D11Texture2D* depthTexture_ = nullptr;

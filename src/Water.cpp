@@ -102,6 +102,7 @@ void Water::ReleaseRiverFlow()
 	riverWorld_.clear();
 	riverKey_.clear();
 	tileOffRiver_.clear();   // no curve: every tile counts again
+	if (!riverLevels_.empty()) { riverLevels_.clear(); ++riverLevelRevision_; }   // ...and the surface is level again
 }
 
 void Water::ReleaseShoreMap()
@@ -706,11 +707,12 @@ float Water::DistanceTo(const XMFLOAT3& point) const
 float Water::SampleHeight(float x, float z, float time) const
 {
 	if (!IsOverWater(x, z)) return position_.y;
+	const float level = position_.y + LevelAtWorld(x, z);   // a river that falls: the surface at rest is not at the body's level everywhere
 	if ((settings_.shoreWaves > 0.0f || settings_.shoreShelter > 0.0f) && !depthField_.IsEmpty()) {   // the same shoaled, sheltered waves the shader draws
-		return position_.y + WaterWaves::HeightAtShore(waves_, x, z, time, settings_.shoreWaves, settings_.shoreShelter,
+		return level + WaterWaves::HeightAtShore(waves_, x, z, time, settings_.shoreWaves, settings_.shoreShelter,
 													   [this](float restX, float restZ) { return ShoreAtWorld(restX, restZ); });
 	}
-	return position_.y + WaterWaves::HeightAt(waves_, x, z, time);
+	return level + WaterWaves::HeightAt(waves_, x, z, time);
 }
 
 XMFLOAT3 Water::SampleNormal(float x, float z, float time) const
@@ -752,7 +754,7 @@ void Water::RefreshRiverFlow()
 	std::vector<float> key = { position_.x, position_.y, position_.z, rotation_.x, rotation_.y, rotation_.z,
 							   scale_.x, scale_.y, scale_.z, settings_.size, settings_.sizeZ, static_cast<float>(settings_.riverPath.size()),
 							   static_cast<float>(builtGrid_.x), static_cast<float>(builtGrid_.z), static_cast<float>(settings_.meshDetail) };   // (a rebuilt mesh has new tiles to measure)
-	for (const RiverPoint& p : settings_.riverPath) { key.push_back(p.x); key.push_back(p.z); key.push_back(p.width); }
+	for (const RiverPoint& p : settings_.riverPath) { key.push_back(p.x); key.push_back(p.z); key.push_back(p.width); key.push_back(p.level); }
 	if (key == riverKey_) return;
 	riverKey_ = std::move(key);
 
@@ -761,7 +763,7 @@ void Water::RefreshRiverFlow()
 	worldPoints.reserve(settings_.riverPath.size());
 	for (const RiverPoint& p : settings_.riverPath) {
 		const XMFLOAT2 w = BodyToWorld(p.x, p.z);
-		worldPoints.push_back({ w.x, w.y, p.width });
+		worldPoints.push_back({ w.x, w.y, p.width, p.level });
 	}
 	riverWorld_ = RiverPath::Build(worldPoints, 1.0f);
 	UpdateRiverTiles();   // which tiles the corridor reaches: decided here, once per change, not once per frame
@@ -771,6 +773,7 @@ void Water::RefreshRiverFlow()
 	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
 	const XMMATRIX toLocal = XMLoadFloat4x4(&worldToLocal_);
 	const float planeY = position_.y;
+	std::vector<float> levels;
 	const std::vector<float> texels = WaterRiver::Bake(width, height, riverWorld_,
 		[&world](float localX, float localZ, float& worldX, float& worldZ) {
 			const XMVECTOR p = XMVector3Transform(XMVectorSet(localX, 0.0f, localZ, 1.0f), world);
@@ -781,7 +784,14 @@ void Water::RefreshRiverFlow()
 			const XMVECTOR p = XMVector3Transform(XMVectorSet(worldX, planeY, worldZ, 1.0f), toLocal);
 			localX = XMVectorGetX(p);
 			localZ = XMVectorGetZ(p);
-		});
+		}, &levels);
+
+	// The water's height along the river (lesson 41). A river with no fall bakes all zeros, which equals what was there before,
+	// so the depth map (which includes the levels) is measured again only when they really changed.
+	bool anyFall = false;
+	for (float v : levels) if (v != 0.0f) { anyFall = true; break; }
+	if (!anyFall) levels.clear();
+	if (levels != riverLevels_) { riverLevels_ = std::move(levels); ++riverLevelRevision_; }
 
 	D3D11_TEXTURE2D_DESC desc{};
 	desc.Width = static_cast<UINT>(width);
@@ -896,6 +906,13 @@ WaterWaves::ShoreSample Water::ShoreAtWorld(float x, float z) const
 	return shore;
 }
 
+float Water::LevelAtWorld(float x, float z) const
+{
+	if (!depthField_.HasLevelOffsets() || !worldToLocalValid_) return 0.0f;
+	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), XMLoadFloat4x4(&worldToLocal_));
+	return depthField_.SampleLevel(XMVectorGetX(local), XMVectorGetZ(local));   // the same blend as the vertex shader's read of the map
+}
+
 void Water::SetSceneWind(const WindSettings& wind)
 {
 	if (wind.direction == sceneWind_.direction && wind.strength == sceneWind_.strength) return;
@@ -916,8 +933,10 @@ void Water::RefreshShoreDepth(const Terrain* terrain)
 	// heights or its placement do.)
 	const std::array<float, 12> key = { position_.x, position_.y, position_.z, rotation_.x, rotation_.y, rotation_.z,
 										scale_.x, scale_.y, scale_.z, settings_.size, settings_.sizeZ, settings_.height };
-	if (shoreKeyValid_ && key == shoreKey_ && terrain == shoreTerrain_ && terrain->GetRevision() == shoreTerrainRevision_) return;
+	if (shoreKeyValid_ && key == shoreKey_ && terrain == shoreTerrain_ && terrain->GetRevision() == shoreTerrainRevision_ &&
+		shoreLevelRevision_ == riverLevelRevision_) return;
 	shoreKey_ = key;
+	shoreLevelRevision_ = riverLevelRevision_;
 	shoreTerrain_ = terrain;
 	shoreTerrainRevision_ = terrain->GetRevision();
 	shoreKeyValid_ = true;
@@ -931,14 +950,15 @@ void Water::RefreshShoreDepth(const Terrain* terrain)
 			worldX = XMVectorGetX(p);
 			worldZ = XMVectorGetZ(p);
 		},
-		[terrain](float worldX, float worldZ, float& groundY) { return terrain->GetHeightAt(worldX, worldZ, groundY); });
+		[terrain](float worldX, float worldZ, float& groundY) { return terrain->GetHeightAt(worldX, worldZ, groundY); },
+		riverLevels_.empty() ? nullptr : &riverLevels_);   // a river that falls: depth = its level there - the ground (ignored if it is not this map's size)
 
 	D3D11_TEXTURE2D_DESC desc{};
 	desc.Width = static_cast<UINT>(width);
 	desc.Height = static_cast<UINT>(height);
 	desc.MipLevels = 1;
 	desc.ArraySize = 1;
-	desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;   // depth, toward-land x, toward-land z, unused
+	desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;   // depth, toward-land x, toward-land z, level offset (lesson 41)
 	desc.SampleDesc.Count = 1;
 	desc.Usage = D3D11_USAGE_IMMUTABLE;   // a new map is made whenever the numbers change: it is never edited in place
 	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;

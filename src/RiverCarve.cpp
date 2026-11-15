@@ -49,7 +49,7 @@ GridRect CarveRiver(Heightfield& field, const std::vector<RiverPath::Sample>& pa
     }
     const int rw = rx1 - rx0 + 1, rh = rz1 - rz0 + 1;
     if (rw <= 0 || rh <= 0) return changed;
-    struct Best { float d2 = std::numeric_limits<float>::max(); float halfWidth = 0.0f; };
+    struct Best { float d2 = std::numeric_limits<float>::max(); float halfWidth = 0.0f; float level = 0.0f; };
     std::vector<Best> best(static_cast<size_t>(rw) * static_cast<size_t>(rh));
 
     for (size_t i = 0; i + 1 < path.size(); ++i) {
@@ -69,7 +69,7 @@ GridRect CarveRiver(Heightfield& field, const std::vector<RiverPath::Sample>& pa
                 const float dx = px - (a.x + ex * t), dz = pz - (a.z + ez * t);
                 const float d2 = dx * dx + dz * dz;
                 Best& cell = best[static_cast<size_t>(gz - rz0) * static_cast<size_t>(rw) + static_cast<size_t>(gx - rx0)];
-                if (d2 < cell.d2) { cell.d2 = d2; cell.halfWidth = a.halfWidth + (b.halfWidth - a.halfWidth) * t; }
+                if (d2 < cell.d2) { cell.d2 = d2; cell.halfWidth = a.halfWidth + (b.halfWidth - a.halfWidth) * t; cell.level = a.level + (b.level - a.level) * t; }
             }
         }
     }
@@ -82,7 +82,9 @@ GridRect CarveRiver(Heightfield& field, const std::vector<RiverPath::Sample>& pa
             if (d > cell.halfWidth + bank) continue;
             const int index = field.IndexOf(gx, gz);
             const float before = field.Samples()[static_cast<size_t>(index)];
-            const float after = CarvedHeight(d, cell.halfWidth, before, settings);
+            RiverCarveSettings here = settings;
+            here.level += cell.level;   // lesson 41: the water's surface where this part of the river is, in sample values like the level itself
+            const float after = CarvedHeight(d, cell.halfWidth, before, here);
             if (after >= before - 1e-6f) continue;
             if (recorder) recorder->Remember(index, before);
             field.SetSample(index, after);

@@ -919,6 +919,7 @@ HeightfieldPatch Terrain::CarveRiver(const std::vector<RiverPath::Sample>& path,
 		s.x = (s.x - position_.x) / scale_.x;
 		s.z = (s.z - position_.z) / scale_.z;
 		s.halfWidth /= std::fabs(scale_.x);
+		s.level /= unit;   // the river's own fall (world units) as a change of sample value
 	}
 	RiverCarveSettings settings;
 	settings.level = (waterLevelY - position_.y) / unit;

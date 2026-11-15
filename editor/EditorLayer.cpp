@@ -2822,14 +2822,27 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
     const float ndcX = ((io.MousePos.x - x) / width) * 2.0f - 1.0f;
     const float ndcY = 1.0f - ((io.MousePos.y - y) / height) * 2.0f;
     const Ray ray = MakePickRay(view, projection, ndcX, ndcY);
-    bool onPlane = false;
-    float hitX = 0.0f, hitZ = 0.0f;
-    if (std::fabs(ray.direction.y) > 1e-5f) {
-        const float t = (level - ray.origin.y) / ray.direction.y;
-        if (t > 0.0f) { hitX = ray.origin.x + ray.direction.x * t; hitZ = ray.origin.z + ray.direction.z * t; onPlane = true; }
-    }
-    float mouseBodyX = 0.0f, mouseBodyZ = 0.0f;   // the same spot in the body's frame, where the control points live
-    const bool mouseOnBody = onPlane && water->WorldToBody(hitX, hitZ, mouseBodyX, mouseBodyZ);
+    // The mouse's ray meets a horizontal plane at some height: the water's own level, or (lesson 41) the level of a river point
+    // that falls, so a point on a lower stretch lands under the cursor and not beside it.
+    auto bodySpotAt = [&](float planeY, float& bodyX, float& bodyZ) {
+        if (std::fabs(ray.direction.y) <= 1e-5f) return false;
+        const float t = (planeY - ray.origin.y) / ray.direction.y;
+        if (t <= 0.0f) return false;
+        return water->WorldToBody(ray.origin.x + ray.direction.x * t, ray.origin.z + ray.direction.z * t, bodyX, bodyZ);
+    };
+    float mouseBodyX = 0.0f, mouseBodyZ = 0.0f;   // the mouse on the body's own level, in the body's frame, where the control points live
+    const bool mouseOnBody = bodySpotAt(level, mouseBodyX, mouseBodyZ);
+    // What a click here would do. A new point starts at the level its neighbour or the curve has, so it is placed on THAT plane:
+    // a first guess on the body's level says which point it is, a second on its own level says where.
+    auto placeUnderMouse = [&](RiverPath::Placement& out) {
+        if (!mouseOnBody) return false;
+        const std::vector<RiverPoint>& points = edited.riverPath;
+        const std::vector<RiverPath::Sample> bodyPath = RiverPath::Build(points, 1.0f);
+        out = RiverPath::Place(points, bodyPath, mouseBodyX, mouseBodyZ);
+        float bx = 0.0f, bz = 0.0f;
+        if (out.point.level != 0.0f && bodySpotAt(level + out.point.level, bx, bz)) out = RiverPath::Place(points, bodyPath, bx, bz);
+        return true;
+    };
 
     // The control points on the screen, and which one the mouse is near (within 14 pixels).
     const size_t count = edited.riverPath.size();
@@ -2839,7 +2852,7 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
     float nearest = 14.0f * 14.0f;
     for (size_t i = 0; i < count; ++i) {
         const XMFLOAT2 world = water->BodyToWorld(edited.riverPath[i].x, edited.riverPath[i].z);
-        visible[i] = project(world.x, level + 0.15f, world.y, handle[i]) ? 1 : 0;
+        visible[i] = project(world.x, level + edited.riverPath[i].level + 0.15f, world.y, handle[i]) ? 1 : 0;
         if (!visible[i]) continue;
         const float dx = handle[i].x - io.MousePos.x, dy = handle[i].y - io.MousePos.y;
         if (dx * dx + dy * dy < nearest) { nearest = dx * dx + dy * dy; hovered = static_cast<int>(i); }
@@ -2858,7 +2871,7 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
         const float pz[3] = { s.z, s.z + sideZ * s.halfWidth, s.z - sideZ * s.halfWidth };
         for (int k = 0; k < 3; ++k) {
             ImVec2 now;
-            const bool ok = project(px[k], level + 0.15f, pz[k], now);
+            const bool ok = project(px[k], level + s.level + 0.15f, pz[k], now);
             if (ok && previousOk[k]) list->AddLine(previous[k], now, colors[k], k == 0 ? 2.5f : 1.5f);
             previous[k] = now;
             previousOk[k] = ok;
@@ -2876,15 +2889,15 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
 
     // What the next click would do, drawn before it is made (lesson 39): on the water it adds a bend point to the curve, anywhere
     // else it extends whichever end of the river is nearer. The order the points are clicked in no longer matters.
-    if (mouseOnBody && hovered < 0 && riverDragIndex_ < 0 && count < static_cast<size_t>(RiverPath::kMaxPoints)) {
-        const RiverPath::Placement next = RiverPath::Place(edited.riverPath, RiverPath::Build(edited.riverPath, 1.0f), mouseBodyX, mouseBodyZ);
+    RiverPath::Placement next;
+    if (hovered < 0 && riverDragIndex_ < 0 && count < static_cast<size_t>(RiverPath::kMaxPoints) && placeUnderMouse(next)) {
         const ImU32 ghost = IM_COL32(255, 255, 255, 170);
         const char* what = "start the river here";
         if (count >= 1) {
             if (next.kind == RiverPath::Placement::Kind::Insert) {
                 const XMFLOAT2 on = water->BodyToWorld(next.point.x, next.point.z);
                 ImVec2 at;
-                if (project(on.x, level + 0.15f, on.y, at)) list->AddCircle(at, 9.0f, ghost, 0, 2.0f);
+                if (project(on.x, level + next.point.level + 0.15f, on.y, at)) list->AddCircle(at, 9.0f, ghost, 0, 2.0f);
                 what = "add a bend point here";
             } else {
                 const bool upstream = next.kind == RiverPath::Placement::Kind::Prepend;
@@ -2904,7 +2917,7 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
     auto ring = [&](int sampleIndex, const char* text) {
         const RiverPath::Sample& sample = path[static_cast<size_t>(sampleIndex)];
         ImVec2 at;
-        if (!project(sample.x, level + 0.15f, sample.z, at)) return;
+        if (!project(sample.x, level + sample.level + 0.15f, sample.z, at)) return;
         list->AddCircle(at, 16.0f, IM_COL32(255, 70, 60, 255), 0, 3.0f);
         if (text) list->AddText(ImVec2(at.x + 20.0f, at.y - 8.0f), IM_COL32(255, 110, 100, 255), text);
     };
@@ -2926,10 +2939,8 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             if (hovered >= 0) {
                 riverDragIndex_ = hovered;
-            } else if (mouseOnBody && edited.riverPath.size() < static_cast<size_t>(RiverPath::kMaxPoints)) {
+            } else if (RiverPath::Placement placement; edited.riverPath.size() < static_cast<size_t>(RiverPath::kMaxPoints) && placeUnderMouse(placement)) {
                 // Where the new point goes in the list is decided by RiverPath::Place (tested in tests/river_test.cpp).
-                const RiverPath::Placement placement =
-                    RiverPath::Place(edited.riverPath, RiverPath::Build(edited.riverPath, 1.0f), mouseBodyX, mouseBodyZ);
                 edited.riverPath.insert(edited.riverPath.begin() + static_cast<std::ptrdiff_t>(placement.index), placement.point);
                 riverDragIndex_ = static_cast<int>(placement.index);   // keep the button down and drag to fine-tune the new point
                 modified = true;
@@ -2948,7 +2959,8 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
             RiverPoint& point = edited.riverPath[static_cast<size_t>(riverDragIndex_)];
             // Only once the mouse has really moved: a plain click on the water must not push the point it just inserted off the
             // line (and a click on a handle must not nudge it).
-            if (mouseOnBody && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 3.0f)) { point.x = mouseBodyX; point.z = mouseBodyZ; modified = true; }
+            float bx = 0.0f, bz = 0.0f;
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 3.0f) && bodySpotAt(level + point.level, bx, bz)) { point.x = bx; point.z = bz; modified = true; }
         } else {
             if (riverDragIndex_ < static_cast<int>(edited.riverPath.size())) { modified = true; refit = true; }   // released: fit once, not every frame of the drag
             riverDragIndex_ = -1;
@@ -3028,13 +3040,17 @@ void EditorLayer::DrawRiverPathInspector(Water* water, WaterSettings& s, bool& c
         ImGui::Text("%d", static_cast<int>(i) + 1);
         ImGui::SameLine(28.0f);
         float xz[2] = { p.x, p.z };
-        ImGui::SetNextItemWidth(150.0f);
+        ImGui::SetNextItemWidth(130.0f);
         if (ImGui::DragFloat2("##position", xz, 0.5f, -WaterSettings::kSizeMax, WaterSettings::kSizeMax, "%.1f")) { p.x = xz[0]; p.z = xz[1]; changed = true; }
         ImGui::SetItemTooltip("Position in the body's own frame: world units from its centre, before it is turned (x, z).");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(80.0f);
+        ImGui::SetNextItemWidth(66.0f);
         changed |= ImGui::DragFloat("##width", &p.width, 0.2f, RiverPath::kMinWidth, RiverPath::kMaxWidth, "wide %.1f");
         ImGui::SetItemTooltip("The width of the water here, bank to bank.");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(70.0f);
+        changed |= ImGui::DragFloat("##level", &p.level, 0.1f, -500.0f, 500.0f, "lvl %.1f");
+        ImGui::SetItemTooltip("The height of the water here, relative to the body's own level (negative = lower).\nThe river falls from one point's level to the next. 0 at every point = a level river.");
         ImGui::SameLine();
         if (ImGui::SmallButton("X")) remove = static_cast<int>(i);
         ImGui::PopID();
@@ -3051,7 +3067,7 @@ void EditorLayer::DrawRiverPathInspector(Water* water, WaterSettings& s, bool& c
                 const float length = std::hypot(last.x - before.x, last.z - before.z);
                 if (length > 1e-3f) { dx = (last.x - before.x) / length * 20.0f; dz = (last.z - before.z) / length * 20.0f; }
             }
-            point = { last.x + dx, last.z + dz, last.width };
+            point = { last.x + dx, last.z + dz, last.width, last.level };
         } else {
             point = { 0.0f, -20.0f, 8.0f };
         }
@@ -3076,6 +3092,38 @@ void EditorLayer::DrawRiverPathInspector(Water* water, WaterSettings& s, bool& c
         }
         ImGui::SetItemTooltip("Resizes the plane (around the body's centre) to cover every point, the banks and a margin.");
 
+        ImGui::SeparatorText("Fall");
+        {
+            const float fall = s.riverPath.front().level - s.riverPath.back().level;
+            bool uphill = false;
+            for (size_t i = 1; i < s.riverPath.size(); ++i) if (s.riverPath[i].level > s.riverPath[i - 1].level + 0.01f) uphill = true;
+            if (fall == 0.0f && !uphill) ImGui::TextDisabled("Level: the water is at the same height all along.");
+            else ImGui::TextDisabled("The water falls %.1f from the first point to the last.", fall);
+            if (uphill) {
+                ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.3f, 1.0f), "The water rises going downstream somewhere.");
+                ImGui::SetItemTooltip("Follow terrain makes it run downhill, or lower a point's level. (Reverse flips the flow but not the levels.)");
+            }
+            Terrain* fallTerrain = scene_ ? scene_->GetTerrain() : nullptr;
+            ImGui::BeginDisabled(!fallTerrain);
+            if (ImGui::Button("Follow terrain") && fallTerrain) {
+                // The ground under each point; a point beyond the terrain keeps the height of the one before it.
+                std::vector<float> ground(s.riverPath.size(), s.height);
+                for (size_t i = 0; i < s.riverPath.size(); ++i) {
+                    const XMFLOAT2 w = water->BodyToWorld(s.riverPath[i].x, s.riverPath[i].z);
+                    float groundY = 0.0f;
+                    if (fallTerrain->GetHeightAt(w.x, w.y, groundY)) ground[i] = groundY;
+                    else if (i > 0) ground[i] = ground[i - 1];
+                }
+                RiverPath::FollowGround(s.riverPath, ground, s.height);
+                changed = true;
+            }
+            ImGui::EndDisabled();
+            ImGui::SetItemTooltip("Sets each point's level to the ground under it, never higher than the point before:\nthe river runs downhill. Where the ground rises the water stays level, and Carve digs it through.\nThe water's slope shows only where the terrain has a depth map (a body over terrain).");
+            ImGui::SameLine();
+            if (ImGui::Button("Make level")) { for (RiverPoint& p : s.riverPath) p.level = 0.0f; changed = true; }
+            ImGui::SetItemTooltip("Every point back to the body's own level.");
+        }
+
         ImGui::SeparatorText("Carve the channel");
         changed |= ImGui::SliderFloat("Bed depth", &s.riverDepth, 0.1f, 12.0f, "%.1f below the water");
         ImGui::SetItemTooltip("How far below the surface the bed lies in the middle of the river. It rises to meet the surface exactly at the water's edge.");
@@ -3091,7 +3139,7 @@ void EditorLayer::DrawRiverPathInspector(Water* water, WaterSettings& s, bool& c
             const size_t stride = (std::max<size_t>)(1, path.size() / 128);
             for (size_t i = 0; i < path.size(); i += stride) {
                 float groundY = 0.0f;
-                if (terrain->GetHeightAt(path[i].x, path[i].z, groundY)) above = (std::max)(above, groundY - s.height);
+                if (terrain->GetHeightAt(path[i].x, path[i].z, groundY)) above = (std::max)(above, groundY - (s.height + path[i].level));
             }
             ImGui::TextDisabled("Ground on the middle line: up to %.1f above the water.", above);
         }

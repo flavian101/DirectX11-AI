@@ -14,7 +14,8 @@ VS_OUT main(VS_IN input)
 
     // World space FIRST: waves are measured in world units, so resizing the plane changes how
     // much water you see, not how big the waves are. (Assumes a horizontal plane.)
-    const float3 restPos = mul(float4(input.position, 1.0f), world).xyz;
+    float3 restPos = mul(float4(input.position, 1.0f), world).xyz;
+    restPos.y += WaterLevelAt(input.position.xz);   // a river that falls (lesson 41): the surface at rest follows its level along the curve
 
     // The mesh gets coarser with distance (see Water.cpp), so the shortest waves must fade out before the grid can
     // no longer hold them. Grid spacing grows about in proportion to distance beyond the LOD distance, up to 8x.
