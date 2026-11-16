@@ -27,5 +27,13 @@ A river that falls cannot have one level. Four steps, each usable on its own:
 - **20c. A water LEVEL along the curve (DONE: lesson 41).** `RiverPoint::level` is the water's height at that point relative to the body's own level (0 everywhere = the level river of before; old scenes load that way). It is carried by the curve, read by the carve, baked into the depth map (`depth = level + offset - ground`, the offset also in the map's spare fourth channel), lifted by the vertex shader, and added by `SampleHeight`. "Follow terrain" sets the levels from the ground, never rising downstream. Still open: the reflection mirrors about one height, the shading normal ignores the slope, and the current does not speed up on a steeper stretch.
 - **20d. Steps in the level.** A point marked as a drop gives a height jump over a short run: a falling sheet (a steep strip of water, fed by the same level function; it needs its own shading, because the normal there is not the waves' alone), plunge-pool foam, mist (needs the particle system). The slope-dependent current (faster where the fall is steeper) belongs here too.
 
+## Water polish (the review)
+A full review of the water's look and its editor workflow (rendering, then workflow) split the work into phases; each stands alone:
+- **A. Selecting water (DONE: lesson 42).** Click water where it is water; an outline that follows its shape; the Scale tool edits Width and Length; water stays level; the Hierarchy frames on double-click and tags the kind.
+- **B. The inspector.** One place for each setting (Level and Size live in the transform; Name in the Hierarchy), sections Appearance / Waves / Reflection / Refraction / Lighting / Foam / Shoreline / Current / Performance, per-section reset, presets that cover look, waves and foam (and can be saved), copy and paste of settings.
+- **C. Shading v2 (a Classic / Physical switch).** The body colour as light scattered in a volume, not Lambert on the wave normal; per-channel absorption of what is seen through the water, with the real length of the line of sight; roughness from the waves and ripples the distance fades out, driving a GGX sun highlight and the reflection's blur; Fresnel that `reflectivity` no longer switches off; refraction in view space; the sun's shadow on the water; caustics.
+- **D. Reflection.** A mip chain on the mirror image, sampled by roughness; faded at the screen edges and with distance; on a river that falls, the mirror plane at the mean level, faded by each pixel's distance from it.
+- **E. Later.** Wet sand on the terrain at the waterline, bloom on the sun's highlight, a hover outline before the click.
+
 ## Later
 - FFT ocean for very large open water; caustics on the bed; ice and frozen rivers.

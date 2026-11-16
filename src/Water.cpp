@@ -6,6 +6,7 @@
 #include "Terrain.h"
 #include "WaterMesh.h"
 #include "WaterRiver.h"
+#include "WaterSelect.h"
 #include <DirectXMath.h>
 #include <algorithm>
 #include <cmath>
@@ -859,7 +860,7 @@ bool Water::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotatio
 							   const XMFLOAT3& scale)
 {
 	position_ = position;
-	rotation_ = rotation;
+	rotation_ = { 0.0f, rotation.y, 0.0f };   // water is level: a body can be turned about the vertical, never tilted (the river's frame, the depth map and IsOverWater all assume it)
 	scale_ = scale;
 	settings_.height = position_.y;   // one source of truth: otherwise the next SetSettings() snaps Y back
 	if (settings_.HasCurrent()) RebuildWaves();   // a current's flow follows the way the body is turned
@@ -904,6 +905,17 @@ WaterWaves::ShoreSample Water::ShoreAtWorld(float x, float z) const
 	shore.depth = depthField_.Sample(lx, lz);
 	depthField_.SampleToward(lx, lz, shore.towardX, shore.towardZ);   // already in world space
 	return shore;
+}
+
+bool Water::RayHit(const XMFLOAT3& origin, const XMFLOAT3& direction, float& distance) const
+{
+	const float o[3] = { origin.x, origin.y, origin.z };
+	const float d[3] = { direction.x, direction.y, direction.z };
+	return WaterSelect::RayMeetsSurface(
+		o, d, position_.y,
+		[this](float x, float z) { return LevelAtWorld(x, z); },                                        // a river that falls: the surface is not at one height
+		[this](float x, float z) { return IsOverWater(x, z) && DepthAtWorld(x, z) > 0.0f; },            // water here (the corridor), and not the dry beach
+		distance);
 }
 
 float Water::LevelAtWorld(float x, float z) const

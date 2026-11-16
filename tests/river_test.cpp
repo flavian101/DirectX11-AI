@@ -8,6 +8,7 @@
 #include "RiverCarve.h"
 #include "RiverPath.h"
 #include "WaterRiver.h"
+#include "WaterSelect.h"
 #include "WaterShore.h"
 #include <algorithm>
 #include <cmath>
@@ -479,6 +480,59 @@ static void TestLevelsInTheWorld()
 	CHECK(levelAt(-15.0f, -14.0f) > -1.0f); // while the upstream corner is still at the top
 }
 
+// Lesson 42: picking a water body by its surface, and drawing it as selected.
+static void TestWaterSelect()
+{
+	const float down[3] = { 0.0f, -1.0f, 0.0f };
+	const float above[3] = { 0.0f, 10.0f, 0.0f };
+	float t = 0.0f, x = 0.0f, z = 0.0f;
+	CHECK(WaterSelect::RayMeetsHeight(above, down, 0.0f, t, x, z) && std::abs(t - 10.0f) < 1e-5f);
+	const float slant[3] = { 0.6f, -0.8f, 0.0f };
+	CHECK(WaterSelect::RayMeetsHeight(above, slant, 0.0f, t, x, z) && std::abs(t - 12.5f) < 1e-4f && std::abs(x - 7.5f) < 1e-4f);
+	const float up[3] = { 0.0f, 1.0f, 0.0f }, flat[3] = { 1.0f, 0.0f, 0.0f };
+	CHECK(!WaterSelect::RayMeetsHeight(above, up, 0.0f, t, x, z));     // looking away from the plane
+	CHECK(!WaterSelect::RayMeetsHeight(above, flat, 0.0f, t, x, z));   // parallel to it
+	CHECK(!WaterSelect::RayMeetsHeight(above, down, 20.0f, t, x, z));  // the plane is behind the eye
+
+	// A level surface: found, unless the spot is not water (the dry beach, the empty part of a river's rectangle).
+	auto noFall = [](float, float) { return 0.0f; };
+	float distance = 0.0f;
+	CHECK(WaterSelect::RayMeetsSurface(above, down, 0.0f, noFall, [](float, float) { return true; }, distance) && std::abs(distance - 10.0f) < 1e-4f);
+	CHECK(!WaterSelect::RayMeetsSurface(above, down, 0.0f, noFall, [](float, float) { return false; }, distance));
+	// Only the spot that was hit is asked about.
+	float askedX = -1.0f, askedZ = -1.0f;
+	WaterSelect::RayMeetsSurface(above, slant, 0.0f, noFall, [&](float ax, float az) { askedX = ax; askedZ = az; return true; }, distance);
+	CHECK(std::abs(askedX - 7.5f) < 1e-3f && std::abs(askedZ) < 1e-3f);
+
+	// A river that falls: the surface lies at y = -0.5 x. The slanted ray from (0, 20) meets it at t = 40 (x = 24, y = -12).
+	const float high[3] = { 0.0f, 20.0f, 0.0f };
+	CHECK(WaterSelect::RayMeetsSurface(high, slant, 0.0f, [](float ax, float) { return -0.5f * ax; }, [](float, float) { return true; }, distance));
+	CHECK(std::abs(distance - 40.0f) < 0.05f);
+	// ...and it is not the distance to the level plane (t = 25) that a flat test would have given.
+	CHECK(std::abs(distance - 25.0f) > 10.0f);
+
+	// The outline of the plane: a rectangle's corners, an ellipse's points on the ellipse.
+	const std::vector<WaterSelect::Spot> rect = WaterSelect::PlaneOutline(false, 30.0f, 10.0f);
+	CHECK(rect.size() == 4 && rect[0].x == -30.0f && rect[2].x == 30.0f && rect[2].z == 10.0f);
+	const std::vector<WaterSelect::Spot> oval = WaterSelect::PlaneOutline(true, 30.0f, 10.0f, 32);
+	CHECK(oval.size() == 32u);
+	for (const WaterSelect::Spot& s : oval) CHECK(std::abs((s.x / 30.0f) * (s.x / 30.0f) + (s.z / 10.0f) * (s.z / 10.0f) - 1.0f) < 1e-4f);
+
+	// The banks of a river: a half width either side of the middle, on opposite sides, carrying the water's height.
+	const std::vector<RiverPath::Sample> river = RiverPath::Build({ { -40, 0, 8, 0.0f }, { 40, 0, 8, -4.0f } }, 1.0f);
+	std::vector<WaterSelect::BankPoint> left, right;
+	WaterSelect::RiverBanks(river, 1, left, right);
+	CHECK(left.size() == river.size() && right.size() == river.size());
+	CHECK(std::abs(std::abs(left[10].z) - 4.0f) < 1e-3f && std::abs(left[10].z + right[10].z) < 1e-3f);
+	CHECK(left[10].z * right[10].z < 0.0f);
+	CHECK(std::abs(left.back().level + 4.0f) < 1e-4f);
+	std::vector<WaterSelect::BankPoint> sparse, sparseRight;
+	WaterSelect::RiverBanks(river, 25, sparse, sparseRight);
+	CHECK(sparse.size() < left.size() && std::abs(sparse.back().x - river.back().x) < 1e-3f);   // thinned, but it still reaches the end
+	WaterSelect::RiverBanks({}, 1, left, right);
+	CHECK(left.empty() && right.empty());
+}
+
 int main()
 {
 	TestCurve();
@@ -493,6 +547,7 @@ int main()
 	TestCorridor();
 	TestLevels();
 	TestLevelsInTheWorld();
+	TestWaterSelect();
 	if (g_failures == 0) std::printf("river tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;
 }

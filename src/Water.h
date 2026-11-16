@@ -183,6 +183,11 @@ public:
 	bool CanClone() const noexcept override { return true; }
 	std::unique_ptr<SceneObject> Clone(ID3D11Device* device) const override;
 	bool CanDelete() const override { return true; }
+	// Water is sized by its Width and Length (the Scale tool edits those), and stays level: it can be turned but not tilted (lesson 42).
+	bool SupportsScale() const override { return false; }
+	// Where a click ray meets the water's SURFACE (where it falls too), provided that spot is really water: inside a river's corridor and
+	// over wet ground. `distance` = how far along the ray. Not a box: the empty part of a river's rectangle is not clickable.
+	bool RayHit(const DirectX::XMFLOAT3& origin, const DirectX::XMFLOAT3& direction, float& distance) const;
 	// A sphere around the whole body, so the editor's Frame command works. (Water casts no shadow: the sun ignores it.)
 	bool GetBoundingSphere(DirectX::XMFLOAT3& center, float& radius) const override;
 	RenderCategory GetRenderCategory() const override { return RenderCategory::Transparent; }

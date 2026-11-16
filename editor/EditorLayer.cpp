@@ -1,4 +1,5 @@
 #include "EditorLayer.h"
+#include "WaterSelect.h"
 #include "WaterTypeUi.h"
 #include "EditorTheme.h"
 #include "EditorIcons.h"
@@ -192,6 +193,66 @@ void DrawBoxOutline(ImDrawList* list, const XMFLOAT4X4& world, const XMFLOAT3& b
         for (int bit = 1; bit <= 4; bit <<= 1) {
             if (i & bit) continue;   // each edge once: from the corner whose bit is 0 to its neighbour with the bit set
             if (visible[i] && visible[i | bit]) list->AddLine(screen[i], screen[i | bit], color, 1.5f);
+        }
+    }
+}
+
+// A selected water body (lesson 42). A box would be wrong for it: a river is a ribbon across a much bigger rectangle, a pond
+// is round. So: the edge of the plane (a rectangle or an ellipse, at the water's level), with a light tint inside it for a
+// body that fills its plane; for a river that is a curve, the two edges of the WATER bright and the plane's edge faint.
+void DrawWaterSelection(ImDrawList* list, const Water& water, const XMFLOAT4X4& view, const XMFLOAT4X4& projection,
+                        float x, float y, float width, float height, ImU32 color)
+{
+    const WaterSettings& settings = water.GetSettings();
+    XMFLOAT3 position, rotation, scale;
+    water.GetEditorTransform(position, rotation, scale);
+    const bool curve = settings.HasRiverPath() && water.GetRiverWorldPath().size() >= 2;
+    const ImU32 faint = (color & 0x00FFFFFFu) | (90u << 24);
+    const ImU32 tint = (color & 0x00FFFFFFu) | (30u << 24);
+
+    const auto draw = [&](const std::vector<XMFLOAT3>& world, bool closed, ImU32 lineColor, float thickness, bool fill) {
+        std::vector<ImVec2> screen(world.size());
+        std::vector<char> ok(world.size());
+        bool all = true;
+        for (size_t i = 0; i < world.size(); ++i) {
+            ok[i] = ProjectPoint(world[i], view, projection, x, y, width, height, screen[i]) ? 1 : 0;
+            all = all && ok[i];
+        }
+        if (fill && all && screen.size() >= 3) {
+            float area = 0.0f;   // ImGui wants a convex fill wound one way: turn it round if the camera sees it the other way
+            for (size_t i = 0; i < screen.size(); ++i) {
+                const ImVec2& a = screen[i];
+                const ImVec2& b = screen[(i + 1) % screen.size()];
+                area += a.x * b.y - b.x * a.y;
+            }
+            if (area < 0.0f) std::reverse(screen.begin(), screen.end());
+            list->AddConvexPolyFilled(screen.data(), static_cast<int>(screen.size()), tint);
+            if (area < 0.0f) std::reverse(screen.begin(), screen.end());
+        }
+        const size_t count = world.size();
+        for (size_t i = 0; i + (closed ? 0 : 1) < count; ++i) {
+            const size_t j = (i + 1) % count;
+            if (ok[i] && ok[j]) list->AddLine(screen[i], screen[j], lineColor, thickness);
+        }
+    };
+
+    // The plane's edge, at the water's level.
+    const std::vector<WaterSelect::Spot> outline = WaterSelect::PlaneOutline(
+        settings.shape == WaterShape::Ellipse, 0.5f * settings.size * std::fabs(scale.x), 0.5f * settings.sizeZ * std::fabs(scale.z));
+    std::vector<XMFLOAT3> edge;
+    for (const WaterSelect::Spot& spot : outline) {
+        const XMFLOAT2 w = water.BodyToWorld(spot.x, spot.z);
+        edge.push_back({ w.x, position.y, w.y });
+    }
+    draw(edge, true, curve ? faint : color, curve ? 1.0f : 1.5f, !curve);
+
+    if (curve) {   // the river's water: the two banks
+        std::vector<WaterSelect::BankPoint> left, right;
+        WaterSelect::RiverBanks(water.GetRiverWorldPath(), (std::max)(1, static_cast<int>(water.GetRiverWorldPath().size() / 200)), left, right);
+        for (const std::vector<WaterSelect::BankPoint>* bank : { &left, &right }) {
+            std::vector<XMFLOAT3> line;
+            for (const WaterSelect::BankPoint& p : *bank) line.push_back({ p.x, position.y + p.level + 0.05f, p.z });
+            draw(line, false, color, 1.8f, false);
         }
     }
 }
@@ -668,15 +729,27 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
             DrawBoxOutline(ImGui::GetWindowDrawList(), boundsWorld, boundsMin, boundsMax, view, projection, x, y, width, height,
                            IM_COL32(255, 170, 40, 255));
             ImGui::GetWindowDrawList()->PopClipRect();
+        } else if (const Water* selectedForOutline = dynamic_cast<const Water*>(selected)) {
+            ImGui::GetWindowDrawList()->PushClipRect(ImVec2(x, y), ImVec2(x + width, y + height), true);
+            DrawWaterSelection(ImGui::GetWindowDrawList(), *selectedForOutline, view, projection, x, y, width, height, IM_COL32(255, 170, 40, 255));
+            ImGui::GetWindowDrawList()->PopClipRect();
         }
 
         XMFLOAT3 position, rotation, scale;
+        Water* selectedWater = dynamic_cast<Water*>(selected);
         if (!sculptTerrain && !riverWater && selected->GetEditorTransform(position, rotation, scale) &&   // no gizmo while sculpting or drawing a river
             (gizmoTool_ != GizmoTool::Rotate || selected->SupportsRotation()) &&
-            (gizmoTool_ != GizmoTool::Scale || selected->SupportsScale())) {
+            (gizmoTool_ != GizmoTool::Scale || selected->SupportsScale() || selectedWater)) {
+            // Water is sized by its Width and Length, so for it the Scale tool edits THOSE: the gizmo is composed at the plane's
+            // real size in the world, and what it is dragged to becomes the new Width and Length. Its own scale stays as it was.
+            const XMFLOAT3 bodyScale = scale;
+            if (selectedWater) {
+                const WaterSettings& ws = selectedWater->GetSettings();
+                scale = { ws.size * std::fabs(bodyScale.x), 1.0f, ws.sizeZ * std::fabs(bodyScale.z) };
+            }
             XMFLOAT4X4 matrix = ComposeTransform(position, rotation, scale);
             const ImGuizmo::OPERATION operation = gizmoTool_ == GizmoTool::Translate ? ImGuizmo::TRANSLATE
-                                                : gizmoTool_ == GizmoTool::Rotate    ? ImGuizmo::ROTATE
+                                                : gizmoTool_ == GizmoTool::Rotate    ? (selectedWater ? ImGuizmo::ROTATE_Y : ImGuizmo::ROTATE)   // water stays level
                                                                                      : ImGuizmo::SCALE;
             const ImGuizmo::MODE mode = (gizmoLocal_ || gizmoTool_ == GizmoTool::Scale) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
             // Holding Ctrl snaps: half a unit, 15 degrees, or a tenth of the scale.
@@ -685,8 +758,19 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
             ImGuizmo::Manipulate(&view._11, &projection._11, operation, mode, &matrix._11, nullptr,
                                  ImGui::GetIO().KeyCtrl ? snap : nullptr);
             if (ImGuizmo::IsUsing()) {
-                DecomposeTransform(matrix, position, rotation, scale);
-                selected->SetEditorTransform(position, rotation, scale);
+                XMFLOAT3 newScale;
+                DecomposeTransform(matrix, position, rotation, newScale);
+                if (selectedWater) {
+                    if (gizmoTool_ == GizmoTool::Scale) {
+                        WaterSettings ws = selectedWater->GetSettings();
+                        ws.size = (std::clamp)(newScale.x / (std::max)(std::fabs(bodyScale.x), 1e-3f), WaterSettings::kSizeMin, WaterSettings::kSizeMax);
+                        ws.sizeZ = (std::clamp)(newScale.z / (std::max)(std::fabs(bodyScale.z), 1e-3f), WaterSettings::kSizeMin, WaterSettings::kSizeMax);
+                        selectedWater->SetSettings(ws);
+                    }
+                    selected->SetEditorTransform(position, rotation, bodyScale);
+                } else {
+                    selected->SetEditorTransform(position, rotation, newScale);
+                }
             }
         }
     }
@@ -788,6 +872,24 @@ SceneObjectId EditorLayer::PickObject(const Ray& ray) const
         if (RayIntersectsBox(ray, world, boundsMin, boundsMax, distance) && distance < bestDistance) {
             bestDistance = distance;   // the NEAREST object under the cursor wins
             best = object->GetId();
+        }
+    }
+    // Water (lesson 42) has no box: it is picked where its SURFACE is, and only where that spot is really water. The terrain cannot
+    // be clicked itself, but it can stand in front of the water: a hill between you and a lake hides it.
+    float terrainDistance = bestDistance;
+    if (const Terrain* terrain = scene_->GetTerrain()) {
+        float hit = 0.0f;
+        if (terrain->Raycast(ray, hit) && hit < terrainDistance) terrainDistance = hit;
+    }
+    for (const auto& object : scene_->GetObjects()) {
+        const Water* water = dynamic_cast<const Water*>(object.get());
+        float distance = 0.0f;
+        // A water body that is already selected lets the click through to what lies behind it (a rock under the surface):
+        // otherwise nothing below the water could ever be picked.
+        if (water && water->GetId() == selectedId_ && best != 0) continue;
+        if (water && water->RayHit(ray.origin, ray.direction, distance) && distance < terrainDistance) {
+            terrainDistance = distance;   // (the nearest of the water bodies, the objects and the ground in front of them)
+            best = water->GetId();
         }
     }
     return best;
@@ -1144,6 +1246,7 @@ void EditorLayer::DrawHierarchyPanel()
             if (ImGui::Selectable("##row", selectedId_ == object->GetId(), ImGuiSelectableFlags_None, ImVec2(0.0f, rowHeight))) {
                 Select(object);
             }
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) { Select(object); FrameSelected(); }   // double-click = go and look at it (as F does)
             const ImVec2 rowMin = ImGui::GetItemRectMin();
             const ImVec2 rowMax = ImGui::GetItemRectMax();
 
@@ -1161,6 +1264,13 @@ void EditorLayer::DrawHierarchyPanel()
                 const char* tag = rank == 0 ? "sun" : rank == 1 ? "2nd" : "unused";
                 const float tagWidth = ImGui::CalcTextSize(tag).x;
                 list->AddText(ImVec2(rowMax.x - tagWidth - 8.0f, rowMin.y + 2.0f), ImGui::GetColorU32(rank == 2 ? ImGuiCol_TextDisabled : ImGuiCol_CheckMark), tag);
+            }
+            if (const auto* waterObject = dynamic_cast<const Water*>(object)) {   // which kind of water: a lake and a river look alike in a list
+                static const char* const kKinds[] = { "ocean", "lake", "river", "pond", "custom" };
+                const int kind = static_cast<int>(waterObject->GetSettings().bodyType);
+                const char* tag = (kind >= 0 && kind < 5) ? kKinds[kind] : "water";
+                const float tagWidth = ImGui::CalcTextSize(tag).x;
+                list->AddText(ImVec2(rowMax.x - tagWidth - 8.0f, rowMin.y + 2.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled), tag);
             }
             if (sky && sky->IsActive()) {
                 const char* tag = "active";
@@ -2206,7 +2316,13 @@ void EditorLayer::DrawTransformEditor(SceneObject* object)
         XMConvertToDegrees(rotation.x), XMConvertToDegrees(rotation.y), XMConvertToDegrees(rotation.z)
     };
     float rotationValues[3] = { rotationDegrees.x, rotationDegrees.y, rotationDegrees.z };
-    if (object->SupportsRotation() && ImGui::DragFloat3("Rotation", rotationValues, 1.0f)) {
+    const Water* waterObject = dynamic_cast<const Water*>(object);
+    if (waterObject) {   // water stays level: it can be turned about the vertical, not tilted
+        if (ImGui::DragFloat("Rotation Y", &rotationValues[1], 1.0f)) {
+            rotation = { 0.0f, XMConvertToRadians(rotationValues[1]), 0.0f };
+            changed = true;
+        }
+    } else if (object->SupportsRotation() && ImGui::DragFloat3("Rotation", rotationValues, 1.0f)) {
         rotation = { XMConvertToRadians(rotationValues[0]), XMConvertToRadians(rotationValues[1]),
                      XMConvertToRadians(rotationValues[2]) };
         changed = true;
@@ -2216,6 +2332,11 @@ void EditorLayer::DrawTransformEditor(SceneObject* object)
     if (object->SupportsScale() && ImGui::DragFloat3("Scale", scaleValues, 0.01f, 0.01f, 100.0f)) {
         scale = { scaleValues[0], scaleValues[1], scaleValues[2] };
         changed = true;
+    }
+    if (waterObject) {
+        const WaterSettings& ws = waterObject->GetSettings();
+        ImGui::TextDisabled("Size  %.0f x %.0f", ws.size * std::fabs(scale.x), ws.sizeZ * std::fabs(scale.z));
+        ImGui::SetItemTooltip("Set Width and Length in the water's settings, or drag with the Scale tool.");
     }
     if (changed) object->SetEditorTransform(position, rotation, scale);
 
