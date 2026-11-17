@@ -3,6 +3,7 @@
 //  - the curve passes through its control points, runs in order, and answers "where am I relative to it?" correctly
 //  - the carve digs a channel that is deepest in the middle, level with the water at its edge, never raises ground, and is
 //    exactly undone by its recorded patch
+//  - (lesson 45) the router: a river found by walking downhill, thinned into control points, that stops at the sea, the edge or a pit
 //  - the flow map: direction follows the curve, strength is 1 in the middle and falls to the bank, nothing far from the river,
 //    and the fast bake agrees with the plain per-point question
 #include "RiverCarve.h"
@@ -533,6 +534,177 @@ static void TestWaterSelect()
 	CHECK(left.empty() && right.empty());
 }
 
+// Letting the ground draw the river (lesson 45): a walk downhill, then smoothed and thinned into control points.
+static void TestRoute()
+{
+	// Simplify: a straight line of many points is two; the ends always survive; the cap is always respected.
+	{
+		std::vector<RiverPoint> line;
+		for (int i = 0; i < 100; ++i) line.push_back({ static_cast<float>(i), 0.01f * static_cast<float>(i % 3), 6.0f });
+		const std::vector<RiverPoint> two = RiverPath::Simplify(line, 1.0f, 40);
+		CHECK(two.size() == 2);
+		CHECK(two.front().x == line.front().x && two.back().x == line.back().x);
+
+		std::vector<RiverPoint> wave;
+		for (int i = 0; i < 200; ++i) wave.push_back({ static_cast<float>(i), 10.0f * std::sin(static_cast<float>(i) * 0.2f), 6.0f });
+		for (int cap : { 2, 5, 10, 40 }) {
+			const std::vector<RiverPoint> few = RiverPath::Simplify(wave, 0.01f, cap);   // a tolerance far too small for the cap
+			CHECK(static_cast<int>(few.size()) <= cap && few.size() >= 2);
+			CHECK(few.front().x == wave.front().x && few.back().x == wave.back().x);
+		}
+	}
+
+	// Smooth: the ends stay, the middle comes closer to its neighbours.
+	{
+		std::vector<RiverPoint> zig = { { 0, 0 }, { 4, 4 }, { 8, -4 }, { 12, 4 }, { 16, 0 } };
+		RiverPath::Smooth(zig, 2);
+		CHECK(zig.front().x == 0.0f && zig.front().z == 0.0f && zig.back().x == 16.0f && zig.back().z == 0.0f);
+		CHECK(std::abs(zig[2].z) < 4.0f);
+	}
+
+	// A valley that falls toward +z, its floor along x = 30. A river that starts on the slope beside it must find the floor.
+	const auto valley = [](float x, float z, float& y) {
+		if (x < -100.0f || x > 200.0f || z < 0.0f || z > 300.0f) return false;
+		y = 60.0f - 0.2f * z + 0.004f * (x - 30.0f) * (x - 30.0f);
+		return true;
+	};
+	{
+		RiverPath::RouteParams params;
+		params.stopHeight = 10.0f;
+		const RiverPath::Route route = RiverPath::FlowDownhill(valley, 0.0f, 10.0f, params);
+		CHECK(route.end == RiverPath::RouteEnd::Sea);
+		CHECK(route.points.size() >= 2 && static_cast<int>(route.points.size()) <= params.maxPoints);
+		CHECK(std::abs(route.points.front().x - 0.0f) < 1e-3f && std::abs(route.points.front().z - 10.0f) < 1e-3f);   // starts at the spring
+		CHECK(route.points.back().z > 220.0f);                       // ran most of the way down
+		CHECK(std::abs(route.points.back().x - 30.0f) < 8.0f);       // and ended in the valley floor
+		CHECK(route.fall > 40.0f);
+		CHECK(route.length > 200.0f);
+		for (size_t i = 0; i < route.points.size(); ++i) {           // wider downstream, within the asked range
+			CHECK(route.points[i].width >= params.startWidth - 1e-3f && route.points[i].width <= params.endWidth + 1e-3f);
+			if (i > 0) CHECK(route.points[i].width >= route.points[i - 1].width - 1e-3f);
+		}
+		// The curve through the control points runs downhill (a river must not climb), to within the ground's own bumps.
+		const std::vector<RiverPath::Sample> curve = RiverPath::Build(route.points, 1.0f);
+		float previous = 1.0e9f;
+		for (const RiverPath::Sample& sample : curve) {
+			float y = 0.0f;
+			if (!valley(sample.x, sample.z, y)) continue;
+			CHECK(y <= previous + 1.0f);
+			previous = (std::min)(previous, y);
+		}
+		const RiverPath::Problems problems = RiverPath::Analyse(curve);
+		CHECK(problems.overlapA < 0);                                // it does not run into itself
+	}
+
+	// The same river, the same way, every time (no randomness).
+	{
+		RiverPath::RouteParams params;
+		params.stopHeight = 10.0f;
+		const RiverPath::Route a = RiverPath::FlowDownhill(valley, 0.0f, 10.0f, params);
+		const RiverPath::Route b = RiverPath::FlowDownhill(valley, 0.0f, 10.0f, params);
+		CHECK(a.points.size() == b.points.size());
+		for (size_t i = 0; i < a.points.size() && i < b.points.size(); ++i) CHECK(a.points[i].x == b.points[i].x && a.points[i].z == b.points[i].z);
+	}
+
+	// Without a stop height it runs to the edge of the terrain.
+	{
+		const RiverPath::Route route = RiverPath::FlowDownhill(valley, 30.0f, 10.0f, RiverPath::RouteParams{});
+		CHECK(route.end == RiverPath::RouteEnd::EdgeOfTerrain);
+		CHECK(route.points.back().z > 280.0f);
+	}
+
+	// A bowl: the river runs into the middle and stops there (a pit), and never spins forever.
+	{
+		const auto bowl = [](float x, float z, float& y) {
+			if (std::abs(x) > 200.0f || std::abs(z) > 200.0f) return false;
+			y = 0.05f * (x * x + z * z) * 0.1f;
+			return true;
+		};
+		const RiverPath::Route route = RiverPath::FlowDownhill(bowl, 60.0f, 10.0f, RiverPath::RouteParams{});
+		CHECK(route.end == RiverPath::RouteEnd::Pit);
+		CHECK(std::hypot(route.points.back().x, route.points.back().z) < 12.0f);
+		CHECK(static_cast<int>(route.points.size()) <= 40);
+	}
+
+	// Flat ground has no way down: it stops instead of wandering.
+	{
+		const auto flat = [](float x, float z, float& y) { if (std::abs(x) > 500.0f || std::abs(z) > 500.0f) return false; y = 10.0f; return true; };
+		const RiverPath::Route route = RiverPath::FlowDownhill(flat, 0.0f, 0.0f, RiverPath::RouteParams{});
+		CHECK(route.end == RiverPath::RouteEnd::Pit);
+		CHECK(route.length < 400.0f);
+	}
+
+	// A spring that is not on the ground gives nothing; a spring already below the sea is a river of nothing.
+	{
+		const RiverPath::Route off = RiverPath::FlowDownhill(valley, 500.0f, 500.0f, RiverPath::RouteParams{});
+		CHECK(off.end == RiverPath::RouteEnd::NoGround && off.points.empty());
+		RiverPath::RouteParams params;
+		params.stopHeight = 100.0f;
+		const RiverPath::Route drowned = RiverPath::FlowDownhill(valley, 0.0f, 10.0f, params);
+		CHECK(drowned.end == RiverPath::RouteEnd::Sea && drowned.points.size() < 2);
+	}
+
+	// A winding valley (the floor swings from side to side): the river follows the swing, and the bends it makes are not tighter
+	// than it is wide.
+	{
+		const auto winding = [](float x, float z, float& y) {
+			if (x < -150.0f || x > 150.0f || z < 0.0f || z > 400.0f) return false;
+			const float floorX = 40.0f * std::sin(z * 0.025f);
+			y = 80.0f - 0.2f * z + 0.006f * (x - floorX) * (x - floorX);
+			return true;
+		};
+		RiverPath::RouteParams params;
+		params.stopHeight = 5.0f;
+		const RiverPath::Route route = RiverPath::FlowDownhill(winding, 0.0f, 5.0f, params);
+		CHECK(route.end == RiverPath::RouteEnd::Sea || route.end == RiverPath::RouteEnd::EdgeOfTerrain);
+		CHECK(route.points.back().z > 300.0f);
+		float widest = 0.0f;
+		float lateral = 0.0f;
+		for (const RiverPoint& p : route.points) { widest = (std::max)(widest, p.width); lateral = (std::max)(lateral, std::abs(p.x)); }
+		CHECK(lateral > 15.0f);                                       // it did swing with the valley
+		const std::vector<RiverPath::Sample> curve = RiverPath::Build(route.points, 1.0f);
+		CHECK(RiverPath::TightestBendRatio(curve) > 1.0f);
+		CHECK(RiverPath::Analyse(curve).overlapA < 0);
+	}
+	// Rough ground (hills made of value noise), many springs: every walk ends, stays inside its limits and stays finite.
+	{
+		const auto hash = [](int ix, int iz) {
+			std::uint32_t h = static_cast<std::uint32_t>(ix) * 374761393u + static_cast<std::uint32_t>(iz) * 668265263u;
+			h = (h ^ (h >> 13)) * 1274126177u;
+			return static_cast<float>((h ^ (h >> 16)) & 0xFFFF) / 65535.0f;
+		};
+		const auto hills = [&hash](float x, float z, float& y) {
+			if (x < 0.0f || x > 400.0f || z < 0.0f || z > 400.0f) return false;
+			float height = 0.0f, amplitude = 30.0f, scale = 1.0f / 64.0f;
+			for (int octave = 0; octave < 4; ++octave) {
+				const float fx = x * scale, fz = z * scale;
+				const int ix = static_cast<int>(std::floor(fx)), iz = static_cast<int>(std::floor(fz));
+				const float tx = fx - static_cast<float>(ix), tz = fz - static_cast<float>(iz);
+				const float a = hash(ix, iz) + (hash(ix + 1, iz) - hash(ix, iz)) * tx;
+				const float b = hash(ix, iz + 1) + (hash(ix + 1, iz + 1) - hash(ix, iz + 1)) * tx;
+				height += (a + (b - a) * tz) * amplitude;
+				amplitude *= 0.5f;
+				scale *= 2.0f;
+			}
+			y = height;
+			return true;
+		};
+		std::uint32_t state = 12345u;
+		for (int trial = 0; trial < 60; ++trial) {
+			const float sx = 20.0f + 360.0f * Random01(state), sz = 20.0f + 360.0f * Random01(state);
+			RiverPath::RouteParams params;
+			params.step = trial % 2 == 0 ? 4.0f : 2.5f;
+			const RiverPath::Route route = RiverPath::FlowDownhill(hills, sx, sz, params);
+			CHECK(static_cast<int>(route.points.size()) <= params.maxPoints);
+			CHECK(std::isfinite(route.length) && std::isfinite(route.fall));
+			CHECK(route.fall >= -1e-3f);   // never ends higher than it began
+			CHECK(route.length <= params.maxLength * 1.2f);
+			for (const RiverPoint& p : route.points) CHECK(std::isfinite(p.x) && std::isfinite(p.z) && p.width >= RiverPath::kMinWidth && p.width <= RiverPath::kMaxWidth);
+		}
+	}
+
+}
+
 int main()
 {
 	TestCurve();
@@ -548,6 +720,7 @@ int main()
 	TestLevels();
 	TestLevelsInTheWorld();
 	TestWaterSelect();
+	TestRoute();
 	if (g_failures == 0) std::printf("river tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;
 }

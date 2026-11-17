@@ -719,7 +719,7 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
     Water* riverWater = nullptr;
     if (riverEditMode_) {
         riverWater = dynamic_cast<Water*>(selected);
-        if (sculptTerrain || !riverWater || !riverWater->GetSettings().HasCurrent()) { riverEditMode_ = false; riverDragIndex_ = -1; riverWater = nullptr; }
+        if (sculptTerrain || !riverWater || !riverWater->GetSettings().HasCurrent()) { riverEditMode_ = false; riverSpringMode_ = false; riverDragIndex_ = -1; riverWater = nullptr; }
     }
     if (selected) {
         XMFLOAT4X4 boundsWorld;
@@ -2923,7 +2923,8 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
 
 // Clicks in the viewport edit the river's control points: click on empty water level = add a point at the end, press on a point
 // and drag = move it, right-click a point = delete it, Esc = done. The points live in the body's frame, so everything goes
-// through Water::WorldToBody / BodyToWorld. The mouse is aimed at the PLANE of the water (the river is level), not the ground.
+// through Water::WorldToBody / BodyToWorld. The mouse is aimed at the GROUND you see (lesson 45), or at the plane of the water when
+// it meets no ground (or the option is off): a click lands under the cursor, whatever the height of the land.
 void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const XMFLOAT4X4& projection,
                                      float x, float y, float width, float height)
 {
@@ -2943,9 +2944,22 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
     const float ndcX = ((io.MousePos.x - x) / width) * 2.0f - 1.0f;
     const float ndcY = 1.0f - ((io.MousePos.y - y) / height) * 2.0f;
     const Ray ray = MakePickRay(view, projection, ndcX, ndcY);
+    // Where the ray meets the ground (lesson 45). Aiming at the water's plane instead put a click far from the cursor wherever the
+    // land stands above or below the water: the river is drawn where you point, on what you see.
+    const Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;
+    XMFLOAT3 groundPoint(0.0f, 0.0f, 0.0f);
+    float groundDistance = 0.0f;
+    const bool aimAtGround = riverAimAtGround_ && terrain && terrain->Raycast(ray, groundDistance, &groundPoint);
+    // The overlay is drawn ON the ground (or on the water where that is higher), a hair above so it does not flicker.
+    auto overlayY = [&](float worldX, float worldZ, float surfaceY) {
+        float groundY = 0.0f;
+        if (terrain && riverAimAtGround_ && terrain->GetHeightAt(worldX, worldZ, groundY)) return (std::max)(groundY, surfaceY) + 0.15f;
+        return surfaceY + 0.15f;
+    };
     // The mouse's ray meets a horizontal plane at some height: the water's own level, or (lesson 41) the level of a river point
-    // that falls, so a point on a lower stretch lands under the cursor and not beside it.
+    // that falls, so a point on a lower stretch lands under the cursor and not beside it. (On the ground the height is not needed.)
     auto bodySpotAt = [&](float planeY, float& bodyX, float& bodyZ) {
+        if (aimAtGround) return water->WorldToBody(groundPoint.x, groundPoint.z, bodyX, bodyZ);
         if (std::fabs(ray.direction.y) <= 1e-5f) return false;
         const float t = (planeY - ray.origin.y) / ray.direction.y;
         if (t <= 0.0f) return false;
@@ -2973,7 +2987,7 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
     float nearest = 14.0f * 14.0f;
     for (size_t i = 0; i < count; ++i) {
         const XMFLOAT2 world = water->BodyToWorld(edited.riverPath[i].x, edited.riverPath[i].z);
-        visible[i] = project(world.x, level + edited.riverPath[i].level + 0.15f, world.y, handle[i]) ? 1 : 0;
+        visible[i] = project(world.x, overlayY(world.x, world.y, level + edited.riverPath[i].level), world.y, handle[i]) ? 1 : 0;
         if (!visible[i]) continue;
         const float dx = handle[i].x - io.MousePos.x, dy = handle[i].y - io.MousePos.y;
         if (dx * dx + dy * dy < nearest) { nearest = dx * dx + dy * dy; hovered = static_cast<int>(i); }
@@ -2992,7 +3006,7 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
         const float pz[3] = { s.z, s.z + sideZ * s.halfWidth, s.z - sideZ * s.halfWidth };
         for (int k = 0; k < 3; ++k) {
             ImVec2 now;
-            const bool ok = project(px[k], level + s.level + 0.15f, pz[k], now);
+            const bool ok = project(px[k], overlayY(px[k], pz[k], level + s.level), pz[k], now);
             if (ok && previousOk[k]) list->AddLine(previous[k], now, colors[k], k == 0 ? 2.5f : 1.5f);
             previous[k] = now;
             previousOk[k] = ok;
@@ -3011,14 +3025,20 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
     // What the next click would do, drawn before it is made (lesson 39): on the water it adds a bend point to the curve, anywhere
     // else it extends whichever end of the river is nearer. The order the points are clicked in no longer matters.
     RiverPath::Placement next;
-    if (hovered < 0 && riverDragIndex_ < 0 && count < static_cast<size_t>(RiverPath::kMaxPoints) && placeUnderMouse(next)) {
+    if (riverSpringMode_ && aimAtGround) {   // lesson 45: the next click is a spring
+        const ImU32 spring = IM_COL32(120, 220, 255, 235);
+        list->AddCircle(io.MousePos, 10.0f, spring, 0, 2.5f);
+        list->AddCircleFilled(io.MousePos, 3.0f, spring);
+        list->AddText(ImVec2(io.MousePos.x + 14.0f, io.MousePos.y + 10.0f), spring, "spring: click, and the river finds its way down");
+    }
+    if (!riverSpringMode_ && hovered < 0 && riverDragIndex_ < 0 && count < static_cast<size_t>(RiverPath::kMaxPoints) && placeUnderMouse(next)) {
         const ImU32 ghost = IM_COL32(255, 255, 255, 170);
         const char* what = "start the river here";
         if (count >= 1) {
             if (next.kind == RiverPath::Placement::Kind::Insert) {
                 const XMFLOAT2 on = water->BodyToWorld(next.point.x, next.point.z);
                 ImVec2 at;
-                if (project(on.x, level + next.point.level + 0.15f, on.y, at)) list->AddCircle(at, 9.0f, ghost, 0, 2.0f);
+                if (project(on.x, overlayY(on.x, on.y, level + next.point.level), on.y, at)) list->AddCircle(at, 9.0f, ghost, 0, 2.0f);
                 what = "add a bend point here";
             } else {
                 const bool upstream = next.kind == RiverPath::Placement::Kind::Prepend;
@@ -3038,7 +3058,7 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
     auto ring = [&](int sampleIndex, const char* text) {
         const RiverPath::Sample& sample = path[static_cast<size_t>(sampleIndex)];
         ImVec2 at;
-        if (!project(sample.x, level + sample.level + 0.15f, sample.z, at)) return;
+        if (!project(sample.x, overlayY(sample.x, sample.z, level + sample.level), sample.z, at)) return;
         list->AddCircle(at, 16.0f, IM_COL32(255, 70, 60, 255), 0, 3.0f);
         if (text) list->AddText(ImVec2(at.x + 20.0f, at.y - 8.0f), IM_COL32(255, 110, 100, 255), text);
     };
@@ -3049,8 +3069,9 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
                       problems.overlapA >= 0 ? "The river lies on top of itself: drag the marked points apart or delete one."
                                              : "A bend is tighter than the river is wide: space the points out or narrow the river.");
     list->AddText(ImVec2(x + 8.0f, y + height - 22.0f), IM_COL32(255, 220, 80, 230),
-                  count == 0 ? "River: click where it should start | Esc or Enter = done"
-                             : "River: click = extend (or bend the curve on the water) | drag a point = move | right-click a point = delete | Enter / Esc = done");
+                  riverSpringMode_ ? "Spring: click the terrain where the river should start. It runs downhill from there | Esc = cancel"
+                  : count == 0 ? "River: click the ground where it should start (or press Pick a spring) | Esc or Enter = done"
+                               : "River: click = extend (or bend the curve on the water) | drag a point = move | right-click a point = delete | Enter / Esc = done");
     list->PopClipRect();
 
     // Input.
@@ -3058,7 +3079,14 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
     bool refit = false;   // the set of points changed shape: re-centre the body and size the plane to cover them
     if (viewportHovered_ && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (hovered >= 0) {
+            if (riverSpringMode_) {
+                float springX = 0.0f, springZ = 0.0f;   // a spring must be ON the ground: that is what the river runs down
+                if (aimAtGround && bodySpotAt(level, springX, springZ)) {
+                    if (FlowDownhillFrom(water, edited, springX, springZ, false)) { riverSpringMode_ = false; modified = true; refit = true; }
+                } else {
+                    riverStatus_ = "Click on the terrain to place the spring.";
+                }
+            } else if (hovered >= 0) {
                 riverDragIndex_ = hovered;
             } else if (RiverPath::Placement placement; edited.riverPath.size() < static_cast<size_t>(RiverPath::kMaxPoints) && placeUnderMouse(placement)) {
                 // Where the new point goes in the list is decided by RiverPath::Place (tested in tests/river_test.cpp).
@@ -3087,8 +3115,15 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
             riverDragIndex_ = -1;
         }
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape) || (viewportHovered_ && ImGui::IsKeyPressed(ImGuiKey_Enter))) { riverEditMode_ = false; riverDragIndex_ = -1; }
+    if (riverSpringMode_ && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        riverSpringMode_ = false;   // the first Esc only cancels the spring
+    } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || (viewportHovered_ && ImGui::IsKeyPressed(ImGuiKey_Enter))) {
+        riverEditMode_ = false;
+        riverSpringMode_ = false;
+        riverDragIndex_ = -1;
+    }
     if (modified) {
+        if (riverFollowGround_ && terrain) FollowTerrainLevels(water, edited);   // the water runs downhill from point to point
         if (refit && riverAutoFit_) FitRiverPlane(water, edited);
         water->SetSettings(edited);
     }
@@ -3134,6 +3169,88 @@ void EditorLayer::CarveRiverChannel(Water* water)
     riverStatus_ = "Channel carved. Ctrl+Z puts the ground back.";
 }
 
+// Sets each point's water level from the ground under it, never higher than the point before: a river runs downhill (lesson 41).
+// The same thing the "Follow terrain" button does; now also done as the river is drawn (lesson 45).
+void EditorLayer::FollowTerrainLevels(Water* water, WaterSettings& s)
+{
+    Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;
+    if (!terrain || !water || s.riverPath.empty()) return;
+    // The ground under each point; a point beyond the terrain keeps the height of the one before it.
+    std::vector<float> ground(s.riverPath.size(), s.height);
+    for (size_t i = 0; i < s.riverPath.size(); ++i) {
+        const XMFLOAT2 w = water->BodyToWorld(s.riverPath[i].x, s.riverPath[i].z);
+        float groundY = 0.0f;
+        if (terrain->GetHeightAt(w.x, w.y, groundY)) ground[i] = groundY;
+        else if (i > 0) ground[i] = ground[i - 1];
+    }
+    RiverPath::FollowGround(s.riverPath, ground, s.height);
+}
+
+// Water runs downhill, so the river does not have to be drawn: from a spring, walk toward the steepest way down until the sea, the
+// edge of the terrain or a basin (RiverPath::FlowDownhill, tested in tests/river_test.cpp), then keep a few control points the
+// author can still move. `extend` keeps the existing points and continues from the last one.
+bool EditorLayer::FlowDownhillFrom(Water* water, WaterSettings& s, float bodyX, float bodyZ, bool extend)
+{
+    Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;
+    if (!terrain || !water) { riverStatus_ = "A river can only find its way over terrain: add one first."; return false; }
+
+    RiverPath::RouteParams params;
+    params.stopHeight = riverStopHeight_;
+    params.startWidth = riverStartWidth_;
+    params.endWidth = riverEndWidth_;
+    std::vector<RiverPoint> kept;   // the points that stay when this is a continuation
+    if (extend && !s.riverPath.empty()) {
+        kept = s.riverPath;
+        kept.pop_back();   // the route starts exactly where the last point is, and gives that point back
+        params.startWidth = s.riverPath.back().width;
+        params.endWidth = (std::max)(params.startWidth, riverEndWidth_);
+        params.maxPoints = (std::clamp)(RiverPath::kMaxPoints - static_cast<int>(kept.size()), 2, params.maxPoints);
+        if (static_cast<int>(kept.size()) + 2 > RiverPath::kMaxPoints) { riverStatus_ = "Too many points to continue: delete some first."; return false; }
+    }
+
+    // The walk happens in the body's own frame, where the control points live; each question about the ground is turned into
+    // world coordinates first. (Everything moves and turns with the body, so the river keeps its place when the body moves.)
+    const RiverPath::GroundFn ground = [water, terrain](float bodyPointX, float bodyPointZ, float& groundY) {
+        const XMFLOAT2 w = water->BodyToWorld(bodyPointX, bodyPointZ);
+        return terrain->GetHeightAt(w.x, w.y, groundY);
+    };
+    const RiverPath::Route route = RiverPath::FlowDownhill(ground, bodyX, bodyZ, params);
+    if (route.points.size() < 2) {
+        riverStatus_ = route.end == RiverPath::RouteEnd::NoGround ? "That spot is not on the terrain."
+                     : route.end == RiverPath::RouteEnd::Sea     ? "That spot is already at the sea: pick a higher one, or lower 'Stop at height'."
+                                                                   : "The ground has no way down from there (a basin). Pick a spot on a slope.";
+        return false;
+    }
+    s.riverPath = std::move(kept);
+    s.riverPath.insert(s.riverPath.end(), route.points.begin(), route.points.end());
+
+    const char* ending = "";
+    switch (route.end) {
+        case RiverPath::RouteEnd::Sea:           ending = "It reaches the sea."; break;
+        case RiverPath::RouteEnd::EdgeOfTerrain: ending = "It runs off the edge of the terrain."; break;
+        case RiverPath::RouteEnd::Pit:           ending = "It ends in a basin: a lake would form there."; break;
+        case RiverPath::RouteEnd::TooLong:       ending = "It stopped at the length limit: press Continue downhill for more."; break;
+        default: break;
+    }
+    char text[200];
+    std::snprintf(text, sizeof(text), "Found a river %.0f long that falls %.1f. %s", route.length, route.fall, ending);
+    riverStatus_ = text;
+    return true;
+}
+
+// Everything that still has to be done to a drawn river, in the one order that works: the water's fall from the ground, the plane
+// fitted around the curve, the channel dug. Each of the three is still a button of its own for when only one is wanted.
+void EditorLayer::FinishRiver(Water* water, WaterSettings& s)
+{
+    if (!water || s.riverPath.size() < 2) { riverStatus_ = "Add at least two points first."; return; }
+    Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;
+    FollowTerrainLevels(water, s);
+    FitRiverPlane(water, s);   // sets the settings and moves the body, so the curve in the world is new...
+    if (!terrain) { riverStatus_ = "The plane is fitted. (There is no terrain to carve.)"; return; }
+    water->RefreshRiverFlow();   // ...and is measured again now, not at the next frame: the carve reads it
+    CarveRiverChannel(water);
+}
+
 // The part of the Current section that makes a river a curve: the points, the carve, and the plane that has to cover it.
 void EditorLayer::DrawRiverPathInspector(Water* water, WaterSettings& s, bool& changed)
 {
@@ -3152,7 +3269,46 @@ void EditorLayer::DrawRiverPathInspector(Water* water, WaterSettings& s, bool& c
     ImGui::SetItemTooltip("Click on the water's level: on the river it adds a bend point, anywhere else it extends the nearer end.\nDrag a point to move it, right-click one to delete it. Enter or Esc = done.\nThe river runs from point 1 (upstream) to the last point; Reverse flips it.");
     ImGui::Checkbox("Fit the plane as I draw", &riverAutoFit_);
     ImGui::SetItemTooltip("Re-centres the body on the river and sizes the plane to cover it whenever a point is added, moved or deleted.");
+    ImGui::Checkbox("Aim at the ground", &riverAimAtGround_);
+    ImGui::SetItemTooltip("On: a click lands on the terrain under the cursor, so the point is where you see it.\nOff: the click is aimed at the water's own level, which is far from the cursor wherever the land is higher or lower.");
+    ImGui::Checkbox("Water follows the ground", &riverFollowGround_);
+    ImGui::SetItemTooltip("While you draw, every point's water level is set from the ground under it (never rising downstream), so the river runs downhill.\nSets the 'lvl' of every point each time you change the points. Turn it off to set the levels yourself.");
 
+    ImGui::SeparatorText("Let the river find its way");
+    {
+        Terrain* findTerrain = scene_ ? scene_->GetTerrain() : nullptr;
+        ImGui::BeginDisabled(!findTerrain);
+        if (ImGui::Button(riverSpringMode_ ? "Click the spring in the viewport..." : "Pick a spring")) {
+            riverSpringMode_ = !riverSpringMode_;
+            if (riverSpringMode_) riverEditMode_ = true;
+            riverDragIndex_ = -1;
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Then click the terrain where the river should start. Water runs downhill, so the river is found from there:\nit follows the valley to the sea, the edge of the terrain or a basin. You can still move its points.\nReplaces the current points (Ctrl+Z brings them back). Esc cancels.");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!findTerrain || s.riverPath.empty());
+        if (ImGui::Button("Continue downhill")) {
+            const RiverPoint last = s.riverPath.back();
+            if (FlowDownhillFrom(water, s, last.x, last.z, true)) {
+                if (riverFollowGround_) FollowTerrainLevels(water, s);
+                if (riverAutoFit_) FitRiverPlane(water, s);
+                changed = true;
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("From the last point, keep going downhill to the sea (or the edge of the terrain), keeping the points you placed.");
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderFloat("Stop at height", &riverStopHeight_, -50.0f, 200.0f, "%.1f");
+        ImGui::SetItemTooltip("The river ends when the ground drops to this height (world Y): the level of your sea or lake.");
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderFloat("Width at the spring", &riverStartWidth_, RiverPath::kMinWidth, 60.0f, "%.1f");
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderFloat("Width at the mouth", &riverEndWidth_, RiverPath::kMinWidth, 120.0f, "%.1f");
+        ImGui::SetItemTooltip("Rivers widen as they go: the width grows from the spring to the mouth.");
+        if (!s.HasRiverPath() && !riverStatus_.empty()) ImGui::TextWrapped("%s", riverStatus_.c_str());
+    }
+
+    ImGui::SeparatorText("Points");
     int remove = -1;
     for (size_t i = 0; i < s.riverPath.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
@@ -3202,6 +3358,12 @@ void EditorLayer::DrawRiverPathInspector(Water* water, WaterSettings& s, bool& c
     if (ImGui::Button("Clear") && !s.riverPath.empty()) { s.riverPath.clear(); riverEditMode_ = false; riverDragIndex_ = -1; changed = true; }
 
     if (s.HasRiverPath()) {
+        if (ImGui::Button("Finish river")) {
+            FinishRiver(water, s);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("Does what is left, in the right order: the water's fall from the ground, the plane fitted around the river, the channel carved into the terrain.\nThe carve is its own undo step (Ctrl+Z).");
+        ImGui::SameLine();
         // The plane has to cover the river: the water exists only where the plane does (and the ground is below it).
         if (ImGui::Button("Fit plane to river")) {
             float halfX = 0.0f, halfZ = 0.0f, widest = 0.0f;
@@ -3227,15 +3389,7 @@ void EditorLayer::DrawRiverPathInspector(Water* water, WaterSettings& s, bool& c
             Terrain* fallTerrain = scene_ ? scene_->GetTerrain() : nullptr;
             ImGui::BeginDisabled(!fallTerrain);
             if (ImGui::Button("Follow terrain") && fallTerrain) {
-                // The ground under each point; a point beyond the terrain keeps the height of the one before it.
-                std::vector<float> ground(s.riverPath.size(), s.height);
-                for (size_t i = 0; i < s.riverPath.size(); ++i) {
-                    const XMFLOAT2 w = water->BodyToWorld(s.riverPath[i].x, s.riverPath[i].z);
-                    float groundY = 0.0f;
-                    if (fallTerrain->GetHeightAt(w.x, w.y, groundY)) ground[i] = groundY;
-                    else if (i > 0) ground[i] = ground[i - 1];
-                }
-                RiverPath::FollowGround(s.riverPath, ground, s.height);
+                FollowTerrainLevels(water, s);
                 changed = true;
             }
             ImGui::EndDisabled();

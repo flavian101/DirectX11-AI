@@ -124,6 +124,12 @@ private:
                             float imageX, float imageY, float imageWidth, float imageHeight);   // overlay + click to add, drag to move, right-click to delete
     void FitRiverPlane(Water* water, WaterSettings& settings);   // centres the body on the river and sizes the plane to cover it (lesson 39)
     void CarveRiverChannel(Water* water);                         // digs the terrain along the curve (one undo step)
+    // --- a river that is easy to draw (lesson 45) ---
+    void FollowTerrainLevels(Water* water, WaterSettings& settings);   // each point's water level from the ground under it, never rising downstream
+    // Finds the river from a spring by walking downhill (RiverPath::FlowDownhill) and sets the points. `extend`: keep the existing points
+    // and continue from the last one. The spring is in the body's own frame. False (and a message in riverStatus_) if no river was found.
+    bool FlowDownhillFrom(Water* water, WaterSettings& settings, float bodyX, float bodyZ, bool extend);
+    void FinishRiver(Water* water, WaterSettings& settings);           // follow the ground + fit the plane + carve the channel, in one go
     void DiscardSculpt(Terrain* terrain);                         // back to the heightmap and noise (undoable)
     // --- terrain painting (lesson 30): the same brush tool, aimed at the layers instead of the heights ---
     void RecordPaintStroke(SceneObjectId terrainId, HeightfieldPatch patch);
@@ -176,6 +182,12 @@ private:
     bool riverEditMode_ = false;    // clicks in the viewport edit the selected river's curve (lesson 38)
     int riverDragIndex_ = -1;       // the control point being dragged, -1 = none
     bool riverAutoFit_ = true;      // keep the plane fitted to the river while its points are placed, moved and deleted
+    bool riverAimAtGround_ = true;  // the mouse aims at the ground you SEE; off = at the water's own level, as before (lesson 45)
+    bool riverFollowGround_ = true; // while drawing, every point's water level is set from the ground (never rising downstream)
+    bool riverSpringMode_ = false;  // the next click on the terrain is a spring: the river is found downhill from it
+    float riverStopHeight_ = 4.0f;  // a found river ends when the ground reaches this height (world Y: the sea)
+    float riverStartWidth_ = 4.0f;  // a found river's width at its spring...
+    float riverEndWidth_ = 14.0f;   // ...and at its mouth
     std::string riverStatus_;       // what the last Carve did, shown under the button
     BrushSettings brush_;           // brush_.radius is in WORLD units here; Terrain::Sculpt converts it
     int brushTarget_ = 0;           // what the brush changes: 0 = the shape of the ground, 1 = its painted layers

@@ -111,6 +111,12 @@ public:
 	void GetShoreMapSize(int& width, int& height) const { width = depthField_.Width(); height = depthField_.Height(); }
 	const WaterViewStats& GetStats(ViewKind kind) const { return stats_[static_cast<int>(kind)]; }
 
+	// --- for the editor's Waves and Performance panels (read-only numbers about the mesh) ---
+	// One grid cell of the finest level of the mesh, in world units. The waves the mesh can show are no shorter than about six of these.
+	float FinestCell() const;
+	// How much bigger than the author's sea the waves are drawn so that this body's mesh can show them (1 = not at all; lesson 44).
+	float AutoWaveScale() const { return autoWaveScale_; }
+
 private:
 	void CreateRenderStates(ID3D11Device* device);
 	void RebuildMesh(const WaterMesh::TileGrid& grid);
@@ -122,10 +128,6 @@ private:
 	void ReleaseShoreMap();
 	float DepthAtWorld(float x, float z) const;   // water depth under a world position, from the CPU copy of the map
 	WaterWaves::ShoreSample ShoreAtWorld(float x, float z) const;   // depth AND the way to the land, the same blend the shader reads
-	// One grid cell of the finest level of the mesh, in world units. The waves the mesh can show are no shorter than about six of these.
-	float FinestCell() const;
-	// How much bigger than the author's sea the waves are drawn so that this body's mesh can show them (1 = not at all; lesson 44).
-	float AutoWaveScale() const { return autoWaveScale_; }
 	float LevelAtWorld(float x, float z) const;   // how far the surface stands above (+) or below (-) the body's level here: a river that falls (lesson 41)
 	float ExtentX() const { return settings_.size * std::abs(scale_.x); }   // world size along X
 	float ExtentZ() const { return settings_.sizeZ * std::abs(scale_.z); }

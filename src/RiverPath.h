@@ -7,6 +7,8 @@
 // water run here?" That is Closest().
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <utility>
 #include <vector>
 
 // One control point. x and z are in the water body's own frame: world units from the body's centre, before the body is turned,
@@ -281,6 +283,200 @@ inline void FollowGround(std::vector<RiverPoint>& points, const std::vector<floa
 		level = std::min(level, ground[i] - sink);
 		points[i].level = level - baseLevel;
 	}
+}
+
+// ---- Letting the ground draw the river (lesson 45) ---------------------------------------------------------------------------
+//
+// Water runs downhill, so given a spring and the shape of the ground the whole river can be found instead of drawn: from where
+// it stands, look around, step toward the steepest way down (with a little momentum so it does not zigzag), repeat until it
+// reaches the sea, the edge of the terrain or a pit. Then the many small steps are smoothed and thinned into a few control
+// points that the author can still grab and move. Pure logic: the ground is a function, so a test can give it any shape.
+
+// The ground's height at (x, z); false where there is no ground (off the terrain). Any frame will do, as long as the caller
+// uses the same one for the start and for the points that come back.
+using GroundFn = std::function<bool(float x, float z, float& y)>;
+
+struct RouteParams {
+	float step = 4.0f;                  // distance between probes while walking downhill, world units
+	float stopHeight = -1.0e30f;        // the walk ends once the ground is at or below this height (the sea)
+	float maxLength = 1500.0f;          // never longer than this, world units (a water plane is at most 2000 across: WaterSettings::kSizeMax)
+	float maxClimb = 1.0f;              // a bump this high is crossed (in total, over a run of steps that do not go down); more is a pit wall
+	float startWidth = 4.0f;            // the river is this wide at the spring...
+	float endWidth = 14.0f;             // ...and this wide at its mouth (rivers widen downstream)
+	int maxPoints = 40;                 // control points returned at most (below kMaxPoints, which leaves room to add more by hand)
+};
+
+enum class RouteEnd {
+	NoGround,       // the spring is not on the ground at all
+	Sea,            // reached stopHeight
+	EdgeOfTerrain,  // ran off the terrain
+	Pit,            // nowhere lower to go (or closed in by its own water): a basin, where a lake would form
+	TooLong         // hit maxLength
+};
+
+struct Route {
+	std::vector<RiverPoint> points;     // control points: x, z and width set, level 0 (Follow terrain sets the fall)
+	RouteEnd end = RouteEnd::NoGround;
+	float length = 0.0f;                // along the control points, world units
+	float fall = 0.0f;                  // ground height at the spring minus ground height at the mouth
+};
+
+// Three-point average, repeated: takes the zigzag out of a walk that moved in fixed steps. The two ends stay where they are.
+inline void Smooth(std::vector<RiverPoint>& points, int passes)
+{
+	if (points.size() < 3) return;
+	std::vector<RiverPoint> copy;
+	for (int pass = 0; pass < passes; ++pass) {
+		copy = points;
+		for (size_t i = 1; i + 1 < points.size(); ++i) {
+			points[i].x = 0.25f * copy[i - 1].x + 0.5f * copy[i].x + 0.25f * copy[i + 1].x;
+			points[i].z = 0.25f * copy[i - 1].z + 0.5f * copy[i].z + 0.25f * copy[i + 1].z;
+		}
+	}
+}
+
+// Fewer points, same shape (Douglas-Peucker): keeps the point farthest from the straight line between two kept points, as long
+// as it is farther than `tolerance`, and splits there. The two ends are always kept. If more than `maxPoints` survive, the
+// tolerance grows until they fit, so the result is always usable.
+inline std::vector<RiverPoint> Simplify(const std::vector<RiverPoint>& dense, float tolerance, int maxPoints)
+{
+	const int n = static_cast<int>(dense.size());
+	maxPoints = std::max(maxPoints, 2);
+	if (n <= 2) return dense;
+	tolerance = std::max(tolerance, 1e-3f);
+	for (int attempt = 0; attempt < 32; ++attempt) {
+		std::vector<char> keep(static_cast<size_t>(n), 0);
+		keep.front() = 1;
+		keep.back() = 1;
+		std::vector<std::pair<int, int>> work = { { 0, n - 1 } };
+		while (!work.empty()) {
+			const std::pair<int, int> range = work.back();
+			work.pop_back();
+			const int a = range.first, b = range.second;
+			if (b - a < 2) continue;
+			const float ax = dense[static_cast<size_t>(a)].x, az = dense[static_cast<size_t>(a)].z;
+			const float ex = dense[static_cast<size_t>(b)].x - ax, ez = dense[static_cast<size_t>(b)].z - az;
+			const float length2 = ex * ex + ez * ez;
+			float worst = 0.0f;
+			int at = -1;
+			for (int i = a + 1; i < b; ++i) {
+				const float px = dense[static_cast<size_t>(i)].x - ax, pz = dense[static_cast<size_t>(i)].z - az;
+				const float t = length2 > 1e-12f ? std::clamp((px * ex + pz * ez) / length2, 0.0f, 1.0f) : 0.0f;
+				const float d = std::hypot(px - ex * t, pz - ez * t);
+				if (d > worst) { worst = d; at = i; }
+			}
+			if (at >= 0 && worst > tolerance) {
+				keep[static_cast<size_t>(at)] = 1;
+				work.push_back({ a, at });
+				work.push_back({ at, b });
+			}
+		}
+		std::vector<RiverPoint> out;
+		for (int i = 0; i < n; ++i) if (keep[static_cast<size_t>(i)]) out.push_back(dense[static_cast<size_t>(i)]);
+		if (static_cast<int>(out.size()) <= maxPoints) return out;
+		tolerance *= 1.5f;
+	}
+	std::vector<RiverPoint> out;   // (cannot happen in practice) even spacing as a last resort
+	for (int i = 0; i < maxPoints; ++i) out.push_back(dense[static_cast<size_t>(static_cast<long long>(i) * (n - 1) / (maxPoints - 1))]);
+	return out;
+}
+
+// Walks downhill from (startX, startZ) and returns the river it found. See the comment above for the idea.
+inline Route FlowDownhill(const GroundFn& ground, float startX, float startZ, const RouteParams& params)
+{
+	Route route;
+	float groundHere = 0.0f;
+	if (!ground || !ground(startX, startZ, groundHere)) return route;   // end stays NoGround
+	const float groundAtStart = groundHere;
+	const float step = std::max(params.step, 0.5f);
+	const int maxSteps = std::clamp(static_cast<int>(params.maxLength / step), 8, 2000);
+	constexpr float kTwoPi = 6.28318530718f;
+	constexpr float kFlat = 0.002f;     // a drop smaller than this per unit of run is flat
+	constexpr int kMaxStale = 12;       // this many steps without finding lower ground than ever before: it is a basin, not a river
+
+	std::vector<RiverPoint> dense;
+	dense.push_back({ startX, startZ });
+	float x = startX, z = startZ, headX = 0.0f, headZ = 0.0f;
+	bool haveHeading = false;
+	int stale = 0;                       // steps since the lowest ground so far was found
+	size_t lowestIndex = 0;              // where in `dense` that lowest ground is: a river that gives up ends THERE, not where it wandered to
+	float lowestY = groundHere;
+	float climbed = 0.0f;                // how much higher the ground got across the current run of flat or rising steps
+	route.end = RouteEnd::TooLong;
+
+	for (int index = 0; index < maxSteps; ++index) {
+		if (groundHere <= params.stopHeight) { route.end = RouteEnd::Sea; break; }
+
+		// Look all the way round, 24 directions, the ring turned so that one of them is straight ahead. (Going back onto its own
+		// water is refused below, so no cone is needed: a river that overshoots the bottom of a bowl can turn back.)
+		const int count = 24;
+		const float baseAngle = haveHeading ? std::atan2(headZ, headX) : 0.0f;
+		bool found = false, offTerrain = false;
+		float bestScore = -1.0e30f, bestSlope = 0.0f, bestX = 0.0f, bestZ = 0.0f, bestDx = 0.0f, bestDz = 0.0f, bestGround = 0.0f;
+		for (int k = 0; k < count; ++k) {
+			const float angle = baseAngle + static_cast<float>(k) * (kTwoPi / 24.0f);
+			const float dx = std::cos(angle), dz = std::sin(angle);
+			const float qx = x + dx * step, qz = z + dz * step;
+			float qy = 0.0f;
+			if (!ground(qx, qz, qy)) { offTerrain = true; continue; }
+			float farY = qy;   // a second look, twice as far, so a small bump is not mistaken for the end of the slope
+			if (!ground(x + dx * 2.0f * step, z + dz * 2.0f * step, farY)) farY = qy;
+			const float slope = 0.6f * (groundHere - qy) / step + 0.4f * (groundHere - farY) / (2.0f * step);
+			const float score = slope + 0.03f * (dx * headX + dz * headZ);   // a little momentum (zero at the spring: no heading yet)
+			if (score <= bestScore) continue;   // cannot win: skip the (slower) look at the river's own water
+			bool loops = false;   // would this step land on the river's own earlier water?
+			const float closest = 0.75f * step;
+			for (size_t i = 0; i < dense.size() && !loops; ++i) {
+				const float ox = dense[i].x - qx, oz = dense[i].z - qz;
+				loops = ox * ox + oz * oz < closest * closest;
+			}
+			if (loops) continue;
+			bestScore = score; bestSlope = slope; bestX = qx; bestZ = qz; bestDx = dx; bestDz = dz; bestGround = qy; found = true;
+		}
+		if (!found) { route.end = offTerrain ? RouteEnd::EdgeOfTerrain : RouteEnd::Pit; break; }   // closed in by its own water: a basin
+		if (offTerrain && bestSlope < kFlat) { route.end = RouteEnd::EdgeOfTerrain; break; }   // the way down is off the map
+
+		if (bestSlope < kFlat) {
+			// Flat or uphill: a small bump is crossed, but a rise that keeps adding up is the wall of a basin.
+			climbed += std::max(0.0f, bestGround - groundHere);
+			if (climbed > params.maxClimb) { route.end = RouteEnd::Pit; break; }
+		} else {
+			climbed = 0.0f;
+		}
+		x = bestX;
+		z = bestZ;
+		groundHere = bestGround;
+		dense.push_back({ x, z });
+		if (groundHere < lowestY - 0.02f) { lowestY = groundHere; lowestIndex = dense.size() - 1; stale = 0; }
+		else if (++stale > kMaxStale) { route.end = RouteEnd::Pit; break; }   // wandering around the bottom of a basin, or crossing flat ground
+		if (!haveHeading) { headX = bestDx; headZ = bestDz; haveHeading = true; }
+		else {
+			headX = 0.6f * headX + 0.4f * bestDx;
+			headZ = 0.6f * headZ + 0.4f * bestDz;
+			const float length = std::hypot(headX, headZ);
+			if (length > 1e-6f) { headX /= length; headZ /= length; }
+		}
+	}
+
+	if (route.end == RouteEnd::Pit) dense.resize(lowestIndex + 1);   // the river ends at the bottom it found
+	if (dense.size() < 2) { route.points.clear(); return route; }
+	Smooth(dense, 3);
+	route.points = Simplify(dense, 0.5f * step, std::min(params.maxPoints, kMaxPoints));
+
+	// Wider downstream: the width grows with the distance along the river.
+	float total = 0.0f;
+	for (size_t i = 1; i < route.points.size(); ++i) total += std::hypot(route.points[i].x - route.points[i - 1].x, route.points[i].z - route.points[i - 1].z);
+	float walked = 0.0f;
+	for (size_t i = 0; i < route.points.size(); ++i) {
+		if (i > 0) walked += std::hypot(route.points[i].x - route.points[i - 1].x, route.points[i].z - route.points[i - 1].z);
+		const float t = total > 1e-4f ? walked / total : 0.0f;
+		route.points[i].width = std::clamp(params.startWidth + (params.endWidth - params.startWidth) * t, kMinWidth, kMaxWidth);
+		route.points[i].level = 0.0f;
+	}
+	route.length = total;
+	float groundAtEnd = groundAtStart;
+	if (ground(route.points.back().x, route.points.back().z, groundAtEnd)) route.fall = groundAtStart - groundAtEnd;
+	return route;
 }
 
 }   // namespace RiverPath
