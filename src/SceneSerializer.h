@@ -34,6 +34,16 @@ std::string CaptureObjectState(const SceneObject& object);
 // Puts a snapshot back on the object it was taken from. Images that already match are not loaded again.
 bool ApplyObjectState(SceneObject& object, const std::string& state, std::vector<std::string>& warnings);
 
+// ---------------------------------------------------------------------------------------------------------------
+// Water presets (lesson 43): the LOOK of a water body as a small file, to apply to any other body. Not its place, its
+// kind, or its river: see WaterPreset.h. A preset file is named <name>.waterpreset.
+// ---------------------------------------------------------------------------------------------------------------
+constexpr const char* kWaterPresetExtension = ".waterpreset";
+bool SaveWaterPreset(const WaterSettings& settings, const std::string& path, std::string& error);
+bool LoadWaterPreset(const std::string& path, WaterSettings& out, std::string& error);   // `out` is only touched on success
+std::vector<std::string> ListWaterPresets(const std::string& folder);                    // full paths, by name; none if the folder is missing
+std::string WaterPresetFileName(const std::string& name);                                // "" if nothing usable is left; no folder, no extension
+
 // Lights, shadow, post-processing and sky lighting. The camera is NOT part of it: flying around is not an edit.
 std::string CaptureGlobalState(const Scene& scene);
 bool ApplyGlobalState(Scene& scene, const std::string& state, std::vector<std::string>& warnings);

@@ -9,6 +9,7 @@
 #include "WaterFlow.h"
 #include "WaterMesh.h"
 #include "WaterPlan.h"
+#include "WaterSettings.h"
 #include "WaterShore.h"
 #include "WaterWaves.h"
 #include "Weather.h"
@@ -18,148 +19,7 @@
 #include <vector>
 
 class Terrain;
-enum class WavePreset { Calm, Choppy, Stormy };
 
-// A complete colour/optics look (not the waves, not the level or size). Pick one in the editor, then tweak.
-enum class WaterLook { Tropical, Ocean, Lake, Swamp, Arctic };
-
-// What KIND of water this is. It decides how the surface moves: an ocean rolls in swells from the wind, a lake shows
-// short wind chop, a pond barely moves, and a RIVER is a current: everything on it is carried downstream.
-// Values are saved in scene files by name: only ever ADD to the end.
-// (WaterBodyType itself lives in WaterBodyType.h, and WaterTypeUi.h says which settings each type shows.)
-
-// What the water mirrors. "Sky" is the cheap cubemap from before (reflects only the sky);
-// the planar modes draw the whole scene again from below the water (reflects terrain, cube, sky),
-// at a quarter / half / full of the screen's resolution. Values are saved in scene files: only ever ADD to the end.
-enum class ReflectionMode : int { Sky = 0, PlanarHalf = 1, PlanarFull = 2, PlanarQuarter = 3 };
-
-// The outline of a water body, seen from above. Values are saved in scene files: only ever ADD to the end.
-// A round pond is the square plane cut to its inscribed ellipse; a river is a long thin rectangle.
-enum class WaterShape : int { Rectangle = 0, Ellipse = 1 };
-
-// Shows one ingredient of the water on its own, to tune it. Never saved with the scene.
-enum class WaterDebugView : int { Off = 0, Normals = 1, Depth = 2, Foam = 3, Fresnel = 4, CrestHeight = 5, ShoreDepth = 6 };
-
-constexpr int kWaterLodCount = 4;   // level 0 = every vertex; each next level keeps fewer (the tile interior thins out, the border never does)
-
-struct WaterSettings {
-	// --- what kind of water ---
-	WaterBodyType bodyType = WaterBodyType::Ocean;
-	float flowSpeed = 2.0f;       // river: how fast the surface is carried downstream, world units per second
-	float flowAngle = 0.0f;       // river: degrees away from the body's own +Z axis (its length). 0 = flows toward +Z of the body
-	// A current is not one speed across the whole river (lesson 37): the water drags on its bed and banks.
-	float bankDrag = 0.6f;        // 0 = the bed does not slow the water; 1 = at a shallow bank it crawls
-	float channelProfile = 0.5f;  // 0 = one speed across the plane; 1 = the sides of the plane are much slower than the middle
-	float rippleStretch = 3.0f;   // how much longer than wide the ripples are along the flow (1 = round blobs)
-	float rapids = 0.5f;          // 0 = foam only at the very edge; 1 = foam spreads into fast shallow water
-	// The river as a CURVE (lesson 38). Two or more points: the current follows the curve (the Flow direction is then ignored),
-	// and "Carve channel" digs the terrain along it. Points are in the body's own frame, so the river turns with the body.
-	std::vector<RiverPoint> riverPath;
-	float riverDepth = 1.8f;       // carve: how far below the surface the bed lies in the middle (world units)
-	float riverBank = 5.0f;        // carve: how wide the bank is beyond the water's edge
-	float riverBankHeight = 2.5f;  // carve: how high the bank has climbed by the end of that width
-	bool HasRiverPath() const { return riverPath.size() >= 2; }
-
-	// --- the shore: how the water reacts to the ground under it (needs a terrain) ---
-	float shoreWaves = 1.0f;      // 0 = waves identical everywhere (the old look); 1 = they grow in shallow water, then break and die at the shore
-	float swash = 0.6f;           // how far the waterline (foam and the see-through edge) slides up and down the beach with each wave
-
-	// --- surface ---
-	float height = 4.0f;          // world Y of the water plane (kept in sync with the editor transform)
-	float size = 180.0f;          // width: the plane's extent along X
-	float sizeZ = 180.0f;         // length: the plane's extent along Z (a river is a long, thin rectangle)
-	WaterShape shape = WaterShape::Rectangle;
-	DirectX::XMFLOAT3 color = { 0.05f, 0.25f, 0.45f };   // DEEP water colour
-	float alpha = 0.68f;                                 // opacity of deep water
-
-	// --- depth: how the water changes between shore and open sea ---
-	DirectX::XMFLOAT3 shallowColor = { 0.10f, 0.55f, 0.60f };
-	float absorption = 0.35f;     // how fast light is absorbed with depth (per world unit)
-	UnderwaterSettings underwater;   // how the world looks from UNDER this water (fog, light): automatic from the colours above, or custom
-	float fadeDistance = 2.5f;    // depth at which the water becomes fully opaque (shore softness)
-	float foamDistance = 0.9f;    // width of the shoreline foam band, in depth units
-	float foamStrength = 0.9f;
-	float foamScale = 1.0f;       // size of the bubbles: larger = finer bubbles (lesson 37)
-	float foamTrail = 1.5f;       // seconds the foam of a breaking crest lingers behind it (0 = only while it is breaking)
-
-	// --- waves ---
-	float waveAmplitude = 0.35f;
-	float waveSpeed = 1.0f;
-	float waveFrequency = 0.6f;   // radians per world unit of the base wave (0.6 = ~10 unit wavelength)
-	// Where the wind comes from: the scene's weather (one wind for everything: Weather.h), or a direction of this body's own.
-	// Scenes saved before the scene wind existed keep the direction they had (they load as Custom).
-	WindSource windSource = WindSource::Scene;
-	float windDirection = 20.0f;  // degrees: the direction the waves travel toward (0 = +X, 90 = +Z). Used when windSource is Custom
-	float directionalSpread = 0.7f;   // 0 = all waves run with the wind (a clean swell), 1 = waves from every which way
-	float choppiness = 0.5f;      // 0 = rounded sine waves, 1 = sharp crests and wide troughs
-	int waveCount = 6;            // 2..12 waves summed. Fewer = cheaper and simpler
-	// The sea model (lesson 34). Classic = the original fixed waves (the five values below are ignored); Spectrum = a wind sea
-	// built from a spectrum, plus a swell, plus wave groups. Scenes saved before this existed load as Spectrum with these defaults.
-	WaterWaves::Style waveStyle = WaterWaves::Style::Spectrum;
-	float waveRoughness = 0.5f;   // 0 = glassy (small waves die away fast), 1 = rough (many small waves)
-	float swell = 0.3f;           // 0 = none; 1 = a swell nearly as tall as the biggest wind wave. A river has none
-	float swellAngle = 35.0f;     // degrees from the wind: where the swell comes from
-	float swellLength = 2.5f;     // the swell's wavelength as a multiple of the biggest wind wave's
-	float waveGroups = 0.35f;     // 0 = the same waves everywhere; 1 = patches of calm and rough water that drift
-	float shoreShelter = 0.8f;    // 0 = off; 1 = waves running AWAY from a nearby shore (the lee of an island) nearly vanish
-	int waveSeed = 1;             // another seed = another sea with the same character
-	float detailNormal = 0.5f;    // strength of the small ripples on top of the waves (0 = off, saves pixel work)
-	float detailScale = 0.8f;     // ripples per world unit
-	float detailDistance = 90.0f; // ripples fade out by this distance from the camera
-
-	// --- lighting ---
-	float reflectivity = 1.0f;    // 0 = no sky reflection, 1 = full Fresnel reflection
-	ReflectionMode reflectionMode = ReflectionMode::PlanarHalf;
-	float reflectionDistortion = 0.04f;   // how far the waves wobble the mirror image (fraction of the screen)
-	float refraction = 0.04f;     // how far waves bend the view of the bottom (fraction of the screen). 0 = off, skips a screen copy
-	float scatter = 0.5f;         // glow of crests lit from behind
-	float glintStrength = 1.0f;   // brightness of the sun highlight
-	float glintSharpness = 128.0f;// higher = smaller, tighter highlight
-	float crestFoam = 0.5f;       // foam on the steepest wave crests (0 = shoreline foam only)
-	float crestFoamThreshold = 0.25f;   // higher = only the sharpest crests foam
-
-	// --- mesh and speed ---
-	int meshDetail = 1;           // 0 = 128, 1 = 256, 2 = 512 grid cells across the full plane at the finest level (rebuilds the mesh)
-	float lodDistance = 60.0f;    // full mesh detail until this far from the camera; coarser (4 levels) beyond
-	bool frustumCulling = true;   // skip the parts of the water the camera cannot see
-
-	// --- debugging: not saved in scene files ---
-	WaterDebugView debugView = WaterDebugView::Off;
-	bool wireframe = false;       // draw the mesh as wires: shows the level-of-detail tiles
-
-	static constexpr float kFlowSpeedMax = 10.0f;
-	static constexpr float kRippleStretchMax = 8.0f;
-	static constexpr float kRiverDepthMax = 30.0f, kRiverBankMax = 60.0f, kRiverBankHeightMax = 60.0f;
-	static constexpr float kFoamScaleMin = 0.3f, kFoamScaleMax = 3.0f, kFoamTrailMax = 4.0f;
-	static constexpr float kSwashMax = 1.5f;
-	static constexpr float kHeightMin = -100.0f, kHeightMax = 200.0f;
-	static constexpr float kSizeMin = 2.0f, kSizeMax = 2000.0f;
-	static constexpr float kAmplitudeMax = 2.0f, kSpeedMax = 5.0f;
-	static constexpr float kFrequencyMin = 0.05f, kFrequencyMax = 2.0f;
-	static constexpr int kWaveCountMin = 2, kWaveCountMax = WaterWaves::kMaxWaves;
-	static constexpr float kSwellLengthMin = 1.5f, kSwellLengthMax = 6.0f, kWaveGroupsMax = 0.9f;
-	static constexpr float kDetailMax = 2.0f, kDetailScaleMin = 0.1f, kDetailScaleMax = 4.0f;
-	static constexpr float kDetailDistanceMin = 10.0f, kDetailDistanceMax = 500.0f;
-	static constexpr float kGlintMax = 3.0f;
-	static constexpr float kSharpnessMin = 8.0f, kSharpnessMax = 512.0f;
-	static constexpr float kAbsorptionMin = 0.02f, kAbsorptionMax = 2.0f;
-	static constexpr float kFadeMin = 0.1f, kFadeMax = 20.0f;
-	static constexpr float kFoamDistanceMax = 5.0f;
-	static constexpr float kDistortionMax = 0.2f;
-	static constexpr float kRefractionMax = 0.15f;
-	static constexpr float kScatterMax = 2.0f;
-	static constexpr int kMeshDetailMax = 2;
-	static constexpr float kLodDistanceMin = 10.0f, kLodDistanceMax = 1000.0f;
-
-	// A current carries everything downstream. Rivers always have one; a Custom body has one when its flow speed is above 0.
-	bool HasCurrent() const { return bodyType == WaterBodyType::River || (bodyType == WaterBodyType::Custom && flowSpeed > 0.0f); }
-	void Clamp();
-	void ApplyWavePreset(WavePreset preset);   // only touches the wave shape values (not wind direction)
-	void ApplyLook(WaterLook look);            // only touches colours, depth and optics (not waves, level or size)
-	// Sets the type AND the starting values that suit it (waves, ripples, foam, look). Keeps level, size, shape and debug switches.
-	void ApplyBodyType(WaterBodyType type);
-	WaterWaves::Params WaveParams() const;
-};
 
 // What one draw of the water did, per kind of view (camera, mirror, sun).
 struct WaterViewStats {

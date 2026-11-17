@@ -9,6 +9,7 @@
 #include <fstream>
 #include <filesystem>
 #include "SceneJson.h"
+#include "WaterPreset.h"
 
 namespace fs = std::filesystem;
 
@@ -581,4 +582,28 @@ bool ApplyGlobalState(Scene& scene, const std::string& state, std::vector<std::s
         warnings.push_back(std::string("Could not restore earlier settings: ") + e.what());
         return false;
     }
+}
+
+// ---- Water presets (lesson 43) --------------------------------------------------------------------------------------
+// The work is in WaterPreset.h (pure, and tested); this file only has to provide how a WaterSettings becomes JSON (SceneJson.h).
+bool SaveWaterPreset(const WaterSettings& settings, const std::string& path, std::string& error)
+{
+    return WaterPreset::Save(settings, fs::path(path), error);
+}
+
+bool LoadWaterPreset(const std::string& path, WaterSettings& out, std::string& error)
+{
+    return WaterPreset::Load(fs::path(path), out, error);
+}
+
+std::vector<std::string> ListWaterPresets(const std::string& folder)
+{
+    std::vector<std::string> paths;
+    for (const fs::path& p : WaterPreset::List(fs::path(folder))) paths.push_back(p.string());
+    return paths;
+}
+
+std::string WaterPresetFileName(const std::string& name)
+{
+    return WaterPreset::FileNameFor(name);
 }

@@ -11,6 +11,8 @@
 #include "ScenesPanel.h"
 #include "SceneObject.h"
 #include "UndoHistory.h"
+#include <optional>
+#include <vector>
 #include <string>
 #include "Scene.h"
 #include "SurfaceMaterial.h"
@@ -136,6 +138,13 @@ private:
     HWND hwnd_ = nullptr;
     Scene* scene_ = nullptr;   // non-owning; refreshed from the LayerContext every frame
     bool showAllWaterSettings_ = false;   // show every water setting for the selected body, whatever its type
+    // Water presets and copy/paste (lesson 43)
+    std::optional<WaterSettings> waterClipboard_;       // "Copy look": what "Paste look" applies
+    std::vector<std::string> waterPresets_;              // the preset files found in assets/presets/water, by name
+    double waterPresetsScanTime_ = -100.0;               // when they were last listed (the folder is looked at again every couple of seconds)
+    bool waterPresetsDirty_ = true;                      // a preset was saved or deleted: list again now
+    int waterPresetSelected_ = -1;                       // the one chosen in the list
+    char waterPresetName_[64] = "";                      // the name typed for "Save current look"
     GpuTimings gpuTimings_;    // a copy of the renderer's per-pass GPU times, refreshed every frame (shown in the Performance panels)
     SceneObjectId selectedId_ = 0;   // 0 = nothing; an id (not an index) survives adds and deletes
     TerrainSettings pendingTerrainSettings_;
