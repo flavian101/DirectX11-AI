@@ -808,6 +808,67 @@ static void TestFoamTrail()
 	CHECK(gone < 1e-4f);
 }
 
+// Lesson 44: waves the mesh can show. A big body has big grid cells, and the vertex shader fades every wave a cell cannot follow.
+static void TestResolvableWaves()
+{
+	// VertexFade is the shader's rule (waves.hlsli): full at six spacings per wavelength, nothing at three.
+	const float spacing = 2.0f;
+	CHECK(std::abs(WaterWaves::VertexFade(6.2831853f / (6.0f * spacing), spacing) - 1.0f) < 1e-5f);   // wavelength 6 spacings
+	CHECK(std::abs(WaterWaves::VertexFade(6.2831853f / (3.0f * spacing), spacing)) < 1e-5f);          // wavelength 3 spacings
+	CHECK(std::abs(WaterWaves::VertexFade(6.2831853f / (4.0f * spacing), spacing) - 0.5f) < 1e-4f);   // four spacings: half (2 - 2 * 0.75)
+	CHECK(WaterWaves::VertexFade(0.01f, spacing) == 1.0f && WaterWaves::VertexFade(100.0f, spacing) == 0.0f);
+
+	// Scaling a sea: every wavelength and every height by the same factor, so every wave keeps its steepness.
+	WaterWaves::Params p;
+	p.amplitude = 0.6f; p.frequency = 0.5f; p.count = 7; p.style = WaterWaves::Style::Spectrum;
+	const WaterWaves::Table base = WaterWaves::Build(p);
+	const WaterWaves::Table big = WaterWaves::Build(WaterWaves::ScaledBy(p, 2.5f));
+	CHECK(base.count == big.count && base.count > 3);
+	for (int i = 0; i < base.count; ++i) {
+		CHECK(std::abs(big.waves[i].k * 2.5f - base.waves[i].k) < 1e-4f * base.waves[i].k);                        // 2.5 times longer
+		CHECK(std::abs(big.waves[i].amplitude - base.waves[i].amplitude * 2.5f) < 1e-4f * (1.0f + base.waves[i].amplitude));   // and taller
+		CHECK(std::abs(big.waves[i].amplitude * big.waves[i].k - base.waves[i].amplitude * base.waves[i].k) < 1e-4f);     // the same steepness
+	}
+	// Classic style scales the same way.
+	WaterWaves::Params classic = p;
+	classic.style = WaterWaves::Style::Classic;
+	CHECK(std::abs(WaterWaves::Build(WaterWaves::ScaledBy(classic, 2.0f)).waves[0].k * 2.0f - WaterWaves::Build(classic).waves[0].k) < 1e-4f);
+
+	// A fine mesh shows everything and does not touch the sea; a coarser one needs a bigger sea, never a smaller one.
+	CHECK(WaterWaves::ShownShare(base, 0.3f) > 0.99f);
+	CHECK(WaterWaves::ResolvableScale(p, 0.3f) == 1.0f);
+	float previous = 1.0f;
+	for (float cell : { 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f }) {
+		const float scale = WaterWaves::ResolvableScale(p, cell);
+		CHECK(scale >= previous - 1e-4f);                                                   // coarser cells never need LESS scale
+		previous = scale;
+		if (scale < WaterWaves::kWaveScaleMax - 1e-3f)                                      // and it really does the job...
+			CHECK(WaterWaves::ShownShare(WaterWaves::Build(WaterWaves::ScaledBy(p, scale)), cell) >= WaterWaves::kShownShareWanted - 1e-3f);
+		if (scale > 1.0f + 1e-3f)                                                           // ...with no more than it needs
+			CHECK(WaterWaves::ShownShare(WaterWaves::Build(WaterWaves::ScaledBy(p, scale * 0.97f)), cell) < WaterWaves::kShownShareWanted);
+	}
+	CHECK(WaterWaves::ResolvableScale(p, 1000.0f) == WaterWaves::kWaveScaleMax);            // hopeless: capped, not infinite
+	CHECK(WaterWaves::ResolvableScale(p, 0.0f) == 1.0f && WaterWaves::ResolvableScale(p, -1.0f) == 1.0f);
+
+	// The bug that was reported: on the real tile grid, the finest cell of a big body outgrows the waves. Without the scale a
+	// 2000-unit sea keeps a fraction of its height; with it, it keeps what a small one does.
+	for (float amplitude : { 0.12f, 0.35f, 0.6f }) {
+		WaterWaves::Params sea = p;
+		sea.amplitude = amplitude;
+		for (float size : { 100.0f, 500.0f, 1000.0f, 2000.0f }) {
+			const WaterMesh::TileGrid grid = WaterMesh::ChooseTileGrid(size, size, -1, 32, 1.5f);
+			const float cell = size / static_cast<float>(grid.x * 32);
+			const float scale = WaterWaves::ResolvableScale(sea, cell);
+			CHECK(WaterWaves::ShownShare(WaterWaves::Build(WaterWaves::ScaledBy(sea, scale)), cell) >= WaterWaves::kShownShareWanted - 1e-3f);
+			if (size <= 100.0f) CHECK(scale == 1.0f);                                       // a small body's sea is left alone
+			if (size >= 2000.0f) {
+				CHECK(WaterWaves::ShownShare(WaterWaves::Build(sea), cell) < 0.6f);          // the bug: more than 40% of the height gone...
+				CHECK(scale > 1.5f);                                                         // ...and what it takes to bring it back
+			}
+		}
+	}
+}
+
 int main()
 {
 	TestTileIndices();
@@ -825,6 +886,7 @@ int main()
 	TestCurrentProfile();
 	TestFlowingLayers();
 	TestFoamTrail();
+	TestResolvableWaves();
 	if (g_failures == 0) std::printf("water tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;
 }

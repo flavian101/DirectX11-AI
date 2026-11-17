@@ -3514,6 +3514,18 @@ void EditorLayer::DrawWaterInspector(Water* water)
         }
         changed |= ImGui::SliderFloat("Amplitude", &s.waveAmplitude, 0.0f, WaterSettings::kAmplitudeMax);
         decorate(s.waveAmplitude, defaults.waveAmplitude, nullptr);
+        changed |= ImGui::SliderFloat("Scale", &s.waveScale, WaterSettings::kWaveScaleMin, WaterSettings::kWaveScaleMax, "%.2fx", ImGuiSliderFlags_Logarithmic);
+        decorate(s.waveScale, defaults.waveScale, "Makes the whole sea bigger or smaller: every wave's length AND height times this, so the waves keep their shape.\nA big stretch of water wants big waves: raise this to make them roll instead of ripple.");
+        if (!river) {
+            changed |= ImGui::Checkbox("Scale waves to the water's size", &s.autoWaveScale);
+            decorate(s.autoWaveScale, defaults.autoWaveScale, "A big body of water is drawn with a coarse mesh, and a coarse mesh cannot follow short waves: they fade away and the sea goes flat.\nWith this on, a big body gets bigger waves (longer and taller, the same steepness) so that the mesh can show them. A small body is not touched.");
+            if (s.autoWaveScale && water->AutoWaveScale() > 1.02f) {
+                const float cell = water->FinestCell();
+                ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.3f, 1.0f), "Drawn %.1fx bigger to fit this size.", water->AutoWaveScale());
+                ImGui::SetItemTooltip("The mesh cells of this body are %.1f units wide, so waves shorter than about %.0f units would fade out.\nThe sea is drawn %.1fx bigger on top of Scale instead. Make the water smaller, or turn the switch above off to see it flat.",
+                                      cell, 6.0f * cell, water->AutoWaveScale());
+            }
+        }
         if (!river && shows(Control::Speed)) {
             changed |= ImGui::SliderFloat("Speed", &s.waveSpeed, 0.0f, WaterSettings::kSpeedMax);
             decorate(s.waveSpeed, defaults.waveSpeed, nullptr);
@@ -3773,6 +3785,11 @@ void EditorLayer::DrawWaterInspector(Water* water)
     // --- Performance and Debug -----------------------------------------------------------------------------------------------------
     if (section("Performance", "performance", Group::Performance, 0)) {
         ImGui::PushID("performance");
+        {
+            const float cell = water->FinestCell();
+            ImGui::TextDisabled("Finest mesh cell  %.2f units", cell);
+            ImGui::SetItemTooltip("One grid cell of the water's mesh at its finest. A wave is shown in full when it is at least 6 cells long (here %.0f units) and fades out below 3 cells.\nA bigger body has bigger cells: the mesh has a fixed number of vertices to spend.", 6.0f * cell);
+        }
         static const char* const kMeshNames[] = { "Low (16 cells per tile)", "Medium (32 cells per tile)", "High (64 cells per tile)" };
         changed |= ImGui::Combo("Mesh detail", &s.meshDetail, kMeshNames, IM_ARRAYSIZE(kMeshNames));
         ImGui::SetItemTooltip("Grid cells along one tile edge at the finest level. The water is cut into square tiles:\n8 x 8 for a square body, long rows for a river.");

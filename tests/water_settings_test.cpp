@@ -1,5 +1,6 @@
 // Unit tests for src/WaterSettings.h (lessons 35, 43): the body types, the sections of the Inspector as data (reset, "modified",
 // presets), and the master foam control. No Direct3D, no framework: a failed CHECK prints and the program exits 1.
+#include "WaterMesh.h"
 #include "WaterSettings.h"
 #include <cstdio>
 #include <functional>
@@ -138,6 +139,64 @@ static void TestFoamIntensity()
 	for (WaterBodyType type : kAllTypes) CHECK(WaterSettings::Defaults(type).foamIntensity == 1.0f);   // no body type changes the look of existing scenes
 }
 
+// Lesson 44: the wave scale, and the reported bug: a big body's waves flatten out.
+static void TestWaveScale()
+{
+	WaterSettings s;
+	CHECK(s.waveScale == 1.0f && s.autoWaveScale);   // the defaults change nothing for a small body, and protect a big one
+	s.waveScale = 100.0f; s.Clamp();
+	CHECK(s.waveScale == WaterSettings::kWaveScaleMax);
+	s.waveScale = 0.0f; s.Clamp();
+	CHECK(s.waveScale == WaterSettings::kWaveScaleMin);
+
+	// The author's Scale is part of the sea: it reaches the wave parameters (lengths and heights together).
+	WaterSettings a = WaterSettings::Defaults(WaterBodyType::Ocean), b = a;
+	b.waveScale = 2.0f;
+	CHECK(std::abs(b.WaveParams().amplitude - 2.0f * a.WaveParams().amplitude) < 1e-5f);
+	CHECK(std::abs(b.WaveParams().frequency * 2.0f - a.WaveParams().frequency) < 1e-5f);
+	CHECK(b.WaveParams().seed == a.WaveParams().seed && b.WaveParams().count == a.WaveParams().count);   // nothing else moves
+
+	// Both belong to the Waves section: reset, the changed-mark and presets all see them.
+	const WaterSettings defaults = WaterSettings::Defaults(WaterBodyType::Lake);
+	WaterSettings changed = defaults;
+	changed.waveScale = 3.0f;
+	for (Group g : kAllGroups) CHECK(changed.GroupModified(g, defaults) == (g == Group::Waves));
+	changed = defaults;
+	changed.autoWaveScale = false;
+	for (Group g : kAllGroups) CHECK(changed.GroupModified(g, defaults) == (g == Group::Waves));
+	changed.ResetGroup(Group::Waves, defaults);
+	CHECK(changed.autoWaveScale && changed.waveScale == 1.0f);
+	WaterSettings target = WaterSettings::Defaults(WaterBodyType::Ocean);
+	WaterSettings source = target;
+	source.waveScale = 2.5f; source.autoWaveScale = false;
+	target.ApplyPreset(source);
+	CHECK(target.waveScale == 2.5f && !target.autoWaveScale);
+
+	// The report: with the Stormy preset, a water body fit to a big terrain went flat. On the real grid the engine builds, count
+	// what the mesh keeps of the sea near the camera, without and with the automatic scale. (Calm, Choppy, Stormy.)
+	const int cells = 32;   // the default mesh detail
+	for (WavePreset preset : { WavePreset::Calm, WavePreset::Choppy, WavePreset::Stormy }) {
+		WaterSettings sea = WaterSettings::Defaults(WaterBodyType::Ocean);
+		sea.ApplyWavePreset(preset);
+		const float targetCell = std::clamp(6.2831853f / (3.0f * 2.5f * std::max(sea.waveFrequency, 0.05f)), 0.5f, 2.0f);   // as Water::EnsureMesh
+		float kept[4];
+		int n = 0;
+		for (float size : { 100.0f, 500.0f, 1000.0f, 2000.0f }) {
+			const WaterMesh::TileGrid grid = WaterMesh::ChooseTileGrid(size, size, -1, cells, targetCell);
+			const float cell = size / static_cast<float>(grid.x * cells);
+			const WaterWaves::Params params = sea.WaveParams();
+			const float scale = WaterWaves::ResolvableScale(params, cell);
+			const float without = WaterWaves::ShownShare(WaterWaves::Build(params), cell);
+			const float with = WaterWaves::ShownShare(WaterWaves::Build(WaterWaves::ScaledBy(params, scale)), cell);
+			CHECK(with >= WaterWaves::kShownShareWanted - 1e-3f);          // with it, the sea shows at every size
+			CHECK(with >= without - 1e-4f);                                 // and it never makes anything worse
+			kept[n++] = without;
+		}
+		CHECK(kept[0] > 0.95f);                                             // a small body was never the problem
+		CHECK(kept[3] < kept[0] - 0.3f);                                    // a body of the maximum size lost a lot of its sea: the bug
+	}
+}
+
 int main()
 {
 	TestBodyTypes();
@@ -145,6 +204,7 @@ int main()
 	TestReset();
 	TestPreset();
 	TestFoamIntensity();
+	TestWaveScale();
 	if (failures) { std::printf("%d check(s) failed\n", failures); return 1; }
 	std::printf("water settings tests: all passed\n");
 	return 0;

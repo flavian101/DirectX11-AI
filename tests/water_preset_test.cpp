@@ -17,6 +17,7 @@ static WaterSettings Busy()
 {
 	WaterSettings s = WaterSettings::Defaults(WaterBodyType::Ocean);
 	s.ApplyLook(WaterLook::Arctic);
+	s.waveScale = 2.25f; s.autoWaveScale = false;
 	s.waveAmplitude = 0.77f; s.waveSeed = 31; s.windDirection = 123.0f; s.detailNormal = 1.3f;
 	s.reflectivity = 0.6f; s.reflectionMode = ReflectionMode::PlanarFull; s.refraction = 0.09f;
 	s.glintStrength = 2.2f; s.glintSharpness = 300.0f; s.scatter = 1.1f;
@@ -116,6 +117,12 @@ static void TestOldScenes()
 	CHECK(old.get<WaterSettings>().foamIntensity == 1.0f);
 	WaterSettings custom = WaterSettings::Defaults(WaterBodyType::Custom);
 	CHECK(nlohmann::json(custom).get<WaterSettings>().bodyType == WaterBodyType::Custom);   // and a Custom body is still Custom after a save
+	// Scenes saved before the wave scale (lesson 44) have neither key: a scale of 1, and the automatic scale ON.
+	nlohmann::json older = nlohmann::json(WaterSettings::Defaults(WaterBodyType::Ocean));
+	CHECK(older.contains("waveScale") && older.contains("autoWaveScale"));   // new scenes write them
+	older.erase("waveScale"); older.erase("autoWaveScale");
+	const WaterSettings loadedOlder = older.get<WaterSettings>();
+	CHECK(loadedOlder.waveScale == 1.0f && loadedOlder.autoWaveScale);
 }
 
 int main()

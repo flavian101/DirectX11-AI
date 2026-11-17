@@ -79,6 +79,8 @@ struct WaterSettings {
 
 	// --- waves ---
 	float waveAmplitude = 0.35f;
+	float waveScale = 1.0f;       // the WHOLE sea bigger or smaller: every wavelength and every height times this (lesson 44)
+	bool autoWaveScale = true;    // and on top of that, as much bigger as this body's mesh needs to be able to show the waves (a big body has big cells)
 	float waveSpeed = 1.0f;
 	float waveFrequency = 0.6f;   // radians per world unit of the base wave (0.6 = ~10 unit wavelength)
 	// Where the wind comes from: the scene's weather (one wind for everything: Weather.h), or a direction of this body's own.
@@ -129,7 +131,7 @@ struct WaterSettings {
 	static constexpr float kSwashMax = 1.5f;
 	static constexpr float kHeightMin = -100.0f, kHeightMax = 200.0f;
 	static constexpr float kSizeMin = 2.0f, kSizeMax = 2000.0f;
-	static constexpr float kAmplitudeMax = 2.0f, kSpeedMax = 5.0f;
+	static constexpr float kAmplitudeMax = 2.0f, kSpeedMax = 5.0f, kWaveScaleMin = 0.25f, kWaveScaleMax = 8.0f;
 	static constexpr float kFrequencyMin = 0.05f, kFrequencyMax = 2.0f;
 	static constexpr int kWaveCountMin = 2, kWaveCountMax = WaterWaves::kMaxWaves;
 	static constexpr float kSwellLengthMin = 1.5f, kSwellLengthMax = 6.0f, kWaveGroupsMax = 0.9f;
@@ -215,6 +217,7 @@ inline void WaterSettings::Clamp()
 	refraction = std::clamp(refraction, 0.0f, kRefractionMax);
 	scatter = std::clamp(scatter, 0.0f, kScatterMax);
 	waveAmplitude = std::clamp(waveAmplitude, 0.0f, kAmplitudeMax);
+	waveScale = std::clamp(waveScale, kWaveScaleMin, kWaveScaleMax);
 	waveSpeed = std::clamp(waveSpeed, 0.0f, kSpeedMax);
 	waveFrequency = std::clamp(waveFrequency, kFrequencyMin, kFrequencyMax);
 	windDirection = std::fmod(windDirection, 360.0f);   // an angle: wrap instead of clamping
@@ -353,7 +356,7 @@ inline WaterWaves::Params WaterSettings::WaveParams() const
 	p.swellLength = swellLength;
 	p.groups = waveGroups;
 	p.seed = static_cast<std::uint32_t>(waveSeed);
-	return p;
+	return WaterWaves::ScaledBy(p, waveScale);   // (the author's Scale; the automatic one for a big body is added by Water, which knows its mesh)
 }
 
 // ---- Groups ---------------------------------------------------------------------------------------------------------------
@@ -377,7 +380,7 @@ inline void WaterSettings::VisitGroup(Group group, Self& a, const WaterSettings&
 	switch (group) {
 	case Group::Appearance:  WATER_FIELD(color); WATER_FIELD(alpha); WATER_FIELD(shallowColor); WATER_FIELD(absorption); break;
 	case Group::Waves:
-		WATER_FIELD(waveAmplitude); WATER_FIELD(waveSpeed); WATER_FIELD(waveFrequency); WATER_FIELD(windSource); WATER_FIELD(windDirection);
+		WATER_FIELD(waveAmplitude); WATER_FIELD(waveScale); WATER_FIELD(autoWaveScale); WATER_FIELD(waveSpeed); WATER_FIELD(waveFrequency); WATER_FIELD(windSource); WATER_FIELD(windDirection);
 		WATER_FIELD(directionalSpread); WATER_FIELD(choppiness); WATER_FIELD(waveCount); WATER_FIELD(waveStyle); WATER_FIELD(waveRoughness);
 		WATER_FIELD(swell); WATER_FIELD(swellAngle); WATER_FIELD(swellLength); WATER_FIELD(waveGroups); WATER_FIELD(waveSeed);
 		WATER_FIELD(detailNormal); WATER_FIELD(detailScale); WATER_FIELD(detailDistance);

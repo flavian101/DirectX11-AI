@@ -122,6 +122,10 @@ private:
 	void ReleaseShoreMap();
 	float DepthAtWorld(float x, float z) const;   // water depth under a world position, from the CPU copy of the map
 	WaterWaves::ShoreSample ShoreAtWorld(float x, float z) const;   // depth AND the way to the land, the same blend the shader reads
+	// One grid cell of the finest level of the mesh, in world units. The waves the mesh can show are no shorter than about six of these.
+	float FinestCell() const;
+	// How much bigger than the author's sea the waves are drawn so that this body's mesh can show them (1 = not at all; lesson 44).
+	float AutoWaveScale() const { return autoWaveScale_; }
 	float LevelAtWorld(float x, float z) const;   // how far the surface stands above (+) or below (-) the body's level here: a river that falls (lesson 41)
 	float ExtentX() const { return settings_.size * std::abs(scale_.x); }   // world size along X
 	float ExtentZ() const { return settings_.sizeZ * std::abs(scale_.z); }
@@ -148,6 +152,7 @@ private:
 	void ReleaseRiverFlow();
 	std::vector<RiverPath::Sample> riverWorld_;   // the curve in world space (rebuilt together with the flow map)
 	std::vector<float> riverKey_;                 // what the flow map was baked from: the curve, the body's placement and size
+	float autoWaveScale_ = 1.0f;                  // the scale RebuildWaves found: a big body's cells are too coarse for small waves, so it gets bigger ones
 	std::vector<float> riverLevels_;              // the water's height relative to the body's level, per texel of the flow map (empty = level)
 	unsigned riverLevelRevision_ = 0;             // moves when riverLevels_ really changes, so the depth map (which includes them) is measured again
 	unsigned shoreLevelRevision_ = 0;             // the revision the depth map was last measured with

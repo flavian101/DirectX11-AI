@@ -186,6 +186,7 @@ void Water::EnsureMesh()
 																			   kCellsPerTile[std::clamp(settings_.meshDetail, 0, 2)], targetCell);
 	if (gridBuilt_ && grid == builtGrid_ && settings_.meshDetail == builtMeshDetail_ && renderable_) return;
 	RebuildMesh(grid);
+	RebuildWaves();   // the waves the mesh can show depend on its cell size (lesson 44)
 }
 
 void Water::RebuildMesh(const WaterMesh::TileGrid& grid)
@@ -265,11 +266,23 @@ WaterWaves::Params Water::CurrentWaveParams() const
 		p.flowSpeed = settings_.flowSpeed;
 		p.spread = (std::min)(p.spread, 0.25f);   // a current has one direction: a wide spread would send waves sideways or upstream
 	}
-	return p;
+	return WaterWaves::ScaledBy(p, autoWaveScale_);   // a big body's mesh cannot show small waves: the same sea, bigger (lesson 44)
+}
+
+float Water::FinestCell() const
+{
+	const float cellsX = static_cast<float>((std::max)(builtGrid_.x, 1) * (std::max)(cellsPerTile_, 1));
+	const float cellsZ = static_cast<float>((std::max)(builtGrid_.z, 1) * (std::max)(cellsPerTile_, 1));
+	return (std::max)(ExtentX() / cellsX, ExtentZ() / cellsZ);   // (the cells are square: the tiles are)
 }
 
 void Water::RebuildWaves()
 {
+	// The automatic scale is found for the sea as the author set it (so with the scale of 1), then applied by CurrentWaveParams.
+	autoWaveScale_ = 1.0f;
+	if (settings_.autoWaveScale && gridBuilt_ && !settings_.HasCurrent()) {   // (a river keeps its waves as set: the current carries its look, and its grid is long and thin, not coarse)
+		autoWaveScale_ = WaterWaves::ResolvableScale(CurrentWaveParams(), FinestCell());
+	}
 	waves_ = WaterWaves::Build(CurrentWaveParams());
 	UpdateDryTiles();   // how high the surface can reach decides which tiles are safely under the ground
 }
@@ -283,9 +296,7 @@ void Water::UploadMaterial(bool mirrored) const
 	const bool river = settings_.HasCurrent();
 	const float windRadians = XMConvertToRadians(GetTravelDegrees());
 	// One grid cell of the finest level, in world units (the cells are square: the tiles are).
-	const float cellsX = static_cast<float>((std::max)(builtGrid_.x, 1) * (std::max)(cellsPerTile_, 1));
-	const float cellsZ = static_cast<float>((std::max)(builtGrid_.z, 1) * (std::max)(cellsPerTile_, 1));
-	const float cellSize = (std::max)(ExtentX() / cellsX, ExtentZ() / cellsZ);
+	const float cellSize = FinestCell();
 	const float halfSmallSide = 0.5f * (std::max)((std::min)(ExtentX(), ExtentZ()), 0.01f);
 
 	WaterMaterialCB block{};
@@ -680,6 +691,7 @@ bool Water::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotatio
 	settings_.height = position_.y;   // one source of truth: otherwise the next SetSettings() snaps Y back
 	if (settings_.HasCurrent()) RebuildWaves();   // a current's flow follows the way the body is turned
 	EnsureMesh();                      // scaling can change the body's proportions: a river needs a different grid than a pond
+	if (settings_.autoWaveScale) RebuildWaves();   // ...and the size of its cells, so the waves it can show (lesson 44)
 	tileDry_.assign(tiles_.size(), 0);   // moving or scaling changes which ground is under each tile: show all until the map is re-measured
 	tileOffRiver_.assign(tiles_.size(), 0);   // ...and where the corridor lies relative to them (RefreshRiverFlow measures again: the key has the placement)
 	UpdateWorldTransform();

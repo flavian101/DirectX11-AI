@@ -238,6 +238,66 @@ inline Table Build(const Params& p)
 	return p.style == Style::Classic ? BuildClassic(p) : BuildSpectrum(p);
 }
 
+// ---- Waves the mesh can show (lesson 44) -----------------------------------------------------------------------------------
+//
+// The vertex shader can only show a wave that the grid is fine enough to follow: it keeps a wave at full height when its
+// wavelength is at least six grid spacings and fades it to nothing at three (water_vs.hlsl and WaveDisplacement). The mesh has a
+// fixed vertex budget (WaterMesh.h), so on a big body the cells are big: about size / 670 world units, whatever the detail
+// setting. A 2000-unit sea has cells of about 3 units: waves under about 9 units are gone, and those up to about 19 are partly faded.
+//
+// So a big sea has to be made of bigger waves. That is also what a big sea is: waves grow with the distance they have run.
+// Scaling a sea by s multiplies every wavelength AND every height by s, which keeps every wave's steepness: the same sea,
+// seen from further away. ResolvableScale finds how much it takes for the mesh to show most of it.
+
+// What the vertex shader keeps of a wave with wave number k where the grid spacing is `spacing` (1 = all of it, 0 = none).
+// This IS the rule in waves.hlsli (WaveDisplacement): fade = saturate(2 - 2 k / maxK), maxK = 2 pi / (3 spacing).
+inline float VertexFade(float k, float spacing)
+{
+	const float maxK = 6.2831853f / (3.0f * (std::max)(spacing, 1e-4f));
+	return std::clamp(2.0f - 2.0f * k / maxK, 0.0f, 1.0f);
+}
+
+// The same sea made `scale` times bigger: wavelengths and heights together (so steepness is unchanged).
+inline Params ScaledBy(Params p, float scale)
+{
+	scale = (std::max)(scale, 1e-3f);
+	p.amplitude *= scale;
+	p.frequency /= scale;
+	return p;
+}
+
+// The share of the sea's wave HEIGHT that the mesh shows at this grid spacing: each wave's height, weighted by what the vertex
+// shader keeps of it. 1 = every wave shows, 0 = a flat sea.
+inline float ShownShare(const Table& table, float spacing)
+{
+	float total = 0.0f, shown = 0.0f;
+	for (int i = 0; i < table.count; ++i) {
+		total += table.waves[i].amplitude;
+		shown += table.waves[i].amplitude * VertexFade(table.waves[i].k, spacing);
+	}
+	return total > 1e-9f ? shown / total : 1.0f;
+}
+
+constexpr float kShownShareWanted = 0.8f;   // a sea is "shown" when the mesh keeps at least this much of its wave height
+constexpr float kWaveScaleMax = 8.0f;
+
+// The smallest scale (1 or more) at which the mesh, whose finest grid spacing is `spacing`, shows at least `wanted` of the sea.
+// 1 when it already does (a small body is never touched); `maxScale` if even that is not enough. ShownShare only rises as the
+// waves get longer, so a bisection finds it.
+inline float ResolvableScale(const Params& p, float spacing, float wanted = kShownShareWanted, float maxScale = kWaveScaleMax)
+{
+	if (spacing <= 0.0f) return 1.0f;
+	auto shown = [&](float scale) { return ShownShare(Build(ScaledBy(p, scale)), spacing); };
+	if (shown(1.0f) >= wanted) return 1.0f;
+	if (shown(maxScale) < wanted) return maxScale;
+	float low = 1.0f, high = maxScale;
+	for (int i = 0; i < 24; ++i) {
+		const float mid = 0.5f * (low + high);
+		(shown(mid) >= wanted ? high : low) = mid;
+	}
+	return high;
+}
+
 // Which way a river flows in the WORLD, as an angle (0 = +X, 90 = +Z), given its flow angle in the body's OWN space
 // (0 = along the body's +Z axis) and the body's yaw (rotation about Y, radians, DirectXMath's left-handed convention).
 // A local direction (sin a, cos a) in (x, z) is turned by the yaw into (sin(a + yaw), cos(a + yaw)), which is the angle

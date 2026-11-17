@@ -65,7 +65,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpe
                                                 directionalSpread, choppiness, waveCount, waveStyle, waveRoughness, swell, swellAngle, swellLength, waveGroups, waveSeed, detailNormal, detailScale, detailDistance,
                                                 reflectivity, reflectionMode, reflectionDistortion, refraction, scatter,
                                                 glintStrength, glintSharpness, crestFoam, crestFoamThreshold,
-                                                meshDetail, lodDistance, frustumCulling, underwater, foamIntensity)   // (foamIntensity: lesson 43; a scene saved before it loads with 1: the foam it always had)
+                                                meshDetail, lodDistance, frustumCulling, underwater, foamIntensity, waveScale, autoWaveScale)   // (foamIntensity: lesson 43, waveScale and autoWaveScale: lesson 44. A scene saved before them loads with the defaults: the foam it always had, a scale of 1, and the automatic scale on: a big body's waves are no longer flattened)
 // Culling and level of detail of a model (lesson 31), and the scatter that grows trees and rocks on the terrain.
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ModelRenderSettings, frustumCulling, lodEnabled, lodBias, lodScreen, cullScreen)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FloatingSettings, enabled, draft, responsiveness, damping, tilt, hullMask, maskPart, maskHeight, maskInset)
