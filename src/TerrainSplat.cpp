@@ -144,7 +144,7 @@ void BakeSplat(const Heightfield& field, const SplatRules& rules, const SplatPla
                 const float localZ = (static_cast<float>(z) + 0.5f) * cellDepth - layout.sizeZ * 0.5f;
                 // The noise is read in the terrain's LOCAL space, so moving the terrain sideways no longer drags the
                 // layer borders across it (the old shader read world X/Z).
-                const float noise = Breakup(localX, localZ, rules.breakupScale, rules.seed);
+                const float noise = Breakup(localX + placement.noiseOffsetX, localZ + placement.noiseOffsetZ, rules.breakupScale, rules.seed);
                 const float height = placement.originY + localHeight * placement.scaleY + noise * rules.breakupAmount * 8.0f;
                 const float noisySlope = slope + noise * rules.breakupAmount * 0.4f;
 

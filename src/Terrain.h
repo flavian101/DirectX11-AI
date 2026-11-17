@@ -1,5 +1,6 @@
 #pragma once
 #include "Heightfield.h"
+#include "WorldGrid.h"
 #include "HeightfieldEdit.h"
 #include "RayPicking.h"
 #include "RiverPath.h"
@@ -107,9 +108,21 @@ struct TerrainSettings {
 	bool SameSplatRules(const TerrainSettings& other) const; // true if the rules that decide where each layer goes agree (they are baked, lesson 29)
 };
 
+// One tile of a world (lesson 48). The heights are not a picture stretched over the terrain: they come from `source`, a
+// function of the WORLD position, so neighbouring tiles agree along their shared edge (WorldGrid.h).
+struct TerrainTile {
+	WorldGridSettings grid;                          // tile size and resolution: the same for every tile of the world
+	TileCoord coord;                                 // which tile this is
+	std::shared_ptr<const WorldHeightSource> source; // the ground, shared by every tile of the world
+};
+
 class Terrain final : public SceneObject {
 public:
 	explicit Terrain(ID3D11Device* device);
+	// A terrain that is one TILE of a world. `material` supplies the look (layers, rules, LOD distances); its width, resolution
+	// and noise are replaced by the tile's own. `shareLayersFrom` lets tiles of one world use ONE set of layer textures instead
+	// of each reading and packing twelve images (null: this tile loads its own).
+	Terrain(ID3D11Device* device, const TerrainTile& tile, const TerrainSettings& material, const Terrain* shareLayersFrom);
 	~Terrain() override;
 
 	const char* GetEditorName() const override { return "Terrain"; }
@@ -121,6 +134,10 @@ public:
 		const DirectX::XMFLOAT3& rotation,
 		const DirectX::XMFLOAT3& scale) override;
 	bool IsValid() const;
+	// True for a tile of a world. Its heights come from the world, so (for now) it cannot be sculpted or carved: an edit would
+	// stop it matching its neighbours. Painting works.
+	bool IsTile() const { return tile_.source != nullptr; }
+	const TerrainTile& GetTile() const { return tile_; }
 	bool SupportsRotation() const override { return false; }   // moved and scaled only: see lesson 25
 
 	// Clamps the settings, then rebuilds the mesh only if the shape changed
@@ -256,8 +273,8 @@ private:
 
 	ID3D11Device* device_ = nullptr;
 	std::unique_ptr<Renderable> renderable_;
-	std::unique_ptr<TextureArray> layerDiffHeight_;     // slices: 0 grass, 1 rock, 2 sand, 3 snow. rgb = albedo (sRGB), a = height
-	std::unique_ptr<TextureArray> layerNormRough_;      // same slices. r,g = normal XY, b = occlusion, a = roughness
+	std::shared_ptr<TextureArray> layerDiffHeight_;     // slices: 0 grass, 1 rock, 2 sand, 3 snow. rgb = albedo (sRGB), a = height. SHARED between the tiles of a world
+	std::shared_ptr<TextureArray> layerNormRough_;      // same slices. r,g = normal XY, b = occlusion, a = roughness
 	int layerFileCounts_[3] = {};                       // files found per kind: albedo, normal, ORM
 	SplatMap splat_;                                    // the layer weights, one texel per grid cell
 	ID3D11Texture2D* splatTexture_ = nullptr;           // the same weights on the GPU (RGBA8, no mips)
@@ -289,6 +306,9 @@ private:
 	int chunksZ_ = 0;
 	mutable ID3D11RasterizerState* wireframeState_ = nullptr;   // created on first use (debug view)
 	mutable TerrainViewStats stats_[kViewKindCount];
+	TerrainTile tile_;         // source == null: an ordinary terrain
+	// For a tile: puts the settings the tile decides back (its width, resolution, no noise). No-op otherwise.
+	void ForceTileSettings(TerrainSettings& settings) const;
 	TerrainSettings settings_;
 	DirectX::XMFLOAT3 position_ = { 0.0f, -2.0f, 0.0f };
 	DirectX::XMFLOAT3 rotation_ = { 0.0f, 0.0f, 0.0f };

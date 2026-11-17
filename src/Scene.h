@@ -39,8 +39,12 @@ public:
     bool Initialize(ID3D11Device* device);
     const Camera& GetCamera() const { return camera_; }
     Camera& GetCamera() { return camera_; }
+    // The FIRST terrain. A world is many terrains (tiles): code that asks about the ground at a place should use GetGroundHeight.
     Terrain* GetTerrain() { return FindFirst<Terrain>(); }
     const Terrain* GetTerrain() const { return FindFirst<Terrain>(); }
+    // The height of the ground at a world position, from whichever terrain covers it (the highest, if they overlap).
+    // False when no terrain does.
+    bool GetGroundHeight(float worldX, float worldZ, float& worldY) const;
     // The FIRST water body (scenes can have several: loop over GetObjects(), or use FindWaterAt for a position).
     Water* GetWater() { return FindFirst<Water>(); }
     const Water* GetWater() const { return FindFirst<Water>(); }

@@ -74,6 +74,6 @@ This is a design note, not a lesson. It answers three questions: how big worlds 
 7. **The world**: tiles, streaming, distant level of detail, camera-relative rendering. Built in slices, each its own patch:
    - 7a. **Reversed-Z and a 10 km far plane** (done, lesson 46).
    - 7b. **The world's coordinates and tile heights** (done, lesson 47): `WorldGrid.h` (tile maths, a height source that is a function of the WORLD position, tile samples with shared edges) and the heightfield apron for seamless normals. Pure logic, tested; the engine does not use it yet.
-   - 7c. Tiles on screen: a `Terrain` that is built from a tile of the world (not from a picture), several of them side by side, and the three single-terrain assumptions above.
+   - 7c. **Tiles on screen** (first half done, lesson 48): a `Terrain` built from a tile of the world (`TerrainTile`), nine of them side by side (`SpawnTerrainWorld`, Add > Terrain world), one shared set of layer textures, layer noise in world space. Still open, because each touches many places: water, scatter, rivers and sculpting see only the FIRST terrain (`Scene::GetTerrain()`); a world is not saved; sculpting across a tile border.
    - 7d. Streaming, and distant levels of detail that fade into fog.
    - 7e. Camera-relative rendering, and cascaded shadows.

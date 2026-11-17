@@ -16,6 +16,7 @@
 #include "ModelImporter.h"
 #include "ProceduralModels.h"
 #include "SceneSerializer.h"
+#include "TerrainWorld.h"
 #include "Direct3D11Renderer.h"
 #include "Logger.h"
 #include "Skybox.h"
@@ -512,6 +513,8 @@ void EditorLayer::DrawMenuBar()
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Model from file...")) importRequested_ = true;
+        if (ImGui::MenuItem("Terrain world (3 x 3 tiles)")) addTerrainWorldRequested_ = true;
+        ImGui::SetItemTooltip("Nine 1 km terrain tiles side by side (a 3 km world) whose heights come from one world function, so the\ntiles meet without seams. Tiles cannot be sculpted or moved yet, and a world is not saved yet (a later lesson).");
         if (ImGui::MenuItem("Scatter on terrain (trees, rocks)", nullptr, false, scene_ && scene_->GetTerrain())) addScatterRequested_ = true;
         ImGui::SetItemTooltip("Grows trees and rocks over the terrain by rules (which layer, how steep, how high),\ndrawn with instancing, frustum culling and levels of detail. Needs a terrain.");
         ImGui::EndMenu();
@@ -956,6 +959,16 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
             RecordAdded(light, std::string("Add ") + light->GetEditorName());
         }
     }
+    if (addTerrainWorldRequested_) {
+        addTerrainWorldRequested_ = false;
+        const TerrainWorldSettings world;   // the defaults: 3 x 3 tiles of 1024 m (256 cells of 4 m), hills 3 km across
+        const std::vector<Terrain*> tiles = SpawnTerrainWorld(ctx.scene, ctx.renderer.GetDevice(), world);
+        if (!tiles.empty()) {
+            for (Terrain* tile : tiles) RecordAdded(tile, "Add terrain tile");   // one undo step per tile
+            Select(tiles.front());   // the middle tile
+            FrameSelected();
+        }
+    }
     if (addScatterRequested_) {
         addScatterRequested_ = false;
         if (ctx.scene.GetTerrain()) {
@@ -978,7 +991,7 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
             ahead = flat > 1e-4f ? XMFLOAT3(ahead.x / flat, 0.0f, ahead.z / flat) : XMFLOAT3(0.0f, 0.0f, 1.0f);
             XMFLOAT3 position = { eye.x + ahead.x * 30.0f, eye.y - 4.0f, eye.z + ahead.z * 30.0f };
             float groundY = 0.0f;
-            if (const Terrain* terrain = scene_->GetTerrain(); terrain && terrain->GetHeightAt(position.x, position.z, groundY)) {
+            if (scene_->GetGroundHeight(position.x, position.z, groundY)) {
                 position.y = groundY + 0.4f;
             } else if (const Water* other = scene_->GetWater(); other && other != water) {
                 position.y = other->GetSettings().height;
@@ -2716,8 +2729,15 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
     bool commit = false;
     auto commitOnRelease = [&commit] { if (ImGui::IsItemDeactivatedAfterEdit()) commit = true; };
 
-    DrawSculptSection(terrain);
+    if (terrain->IsTile()) {
+        ImGui::SeparatorText("Terrain world");
+        ImGui::TextWrapped("Tile (%d, %d) of a terrain world. Its heights, size and resolution come from the world, so it cannot be sculpted, carved or moved yet (an edit would open a seam with its neighbours). Layers and painting work as usual.",
+                           terrain->GetTile().coord.x, terrain->GetTile().coord.z);
+    } else {
+        DrawSculptSection(terrain);
+    }
 
+    ImGui::BeginDisabled(terrain->IsTile());   // the world decides these
     ImGui::SeparatorText("Shape");
     // One world unit is one metre. Width is shown in kilometres; height in metres. Both are ABSOLUTE sizes: a wider terrain with
     // the same height scale is simply flatter (the same heightmap picture is stretched over more ground), which is how every
@@ -2771,6 +2791,8 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
     }
 
     ImGui::EndDisabled();
+
+    ImGui::EndDisabled();   // (end of the world-decided Shape and Noise sections)
 
     ImGui::SeparatorText("Material");
     // Tiling is just a shader constant, so it applies live while you drag.

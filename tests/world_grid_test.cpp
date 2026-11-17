@@ -4,8 +4,11 @@
 //   3. SHARED EDGES: two neighbouring tiles hold exactly the same numbers along their common edge, even 1000 km away.
 //   4. The apron holds the neighbours' samples.
 //   5. SEAMLESS LIGHTING: with the apron the two tiles compute the SAME normal along the seam; without it they do not.
+//   6. SEAMLESS LAYERS: baking the layer weights tile by tile gives exactly what one big bake gives, when the layer-edge
+//      noise is read in world space (SplatPlacement::noiseOffset); with each tile's own local noise it does not.
 #include "WorldGrid.h"
 #include "TerrainChunks.h"
+#include "TerrainSplat.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -173,6 +176,56 @@ static void TestSeamlessNormals()
     }
 }
 
+static void TestTiledBakeEqualsOneBigBake()
+{
+    WorldGridSettings tileGrid;                   // 256 cells = 1024 m
+    WorldGridSettings bigGrid;
+    bigGrid.chunksPerTile = 16;                   // 512 cells = 2048 m: the same 4 m samples as 2 x 2 tiles, in one grid
+    const FractalHeightSource source(kHills);
+    const SplatRules rules;
+
+    Heightfield big;
+    big.Reset(TileLayout(bigGrid, 100.0f), GenerateTileSamples(source, bigGrid, { 0, 0 }));
+    big.SetApron(GenerateTileApron(source, bigGrid, { 0, 0 }));
+    SplatPlacement bigPlacement;
+    bigPlacement.noiseOffsetX = bigPlacement.noiseOffsetZ = 1024.0f;   // the big grid's centre, in world metres
+    SplatMap bigMap;
+    BakeSplatAll(big, rules, bigPlacement, bigMap);
+
+    const int cells = tileGrid.TileCells();
+    for (bool worldNoise : { true, false }) {
+        long long differing = 0, texels = 0;
+        for (int tz = 0; tz < 2; ++tz) {
+            for (int tx = 0; tx < 2; ++tx) {
+                const TileCoord tile{ tx, tz };
+                const Heightfield field = MakeTile(source, tileGrid, tile, true);
+                SplatPlacement placement;
+                if (worldNoise) {
+                    double centerX = 0.0, centerZ = 0.0;
+                    TileCenter(tileGrid, tile, centerX, centerZ);
+                    placement.noiseOffsetX = static_cast<float>(centerX);
+                    placement.noiseOffsetZ = static_cast<float>(centerZ);
+                }
+                SplatMap map;
+                BakeSplatAll(field, rules, placement, map);
+                for (int z = 0; z < cells; ++z) {
+                    for (int x = 0; x < cells; ++x) {
+                        for (int channel = 0; channel < kSplatChannels; ++channel) {
+                            const size_t inTile = (static_cast<size_t>(z) * map.width + x) * kSplatChannels + channel;
+                            const size_t inBig = (static_cast<size_t>(tz * cells + z) * bigMap.width + (tx * cells + x)) * kSplatChannels + channel;
+                            ++texels;
+                            if (map.rgba[inTile] != bigMap.rgba[inBig]) ++differing;
+                        }
+                    }
+                }
+            }
+        }
+        std::printf("%s noise: %lld of %lld layer weights differ from one big bake\n", worldNoise ? "world" : "local", differing, texels);
+        if (worldNoise) CHECK(differing == 0);
+        else            CHECK(differing > 0);
+    }
+}
+
 int main()
 {
     TestTileMaths();
@@ -182,6 +235,7 @@ int main()
     TestSharedEdges({ 1000, -1000 });   // a million metres from the origin: still bit-identical edges
     TestApronHoldsTheNeighbours();
     TestSeamlessNormals();
+    TestTiledBakeEqualsOneBigBake();
     if (g_failures == 0) std::printf("world_grid_test: all passed\n");
     return g_failures == 0 ? 0 : 1;
 }

@@ -381,6 +381,7 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
     const fs::path folder = file.parent_path();
     int sculptedTerrains = 0;   // how many sculpted terrains have been written so far (names their PNG files)
     int paintedTerrains = 0;    // the same for painted ones
+    int skippedTiles = 0;       // tiles of a terrain world, which are not saved yet
 
     json root;
     root["format"] = kFormatName;
@@ -394,6 +395,9 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
     json objects = json::array();
     for (const auto& owned : scene.GetObjects()) {
         if (!owned) continue;
+        // The tiles of a terrain world are made from the world's settings, which are not saved yet (a later lesson). Saving a tile
+        // as an ordinary terrain would reload it as a heightmap terrain, so it is left out and the file says so.
+        if (const auto* tile = dynamic_cast<const Terrain*>(owned.get()); tile && tile->IsTile()) { ++skippedTiles; continue; }
         json entry = DescribeObject(*owned, &folder, &warnings, assetsRoot);
         if (entry.is_null()) continue;
         // A sculpted terrain's heights go in a 16-bit PNG next to the scene file, and the entry points at it. If that
@@ -423,6 +427,7 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
         }
         objects.push_back(std::move(entry));
     }
+    if (skippedTiles > 0) warnings.push_back(std::to_string(skippedTiles) + " tiles of a terrain world were not saved: a world is not saved yet, it comes back empty when this scene is loaded.");
     root["objects"] = std::move(objects);
 
     // Write to a temporary file first, then swap it in: a crash half-way through must never leave a

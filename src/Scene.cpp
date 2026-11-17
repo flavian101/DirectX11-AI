@@ -183,6 +183,19 @@ void Scene::Update(float dt)
     for (auto& obj : objects_) if (auto* scatter = dynamic_cast<ScatterObject*>(obj.get())) scatter->Refresh(terrain, camera_.GetPosition());
 }
 
+bool Scene::GetGroundHeight(float worldX, float worldZ, float& worldY) const
+{
+    bool found = false;
+    for (const auto& object : objects_) {
+        const auto* terrain = dynamic_cast<const Terrain*>(object.get());
+        float height = 0.0f;
+        if (!terrain || !terrain->GetHeightAt(worldX, worldZ, height)) continue;
+        if (!found || height > worldY) worldY = height;
+        found = true;
+    }
+    return found;
+}
+
 // Smallest sphere containing both input spheres.
 static void MergeSpheres(DirectX::XMFLOAT3& centerA, float& radiusA,
                          const DirectX::XMFLOAT3& centerB, float radiusB)

@@ -98,6 +98,8 @@ add_library(Engine STATIC
 	src/PostProcess.cpp
 	src/DemoScene.cpp
 	src/Terrain.cpp
+	src/WorldGrid.cpp
+	src/TerrainWorld.cpp
 	src/Heightfield.cpp
 	src/HeightfieldEdit.cpp
 	src/RiverCarve.cpp
@@ -235,7 +237,7 @@ if(BUILD_TESTS)
     target_include_directories(DepthMathTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME DepthMath COMMAND DepthMathTests)
     # The world as a grid of tiles (lesson 47): tile maths, shared edges, the apron, seamless normals. Pure maths: no GPU.
-    add_executable(WorldGridTests tests/world_grid_test.cpp src/WorldGrid.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
+    add_executable(WorldGridTests tests/world_grid_test.cpp src/WorldGrid.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
     target_include_directories(WorldGridTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME WorldGrid COMMAND WorldGridTests)
     add_executable(ImageDownscaleTests tests/image_downscale_test.cpp)

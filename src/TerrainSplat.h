@@ -36,6 +36,10 @@ struct SplatRules {
 struct SplatPlacement {
     float originY = 0.0f;   // world Y of local height 0
     float scaleX = 1.0f, scaleY = 1.0f, scaleZ = 1.0f;
+    // Added to the local position before the layer-edge noise is read. 0 for an ordinary terrain (its noise stays put when the
+    // terrain moves). A TILE of a world passes its centre's world X/Z, so every tile reads the same continuous world noise and
+    // the layer borders do not jump at the seams (lesson 48).
+    float noiseOffsetX = 0.0f, noiseOffsetZ = 0.0f;
 };
 
 struct SplatMap {

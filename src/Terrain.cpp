@@ -485,6 +485,44 @@ Terrain::Terrain(ID3D11Device* device) : device_(device)
 	if (!IsValid()) LOG_ERROR("Terrain initialization failed");
 }
 
+Terrain::Terrain(ID3D11Device* device, const TerrainTile& tile, const TerrainSettings& material, const Terrain* shareLayersFrom)
+	: device_(device), tile_(tile)
+{
+	heightmapPath_ = DefaultHeightmapPath();   // not used by a tile; kept so the getters and the saved paths stay valid
+	for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+		for (int map = 0; map < 3; ++map) layerMapPaths_[layer][map] = DefaultLayerMapPath(layer, static_cast<TerrainLayerMap>(map));
+	}
+	if (shareLayersFrom && shareLayersFrom->layerDiffHeight_ && shareLayersFrom->layerNormRough_) {
+		// One set of layer textures for the whole world: the same GPU arrays, not a copy.
+		layerDiffHeight_ = shareLayersFrom->layerDiffHeight_;
+		layerNormRough_ = shareLayersFrom->layerNormRough_;
+		for (int kind = 0; kind < 3; ++kind) layerFileCounts_[kind] = shareLayersFrom->layerFileCounts_[kind];
+		for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+			for (int map = 0; map < 3; ++map) layerMapPaths_[layer][map] = shareLayersFrom->layerMapPaths_[layer][map];
+		}
+	} else {
+		RebuildLayerTextures();
+	}
+	// The tile sits where the world puts it: its centre at the tile's centre, its ground starting at height 0.
+	double centerX = 0.0, centerZ = 0.0;
+	TileCenter(tile_.grid, tile_.coord, centerX, centerZ);
+	position_ = { static_cast<float>(centerX), 0.0f, static_cast<float>(centerZ) };
+	settings_ = material;
+	settings_.Clamp();
+	ForceTileSettings(settings_);
+	if (!Rebuild(settings_)) LOG_ERROR("Terrain tile mesh initialization failed");
+	UpdateWorldTransform();
+	if (!IsValid()) LOG_ERROR("Terrain tile initialization failed");
+}
+
+void Terrain::ForceTileSettings(TerrainSettings& settings) const
+{
+	if (!IsTile()) return;
+	settings.width = static_cast<float>(tile_.grid.TileSize());   // the tile decides its own size and resolution ...
+	settings.maxCells = tile_.grid.TileCells();
+	settings.noiseStrength = 0.0f;                                // ... and its heights come from the world, not from noise on top
+}
+
 Terrain::~Terrain()
 {
 	if (wireframeState_) wireframeState_->Release();
@@ -593,6 +631,7 @@ bool Terrain::SetLayerMap(int layer, TerrainLayerMap map, const std::string& pat
 
 bool Terrain::SetHeightmap(const std::string& path)
 {
+	if (IsTile()) return false;   // a tile's heights come from the world
 	const std::string wanted = path.empty() ? std::string(DefaultHeightmapPath()) : path;
 	Heightmap loaded;
 	if (!LoadHeightmapFile(wanted.c_str(), loaded.width, loaded.height, loaded.values)) return false;
@@ -609,6 +648,7 @@ bool Terrain::SetHeightmap(const std::string& path)
 bool Terrain::ApplySettings(TerrainSettings settings)
 {
 	settings.Clamp();
+	ForceTileSettings(settings);   // a tile keeps the size and resolution the world gave it
 	if (renderable_ && settings.SameShape(settings_)) {   // only the material changed
 		const bool rulesChanged = !settings.SameSplatRules(settings_);
 		settings_ = settings;
@@ -623,16 +663,19 @@ bool Terrain::ApplySettings(TerrainSettings settings)
 
 bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 {
-	if (!device_ || heightmap_.values.empty()) return false;
+	if (!device_ || (heightmap_.values.empty() && !IsTile())) return false;
 
-	const GridShape shape = ComputeGridShape(settings, heightmap_.width, heightmap_.height);
+	GridShape shape = ComputeGridShape(settings, heightmap_.width, heightmap_.height);
+	if (IsTile()) { shape.cellsX = shape.cellsZ = tile_.grid.TileCells(); shape.depth = static_cast<float>(tile_.grid.TileSize()); }
 	// A sculpt is kept only while the grid is the very same one it was made on.
 	const bool keep = keepSculpt && sculpted_ && !heightfield_.IsEmpty() &&
 		heightfield_.GetLayout().cellsX == shape.cellsX && heightfield_.GetLayout().cellsZ == shape.cellsZ;
 	std::vector<float> samples = keep ? heightfield_.Samples()
-									  : GenerateHeights(heightmap_.values, heightmap_.width, heightmap_.height, settings, shape);
+									  : IsTile() ? GenerateTileSamples(*tile_.source, tile_.grid, tile_.coord)
+												 : GenerateHeights(heightmap_.values, heightmap_.width, heightmap_.height, settings, shape);
 	Heightfield field;
 	if (!field.Reset({ shape.cellsX, shape.cellsZ, settings.width, shape.depth, settings.heightScale }, std::move(samples))) return false;
+	if (IsTile()) field.SetApron(GenerateTileApron(*tile_.source, tile_.grid, tile_.coord));   // normals that match the neighbours' (lesson 47)
 
 	const float depth = shape.depth;
 	std::vector<TerrainChunk> chunks;
@@ -880,6 +923,7 @@ void Terrain::BeginSculptStroke()
 
 bool Terrain::Sculpt(const BrushSettings& brush, float worldX, float worldZ, float seconds)
 {
+	if (IsTile()) return false;   // a tile's heights belong to the world; an edit would open a seam with its neighbours (7c later)
 	if (heightfield_.IsEmpty() || !renderable_ || std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return false;
 	// The brush works in the heightfield's local space, where everything is divided by the scale.
 	BrushSettings local = brush;
@@ -908,6 +952,7 @@ HeightfieldPatch Terrain::EndSculptStroke()
 
 HeightfieldPatch Terrain::CarveRiver(const std::vector<RiverPath::Sample>& path, float waterLevelY, float depth, float bankWidth, float bankHeight)
 {
+	if (IsTile()) return {};   // same reason as Sculpt
 	if (heightfield_.IsEmpty() || !renderable_ || path.size() < 2) return {};
 	if (std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.y) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return {};
 	// The carve works in the heightfield's local space (divide by the scale) and in sample values (0..1 of the full height).
@@ -954,6 +999,7 @@ bool Terrain::ReplaceHeights(std::vector<float> samples, bool sculpted)
 	if (heightfield_.IsEmpty() || !renderable_ || samples.size() != heightfield_.Samples().size()) return false;
 	const HeightfieldLayout layout = heightfield_.GetLayout();
 	if (!heightfield_.Reset(layout, std::move(samples))) return false;
+	if (IsTile()) heightfield_.SetApron(GenerateTileApron(*tile_.source, tile_.grid, tile_.coord));   // Reset drops it
 	sculpted_ = sculpted;
 	stroke_.Clear();
 	strokeActive_ = false;
@@ -968,6 +1014,10 @@ bool Terrain::ReplaceHeights(std::vector<float> samples, bool sculpted)
 
 bool Terrain::GenerateOriginalHeights(std::vector<float>& samples) const
 {
+	if (IsTile()) {   // the world's ground at this tile
+		samples = GenerateTileSamples(*tile_.source, tile_.grid, tile_.coord);
+		return true;
+	}
 	if (heightmap_.values.empty()) return false;
 	const GridShape shape = ComputeGridShape(settings_, heightmap_.width, heightmap_.height);
 	samples = GenerateHeights(heightmap_.values, heightmap_.width, heightmap_.height, settings_, shape);
@@ -1037,6 +1087,7 @@ SplatPlacement Terrain::CurrentSplatPlacement() const
 	placement.scaleX = scale_.x;
 	placement.scaleY = scale_.y;
 	placement.scaleZ = scale_.z;
+	if (IsTile()) { placement.noiseOffsetX = position_.x; placement.noiseOffsetZ = position_.z; }   // world noise, the same in every tile
 	return placement;
 }
 
@@ -1183,6 +1234,7 @@ bool Terrain::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotat
 	const XMFLOAT3& scale)
 {
 	(void)rotation;   // the terrain is never tilted (SupportsRotation() is false): its height queries rely on it
+	if (IsTile()) return false;   // the world decides where a tile is
 	// The layer rules talk in WORLD height and slope, so lifting or stretching the terrain changes the weights. Moving it
 	// sideways does not (the noise is read in the terrain's own space).
 	const bool weightsMoved = position.y != position_.y || scale.x != scale_.x || scale.y != scale_.y || scale.z != scale_.z;
