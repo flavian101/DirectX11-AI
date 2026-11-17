@@ -15,7 +15,10 @@
 Scene::Scene() : lights_(std::make_unique<LightSystem>()), shadow_(std::make_unique<ShadowMap>()) {}
 
 // Objects are unique_ptrs now. The owner must still destroy the Scene BEFORE the D3D device.
-Scene::~Scene() = default;
+Scene::~Scene()
+{
+    if (cameraDepthState_) { cameraDepthState_->Release(); cameraDepthState_ = nullptr; }
+}
 
 bool Scene::Initialize(ID3D11Device* device)
 {
@@ -23,6 +26,13 @@ bool Scene::Initialize(ID3D11Device* device)
     device_ = device;
     if (!lights_->Initialize(device)) return false;
     if (!frame_.Initialize(device)) return false;
+    // The camera passes use reversed-Z (DepthMath.h), so "the default" for terrain, scatter and models is GREATER, not the
+    // D3D default LESS. The sun's shadow pass is a plain orthographic depth map and keeps the D3D default.
+    D3D11_DEPTH_STENCIL_DESC depthDesc{};
+    depthDesc.DepthEnable = TRUE;
+    depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+    depthDesc.DepthFunc = D3D11_COMPARISON_GREATER;
+    if (FAILED(device->CreateDepthStencilState(&depthDesc, &cameraDepthState_))) return false;
     // Shadows are a bonus, not a requirement: if the map or its shader fails, keep rendering.
     if (!shadow_->Initialize(device, ShadowSettings{})) LOG_WARNING("Shadow map unavailable; shadows are disabled");
     return true;
@@ -732,7 +742,8 @@ void Scene::RenderPhase(ID3D11DeviceContext* ctx, ScenePhase phase, const Render
         if (first || category != previousCategory) {
             const float blendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
             ctx->OMSetBlendState(nullptr, blendFactor, 0xffffffff);
-            ctx->OMSetDepthStencilState(nullptr, 0);
+            // The camera and the mirror are reversed-Z; the sun's shadow map is not (nullptr = the D3D default, LESS).
+            ctx->OMSetDepthStencilState(view.kind == ViewKind::Shadow ? nullptr : cameraDepthState_, 0);
             ctx->RSSetState(nullptr);
             previousCategory = category;
             first = false;

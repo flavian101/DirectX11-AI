@@ -7,13 +7,14 @@ using namespace DirectX;
 Ray MakePickRay(const XMFLOAT4X4& view, const XMFLOAT4X4& projection, float ndcX, float ndcY)
 {
     // A pixel on screen is a LINE of points in the world: every point that projects to that pixel. Two of
-    // them are enough: the one on the near plane (depth 0 in Direct3D) and the one on the far plane (depth 1).
+    // them are enough: the one on the near plane and the one on the far plane.
     // Un-projecting means running the camera transform backwards: multiply by the inverse of view * projection,
     // then divide by w (the perspective divide, undone).
     const XMMATRIX viewProjection = XMLoadFloat4x4(&view) * XMLoadFloat4x4(&projection);
     const XMMATRIX inverse = XMMatrixInverse(nullptr, viewProjection);
-    const XMVECTOR nearPoint = XMVector3TransformCoord(XMVectorSet(ndcX, ndcY, 0.0f, 1.0f), inverse);   // TransformCoord divides by w
-    const XMVECTOR farPoint = XMVector3TransformCoord(XMVectorSet(ndcX, ndcY, 1.0f, 1.0f), inverse);
+    // (the camera projection is REVERSED-Z, DepthMath.h: depth 1 is the near plane and depth 0 the far plane)
+    const XMVECTOR nearPoint = XMVector3TransformCoord(XMVectorSet(ndcX, ndcY, 1.0f, 1.0f), inverse);   // TransformCoord divides by w
+    const XMVECTOR farPoint = XMVector3TransformCoord(XMVectorSet(ndcX, ndcY, 0.0f, 1.0f), inverse);
     Ray ray;
     XMStoreFloat3(&ray.origin, nearPoint);
     XMStoreFloat3(&ray.direction, XMVector3Normalize(XMVectorSubtract(farPoint, nearPoint)));

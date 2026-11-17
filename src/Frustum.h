@@ -14,5 +14,6 @@ public:
     bool IntersectsAABB(const DirectX::XMFLOAT3& boxMin, const DirectX::XMFLOAT3& boxMax) const;
 
 private:
-    DirectX::XMFLOAT4 planes_[6]{};   // left, right, bottom, top, near, far (a,b,c,d), normalized
+    DirectX::XMFLOAT4 planes_[6]{};   // left, right, bottom, top, then the two depth planes (a,b,c,d), normalized. Which of those is near and which is far depends on
+                                      // the projection (reversed-Z swaps them), and nothing here cares: both are tested the same way
 };

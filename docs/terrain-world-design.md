@@ -49,7 +49,7 @@ This is a design note, not a lesson. It answers three questions: how big worlds 
 **Width and height are independent, and both absolute.** The heightmap picture is stretched over `width` metres, and its white is `heightScale` metres tall. Make the terrain 4x wider with the same height scale and every slope becomes 4x gentler: it looks flat, and the rock layer (which starts at a slope) vanishes. That is how engines behave (Unity's terrain has separate width, length and height; so do the exporters of World Machine and Gaea, which think in a real extent and a real height range). "Keep proportions" in the editor raises the height scale with the width for you.
 
 **What stops it from being a big world today.**
-- *The camera's far plane is 1000 m* (`Camera::kFarPlane`). Anything further is not drawn, so a terrain wider than about a kilometre is clipped. Raising it with a 0.1 m near plane and a normal depth buffer spends depth precision badly; the usual fix is a reversed-Z depth buffer.
+- *The camera's far plane was 1000 m* (`Camera::kFarPlane`), so a terrain wider than about a kilometre was clipped. **Fixed in lesson 46:** the camera passes use a reversed-Z depth buffer and the far plane is 10 km. What still limits the width today is `kWidthMax` and the single tile below.
 - *One tile of at most 1024 x 1024 cells.* At 4 km wide that is 4 m per cell: coarse hills, and (lesson 29) the layer weights have one texel per cell, so layer borders get blocky too. Bigger worlds need several tiles, each at a fixed metres-per-cell, which is the "world" step of the roadmap.
 - *Everything is resident.* Every chunk's vertex buffer lives on the GPU; there is no streaming.
 - *32-bit floats far from the origin* (see above): needs camera-relative rendering.
@@ -71,4 +71,9 @@ This is a design note, not a lesson. It answers three questions: how big worlds 
 4. **Generators**: ridged noise, terracing, erosion.
 5. **Scatter** (done, lesson 31): instanced placement driven by the terrain layers, with density, spacing, slope and height limits, per-cell culling and levels of detail. Biome recipes will drive it.
 6. **Performance pass** (started in lesson 31: culling and LOD for models, no redundant constant-buffer uploads, vertex-cache ordering): GPU timers first, then skipping unused layers in the shader, shared index buffers, cascaded shadows, GPU-driven culling.
-7. **The world**: tiles, streaming, distant level of detail, camera-relative rendering.
+7. **The world**: tiles, streaming, distant level of detail, camera-relative rendering. Built in slices, each its own patch:
+   - 7a. **Reversed-Z and a 10 km far plane** (done, lesson 46).
+   - 7b. Metres-per-cell separate from the world size; a bigger `kWidthMax`.
+   - 7c. Tiles: a `TerrainWorld` of tiles with shared edge samples, and the three single-terrain assumptions above.
+   - 7d. Streaming, and distant levels of detail that fade into fog.
+   - 7e. Camera-relative rendering, and cascaded shadows.

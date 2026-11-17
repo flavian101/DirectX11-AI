@@ -6,8 +6,10 @@ class Camera {
 public:
     // 0.1 instead of 0.01: depth precision is spent mostly near the camera, so a tiny near
     // plane makes distant depth values coarse (lesson 8). Nothing in the scene is closer than this.
+    // The camera passes use REVERSED-Z (lesson 46, DepthMath.h): depth 1 at the near plane, 0 at the far plane. That is
+    // what lets the far plane sit 10 km away without the depth buffer losing the ability to order nearby surfaces.
     static constexpr float kNearPlane = 0.1f;
-    static constexpr float kFarPlane = 1000.0f;
+    static constexpr float kFarPlane = 10000.0f;
     static constexpr float kFovMin = 20.0f;    // degrees, vertical
     static constexpr float kFovMax = 110.0f;
 

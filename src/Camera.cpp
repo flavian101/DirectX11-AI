@@ -93,7 +93,9 @@ void Camera::Rotate(float deltaX, float deltaY)
 
 void Camera::Update(){
     XMMATRIX viewMat = XMMatrixLookAtLH(XMLoadFloat3(&pos_), XMLoadFloat3(&target_), XMLoadFloat3(&up_));
-    XMMATRIX projMat = XMMatrixPerspectiveFovLH(XMConvertToRadians(fovDegrees_), (float)width_/(float)height_, kNearPlane, kFarPlane);
+    // REVERSED-Z: the near and far planes are passed SWAPPED, which makes the projection write 1 at the near plane and 0 at
+    // the far plane (DepthMath.h says why). Everything that reads the depth buffer follows: clear to 0, "in front" = GREATER.
+    XMMATRIX projMat = XMMatrixPerspectiveFovLH(XMConvertToRadians(fovDegrees_), (float)width_/(float)height_, kFarPlane, kNearPlane);
     XMStoreFloat4x4(&view_, viewMat);
     XMStoreFloat4x4(&proj_, projMat);
 }

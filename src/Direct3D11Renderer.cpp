@@ -1,5 +1,6 @@
 ﻿#include "Direct3D11Renderer.h"
 #include "Color.h"
+#include "DepthMath.h"
 #include "ShaderSlots.h"
 #include <algorithm>
 #include "Layer.h"
@@ -59,7 +60,7 @@ bool Direct3D11Renderer::Init()
     D3D11_DEPTH_STENCIL_DESC depthStateDesc{};
     depthStateDesc.DepthEnable = TRUE;
     depthStateDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
-    depthStateDesc.DepthFunc = D3D11_COMPARISON_LESS;
+    depthStateDesc.DepthFunc = D3D11_COMPARISON_GREATER;   // reversed-Z: bigger depth = nearer (DepthMath.h)
     hr = m_device->CreateDepthStencilState(&depthStateDesc, &m_depthState);
     if (FAILED(hr)) {
         LOG_HR(hr, "Depth stencil state creation failed");
@@ -293,7 +294,7 @@ bool Direct3D11Renderer::RenderReflectionPass(const Scene& scene, int slot, floa
     viewport.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &viewport);
     color.Clear(m_context, clearColor);
-    depth.Clear(m_context);
+    depth.Clear(m_context, DepthMath::kClear);   // reversed-Z: 0 is "infinitely far"
 
     scene.RenderReflection(m_context, planeHeight, width, height);
     return true;
@@ -353,7 +354,7 @@ void Direct3D11Renderer::Render(const Scene& scene, Layer* layer)
     m_gpuTimer.Mark(m_context, GpuPass::Opaque);
     BindSceneTarget(false);
     m_hdrScene.Clear(m_context, clearColor);
-    m_sceneDepth.Clear(m_context);
+    m_sceneDepth.Clear(m_context, DepthMath::kClear);   // reversed-Z: 0 is "infinitely far"
     scene.SetMainView(m_context, m_viewWidth, m_viewHeight, reflectionReady, refractionReady);
     RenderView mainView = scene.GetMainView();   // the camera's frustum, for culling
     mainView.waterPlan = &waterPlan;             // each water body picks its own mirror image from this

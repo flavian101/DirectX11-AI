@@ -19,8 +19,8 @@ Frustum Frustum::FromViewProj(const XMFLOAT4X4& viewProj)
         c3 - c0,   // right:  w - x >= 0
         c3 + c1,   // bottom: w + y >= 0
         c3 - c1,   // top:    w - y >= 0
-        c2,        // near:       z >= 0
-        c3 - c2,   // far:    w - z >= 0
+        c2,        // z >= 0:     the FAR plane for the reversed-Z camera, the near plane for the sun's box
+        c3 - c2,   // w - z >= 0: the NEAR plane for the reversed-Z camera, the far plane for the sun's box
     };
 
     Frustum frustum;

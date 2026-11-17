@@ -200,6 +200,7 @@ private:
     std::unique_ptr<LightSystem> lights_;
     std::unique_ptr<ShadowMap> shadow_;
     ID3D11Device* device_ = nullptr; // non-owning; Scene is destroyed before the D3D device
+    ID3D11DepthStencilState* cameraDepthState_ = nullptr;   // owned: reversed-Z "GREATER, write" for the camera passes (RenderPhase)
     SceneObjectId nextObjectId_ = 1;
     std::vector<std::unique_ptr<SceneObject>> objects_;   // owning
     float smoothedMouseDeltaX_ = 0.0f;

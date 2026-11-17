@@ -131,7 +131,7 @@ void Water::CreateRenderStates(ID3D11Device* device)
 	D3D11_DEPTH_STENCIL_DESC depthDesc{};
 	depthDesc.DepthEnable = TRUE;
 	depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
-	depthDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+	depthDesc.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;   // reversed-Z (DepthMath.h)
 
 	D3D11_RASTERIZER_DESC wireDesc{};
 	wireDesc.FillMode = D3D11_FILL_WIREFRAME;

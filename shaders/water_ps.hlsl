@@ -17,12 +17,13 @@ struct PS_IN {
 };
 
 // Hardware depth (0..1, spread non-linearly) -> distance in front of the camera, in world units.
-// This is the inverse of the perspective projection's depth mapping for D3D (z in 0..1).
+// This is the inverse of the REVERSED-Z projection's depth mapping (1 at the near plane, 0 at the far plane): see
+// DepthMath.h, which has the same formula and a test. An untouched pixel (depth 0) comes out as the far plane.
 float LinearizeDepth(float d)
 {
     const float n = screenParams.z;   // near plane
     const float f = screenParams.w;   // far plane
-    return n * f / (f - d * (f - n));
+    return n * f / (n + d * (f - n));
 }
 
 // Small ripples on top of the big waves: two layers of noise slope, drifting with the wind. Returns the slope.

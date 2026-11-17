@@ -519,7 +519,7 @@ void ModelObject::RenderHullMask(ID3D11DeviceContext* ctx, const RenderView& vie
         D3D11_DEPTH_STENCIL_DESC depth{};
         depth.DepthEnable = TRUE;
         depth.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;   // the whole point: leave the lid in the depth buffer
-        depth.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+        depth.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;   // reversed-Z (DepthMath.h)
         device_->CreateDepthStencilState(&depth, &maskDepth_);
     }
     if (!maskBlend_ || !maskDepth_) return;

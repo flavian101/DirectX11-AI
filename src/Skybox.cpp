@@ -41,7 +41,7 @@ Skybox::Skybox(ID3D11Device* device, const std::string& folder) : material_(devi
 	D3D11_DEPTH_STENCIL_DESC depthDesc{};
 	depthDesc.DepthEnable = TRUE;
 	depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
-	depthDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+	depthDesc.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;   // reversed-Z (DepthMath.h): the sky sits at depth 0, the cleared value
 	if (device && !material_.CreateDepthStencilState(depthDesc)) {
 		LOG_ERROR("Skybox depth state creation failed");
 	}
