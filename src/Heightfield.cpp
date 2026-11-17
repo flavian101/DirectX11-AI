@@ -16,7 +16,34 @@ bool Heightfield::Reset(const HeightfieldLayout& layout, std::vector<float> samp
     if (samples.size() != expected) return false;
     layout_ = layout;
     samples_ = std::move(samples);
+    apron_ = HeightfieldApron{};   // a new grid has new neighbours
     return true;
+}
+
+bool Heightfield::SetApron(HeightfieldApron apron)
+{
+    if (samples_.empty()) return false;
+    const size_t alongZ = static_cast<size_t>(layout_.cellsZ) + 1;
+    const size_t alongX = static_cast<size_t>(layout_.cellsX) + 1;
+    if (apron.west.size() != alongZ || apron.east.size() != alongZ || apron.north.size() != alongX || apron.south.size() != alongX) return false;
+    for (std::vector<float>* strip : { &apron.west, &apron.east, &apron.north, &apron.south }) {
+        for (float& value : *strip) value = std::clamp(value, 0.0f, 1.0f);
+    }
+    apron_ = std::move(apron);
+    return true;
+}
+
+float Heightfield::SampleBeyond(int gridX, int gridZ) const
+{
+    if (HasApron()) {
+        const bool insideX = gridX >= 0 && gridX <= layout_.cellsX;
+        const bool insideZ = gridZ >= 0 && gridZ <= layout_.cellsZ;
+        if (insideZ && gridX == -1) return apron_.west[static_cast<size_t>(gridZ)];
+        if (insideZ && gridX == layout_.cellsX + 1) return apron_.east[static_cast<size_t>(gridZ)];
+        if (insideX && gridZ == -1) return apron_.north[static_cast<size_t>(gridX)];
+        if (insideX && gridZ == layout_.cellsZ + 1) return apron_.south[static_cast<size_t>(gridX)];
+    }
+    return Sample(gridX, gridZ);
 }
 
 float Heightfield::Sample(int gridX, int gridZ) const
@@ -80,8 +107,8 @@ HfVec3 Heightfield::VertexNormal(int gridX, int gridZ) const
 {
     const float cellWidth = layout_.sizeX / static_cast<float>(layout_.cellsX);
     const float cellDepth = layout_.sizeZ / static_cast<float>(layout_.cellsZ);
-    const float slopeX = (Sample(gridX + 1, gridZ) - Sample(gridX - 1, gridZ)) * layout_.heightScale / (2.0f * cellWidth);
-    const float slopeZ = (Sample(gridX, gridZ + 1) - Sample(gridX, gridZ - 1)) * layout_.heightScale / (2.0f * cellDepth);
+    const float slopeX = (SampleBeyond(gridX + 1, gridZ) - SampleBeyond(gridX - 1, gridZ)) * layout_.heightScale / (2.0f * cellWidth);
+    const float slopeZ = (SampleBeyond(gridX, gridZ + 1) - SampleBeyond(gridX, gridZ - 1)) * layout_.heightScale / (2.0f * cellDepth);
     const float length = std::sqrt(slopeX * slopeX + 1.0f + slopeZ * slopeZ);
     return { -slopeX / length, 1.0f / length, -slopeZ / length };
 }

@@ -23,6 +23,18 @@ struct HeightfieldLayout {
     float heightScale = 1.0f;   // local-space height of a sample whose value is 1.0
 };
 
+// The ring of samples just OUTSIDE a tile's grid (lesson 47): one sample past each edge, copied from the neighbouring tiles.
+// Why: the normal at a vertex is the slope between its two neighbours (VertexNormal). On the edge of a tile one neighbour
+// is missing, and clamping to the edge sample makes the slope too flat: the lighting of two tiles disagrees along the seam.
+// With the apron the edge vertex sees the real neighbour, so both tiles compute the SAME normal there. The corners do
+// not need an entry: a normal reads the sample on each side in X, and on each side in Z, never diagonally.
+struct HeightfieldApron {
+    std::vector<float> west;    // sample (-1, z) for z = 0..cellsZ
+    std::vector<float> east;    // sample (cellsX + 1, z) for z = 0..cellsZ
+    std::vector<float> north;   // sample (x, -1) for x = 0..cellsX   (north = the z = 0 side, as in Terrain.cpp's skirts)
+    std::vector<float> south;   // sample (x, cellsZ + 1) for x = 0..cellsX
+};
+
 class Heightfield {
 public:
     // Takes the samples (row by row, z-major: index = z * (cellsX + 1) + x), each 0..1. Returns false and changes
@@ -40,8 +52,18 @@ public:
     int IndexOf(int gridX, int gridZ) const { return gridZ * (layout_.cellsX + 1) + gridX; }   // the caller keeps x and z inside the grid
     void SetSample(int index, float value);   // clamps to 0..1; an index outside the grid is ignored
 
-    // The normal the mesh stores at a vertex: the slope from the two neighbours on each side (edges are clamped).
+    // The normal the mesh stores at a vertex: the slope from the two neighbours on each side. Past the edge the neighbour
+    // comes from the apron if there is one, and is the clamped edge sample if there is not.
     HfVec3 VertexNormal(int gridX, int gridZ) const;
+
+    // --- the apron (lesson 47) ---
+    // Each strip must have the length given on HeightfieldApron, values 0..1 (clamped). False, and nothing changes, if a
+    // length is wrong. Reset() removes the apron: a new grid has new neighbours.
+    bool SetApron(HeightfieldApron apron);
+    void ClearApron() { apron_ = HeightfieldApron{}; }
+    bool HasApron() const { return !apron_.west.empty(); }
+    // Like Sample, but a sample exactly one step outside the grid (in one axis) reads the apron. Anything else is clamped.
+    float SampleBeyond(int gridX, int gridZ) const;
 
     // Height (local-space Y) of the SURFACE at (x, z), exactly as the mesh draws it at full detail: the surface is
     // made of triangles, so this interpolates inside the triangle that holds the point, not across the whole cell.
@@ -68,4 +90,5 @@ private:
 
     HeightfieldLayout layout_;
     std::vector<float> samples_;
+    HeightfieldApron apron_;
 };
