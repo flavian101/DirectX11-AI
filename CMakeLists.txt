@@ -99,6 +99,7 @@ add_library(Engine STATIC
 	src/DemoScene.cpp
 	src/Terrain.cpp
 	src/WorldGrid.cpp
+	src/WorldRivers.cpp
 	src/TerrainWorld.cpp
 	src/Heightfield.cpp
 	src/HeightfieldEdit.cpp
@@ -229,6 +230,10 @@ if(BUILD_TESTS)
     add_executable(UnderwaterLookTests tests/underwater_look_test.cpp)
     target_include_directories(UnderwaterLookTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME UnderwaterLook COMMAND UnderwaterLookTests)
+    # Rivers as part of the world's height function (lesson 51): agrees with the single-terrain carve, no seams, no edits far away.
+    add_executable(WorldRiversTests tests/world_rivers_test.cpp src/WorldRivers.cpp src/WorldGrid.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
+    target_include_directories(WorldRiversTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME WorldRivers COMMAND WorldRiversTests)
     add_executable(RiverTests tests/river_test.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
     target_include_directories(RiverTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME River COMMAND RiverTests)

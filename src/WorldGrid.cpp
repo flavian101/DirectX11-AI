@@ -147,14 +147,16 @@ float ValueNoise(double x, double z, int seed)
     return ab + (cd - ab) * tz;
 }
 
-// World position of sample `local` of tile `tile` along one axis. The integer product is exact; the one multiplication
-// by metresPerCell is done in double.
-double SampleWorldPosition(const WorldGridSettings& grid, int tile, int local)
+}   // namespace
+
+double WorldSamplePosition(const WorldGridSettings& grid, int tile, int local)
 {
     const std::int64_t globalIndex = static_cast<std::int64_t>(tile) * grid.TileCells() + local;
     return static_cast<double>(globalIndex) * static_cast<double>(grid.metresPerCell);
 }
 
+namespace {
+double SampleWorldPosition(const WorldGridSettings& grid, int tile, int local) { return WorldSamplePosition(grid, tile, local); }
 }   // namespace
 
 float FractalHeightSource::Height01(double worldX, double worldZ) const

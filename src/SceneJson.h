@@ -48,7 +48,34 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, {
 // listed: they are not part of what a scene IS.
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WorldGridSettings, chunksPerTile, metresPerCell)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FractalWorldSettings, seed, octaves, baseWavelength)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainWorldSettings, grid, fractal, heightScale, viewDistance)
+// A river of the world: its settings, and the path as [x, z, halfWidth, level] per sample (the carve needs no more than that).
+inline void to_json(json& j, const WorldRiver& river)
+{
+    json path = json::array();
+    for (const RiverPath::Sample& s : river.path) path.push_back(json::array({ s.x, s.z, s.halfWidth, s.level }));
+    j = { { "id", river.id }, { "level", river.carve.level }, { "depth", river.carve.depth }, { "bankWidth", river.carve.bankWidth },
+          { "bankHeight", river.carve.bankHeight }, { "path", std::move(path) } };
+}
+inline void from_json(const json& j, WorldRiver& river)
+{
+    river = WorldRiver{};
+    river.id = j.value("id", 0);
+    river.carve.level = j.value("level", river.carve.level);
+    river.carve.depth = j.value("depth", river.carve.depth);
+    river.carve.bankWidth = j.value("bankWidth", river.carve.bankWidth);
+    river.carve.bankHeight = j.value("bankHeight", river.carve.bankHeight);
+    if (!j.contains("path") || !j["path"].is_array()) return;
+    for (const json& p : j["path"]) {
+        if (!p.is_array() || p.size() < 4) continue;
+        RiverPath::Sample s;
+        s.x = p[0].get<float>();
+        s.z = p[1].get<float>();
+        s.halfWidth = p[2].get<float>();
+        s.level = p[3].get<float>();
+        river.path.push_back(s);
+    }
+}
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainWorldSettings, grid, fractal, heightScale, viewDistance, rivers)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PostSettings, srgbEncode, exposureEV, toneMapper)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ShadowSettings, enabled, resolution, depthBias, slopeBias, normalOffset, strength)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WindSettings, direction, strength)

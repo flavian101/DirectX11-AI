@@ -1,6 +1,7 @@
 #pragma once
 #include "Heightfield.h"
 #include "WorldGrid.h"
+#include "WorldRivers.h"
 #include "HeightfieldEdit.h"
 #include "RayPicking.h"
 #include "RiverPath.h"
@@ -125,6 +126,7 @@ struct TerrainTile {
 	TileCoord coord;                                 // which tile this is
 	int lod = 0;                                     // its level of detail (WorldGridSettings::ForLod): `grid` is already the grid at this level
 	std::shared_ptr<const WorldHeightSource> source; // the ground, shared by every tile of the world
+	std::shared_ptr<const std::vector<WorldRiver>> rivers;   // the rivers dug into the ground (lesson 51); null or empty: none
 };
 
 class Terrain final : public SceneObject {
@@ -321,6 +323,7 @@ private:
 	TerrainTile tile_;         // source == null: an ordinary terrain
 	// For a tile: puts the settings the tile decides back (its width, resolution, no noise). No-op otherwise.
 	void ForceTileSettings(TerrainSettings& settings) const;
+	TileHeights BuildTileHeights() const;   // the tile's samples and apron from the world: base ground with the world's rivers dug in
 	TerrainSettings settings_;
 	DirectX::XMFLOAT3 position_ = { 0.0f, -2.0f, 0.0f };
 	DirectX::XMFLOAT3 rotation_ = { 0.0f, 0.0f, 0.0f };

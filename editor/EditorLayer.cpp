@@ -3223,6 +3223,28 @@ void EditorLayer::CarveRiverChannel(Water* water)
     const WaterSettings& s = water->GetSettings();
     const std::vector<RiverPath::Sample>& path = water->GetRiverWorldPath();
     if (path.size() < 2) { riverStatus_ = "Add at least two points first."; return; }
+
+    // In a terrain world the river is dug into the WORLD, not into one tile: tiles are rebuilt from the world as they stream, so
+    // a carve in a tile's heights would be lost with it, and one river crosses many tiles (lesson 51).
+    if (auto* world = scene_->FindFirst<TerrainWorld>()) {
+        const float unit = world->GetSettings().heightScale;   // metres of a sample value of 1 (a tile's ground starts at height 0)
+        WorldRiver river;
+        river.path = path;
+        for (RiverPath::Sample& sample : river.path) sample.level /= unit;   // the river's own fall, in sample values like the level
+        river.carve.level = s.height / unit;
+        river.carve.depth = s.riverDepth / unit;
+        river.carve.bankWidth = s.riverBank;
+        river.carve.bankHeight = s.riverBankHeight / unit;
+        const int id = world->AddRiver(river);
+        if (id == 0) { riverStatus_ = "The world cannot hold another river (or this one has no length)."; return; }
+        river.id = id;
+        const SceneObjectId worldId = world->GetId();
+        history_.Push(std::make_unique<LambdaCommand>("Carve river",
+            [this, worldId, id]() { if (scene_) if (auto* w = dynamic_cast<TerrainWorld*>(scene_->Find(worldId))) w->RemoveRiver(id); },
+            [this, worldId, river]() { if (scene_) if (auto* w = dynamic_cast<TerrainWorld*>(scene_->Find(worldId))) w->AddRiver(river); }));
+        riverStatus_ = "Channel carved into the world: the tiles it crosses are rebuilt. Ctrl+Z takes it out.";
+        return;
+    }
     HeightfieldPatch patch = terrain->CarveRiver(path, s.height, s.riverDepth, s.riverBank, s.riverBankHeight);
     if (patch.IsEmpty()) { riverStatus_ = "Nothing to dig: the ground already has this shape."; return; }
     RecordSculptStroke(terrain->GetId(), std::move(patch), "Carve river");
@@ -3240,7 +3262,7 @@ void EditorLayer::FollowTerrainLevels(Water* water, WaterSettings& s)
     for (size_t i = 0; i < s.riverPath.size(); ++i) {
         const XMFLOAT2 w = water->BodyToWorld(s.riverPath[i].x, s.riverPath[i].z);
         float groundY = 0.0f;
-        if (terrain->GetHeightAt(w.x, w.y, groundY)) ground[i] = groundY;
+        if (scene_->GetGroundHeight(w.x, w.y, groundY)) ground[i] = groundY;   // any tile of a world, or the terrain
         else if (i > 0) ground[i] = ground[i - 1];
     }
     RiverPath::FollowGround(s.riverPath, ground, s.height);
@@ -3270,9 +3292,10 @@ bool EditorLayer::FlowDownhillFrom(Water* water, WaterSettings& s, float bodyX, 
 
     // The walk happens in the body's own frame, where the control points live; each question about the ground is turned into
     // world coordinates first. (Everything moves and turns with the body, so the river keeps its place when the body moves.)
-    const RiverPath::GroundFn ground = [water, terrain](float bodyPointX, float bodyPointZ, float& groundY) {
+    const Scene* scene = scene_;
+    const RiverPath::GroundFn ground = [water, scene](float bodyPointX, float bodyPointZ, float& groundY) {
         const XMFLOAT2 w = water->BodyToWorld(bodyPointX, bodyPointZ);
-        return terrain->GetHeightAt(w.x, w.y, groundY);
+        return scene->GetGroundHeight(w.x, w.y, groundY);   // any tile of a world, or the terrain
     };
     const RiverPath::Route route = RiverPath::FlowDownhill(ground, bodyX, bodyZ, params);
     if (route.points.size() < 2) {

@@ -527,6 +527,11 @@ Terrain::Terrain(ID3D11Device* device, const TerrainTile& tile, const TerrainSet
 	if (!IsValid()) LOG_ERROR("Terrain tile initialization failed");
 }
 
+TileHeights Terrain::BuildTileHeights() const
+{
+	return GenerateTileHeights(*tile_.source, tile_.grid, tile_.coord, tile_.rivers.get());
+}
+
 void Terrain::ForceTileSettings(TerrainSettings& settings) const
 {
 	if (!IsTile()) return;
@@ -682,12 +687,14 @@ bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 	// A sculpt is kept only while the grid is the very same one it was made on.
 	const bool keep = keepSculpt && sculpted_ && !heightfield_.IsEmpty() &&
 		heightfield_.GetLayout().cellsX == shape.cellsX && heightfield_.GetLayout().cellsZ == shape.cellsZ;
+	TileHeights tileHeights;   // a tile's samples and apron are made together (the rivers are dug into both)
+	if (IsTile() && !keep) tileHeights = BuildTileHeights();
 	std::vector<float> samples = keep ? heightfield_.Samples()
-									  : IsTile() ? GenerateTileSamples(*tile_.source, tile_.grid, tile_.coord)
+									  : IsTile() ? std::move(tileHeights.samples)
 												 : GenerateHeights(heightmap_.values, heightmap_.width, heightmap_.height, settings, shape);
 	Heightfield field;
 	if (!field.Reset({ shape.cellsX, shape.cellsZ, settings.width, shape.depth, settings.heightScale }, std::move(samples))) return false;
-	if (IsTile()) field.SetApron(GenerateTileApron(*tile_.source, tile_.grid, tile_.coord));   // normals that match the neighbours' (lesson 47)
+	if (IsTile()) field.SetApron(keep ? BuildTileHeights().apron : std::move(tileHeights.apron));   // normals that match the neighbours' (lesson 47)
 
 	const float depth = shape.depth;
 	std::vector<TerrainChunk> chunks;
@@ -1011,7 +1018,7 @@ bool Terrain::ReplaceHeights(std::vector<float> samples, bool sculpted)
 	if (heightfield_.IsEmpty() || !renderable_ || samples.size() != heightfield_.Samples().size()) return false;
 	const HeightfieldLayout layout = heightfield_.GetLayout();
 	if (!heightfield_.Reset(layout, std::move(samples))) return false;
-	if (IsTile()) heightfield_.SetApron(GenerateTileApron(*tile_.source, tile_.grid, tile_.coord));   // Reset drops it
+	if (IsTile()) heightfield_.SetApron(BuildTileHeights().apron);   // Reset drops it
 	sculpted_ = sculpted;
 	stroke_.Clear();
 	strokeActive_ = false;
@@ -1026,8 +1033,8 @@ bool Terrain::ReplaceHeights(std::vector<float> samples, bool sculpted)
 
 bool Terrain::GenerateOriginalHeights(std::vector<float>& samples) const
 {
-	if (IsTile()) {   // the world's ground at this tile
-		samples = GenerateTileSamples(*tile_.source, tile_.grid, tile_.coord);
+	if (IsTile()) {   // the world's ground at this tile, rivers included
+		samples = BuildTileHeights().samples;
 		return true;
 	}
 	if (heightmap_.values.empty()) return false;

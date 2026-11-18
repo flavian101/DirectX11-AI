@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 
 class Scene;
 
@@ -16,8 +17,10 @@ struct TerrainWorldSettings {
     FractalWorldSettings fractal;   // the hills: seed, octaves, size of the biggest features in metres
     float heightScale = 240.0f;     // metres for a ground height of 1.0
     float viewDistance = 5000.0f;   // tiles closer than this to the camera are loaded (far ones at a lower level of detail)
+    std::vector<WorldRiver> rivers; // the rivers dug into the ground (lesson 51): part of the world, so they survive streaming
 
     static constexpr float kViewDistanceMin = 500.0f, kViewDistanceMax = 8000.0f;
+    static constexpr int kMaxRivers = 32, kMaxRiverSamples = 4096;
     static constexpr int kMaxTiles = 256;   // however far you look, at most this many tiles are alive (far tiles are cheap: 1/4, 1/16, 1/64 of the cells)
     void Clamp();
 };
@@ -34,6 +37,11 @@ public:
 
     const TerrainWorldSettings& GetSettings() const { return settings_; }
     void SetSettings(TerrainWorldSettings settings);   // clamps; every tile is rebuilt from the new settings
+    // Rivers (lesson 51). A river is part of the world's height function, so adding one rebuilds only the tiles it touches, and
+    // it comes back whenever a tile streams in again. AddRiver returns the river's id (0 if there is no room); give the river an
+    // id to put a removed one back under the same name (redo).
+    int AddRiver(WorldRiver river);
+    bool RemoveRiver(int id);
     int LoadedTileCount() const { return static_cast<int>(tiles_.size()); }
     int LoadedTileCountAtLod(int lod) const { return lod >= 0 && lod <= WorldGridSettings::kTileLodMax ? lodCounts_[lod] : 0; }
 
@@ -58,6 +66,12 @@ private:
     std::shared_ptr<const WorldHeightSource> source_;
     TerrainLayerSet layers_;                              // taken from the first tile built, lent to every later one
     std::unordered_map<std::uint64_t, SceneObjectId> tiles_;   // tile -> the scene object that shows it
+    std::shared_ptr<const std::vector<WorldRiver>> riversSnapshot_;   // what new tiles are built with: replaced whenever the rivers change
+    std::unordered_set<std::uint64_t> staleTiles_;                    // loaded tiles that a river change touched: rebuilt first
+    int nextRiverId_ = 1;
+    static TileCoord CoordOfKey(std::uint64_t key) { return { static_cast<int>(static_cast<std::uint32_t>(key >> 32)), static_cast<int>(static_cast<std::uint32_t>(key)) }; }
+    void RefreshRivers();                         // new snapshot, and ids for rivers that have none
+    void MarkTilesTouchedBy(const WorldRiver& river);
     int lodCounts_[WorldGridSettings::kTileLodMax + 1] = {};   // loaded tiles per level of detail (for the inspector)
     bool dirty_ = true;     // the settings changed: unload, then start again
     bool failed_ = false;   // a tile could not be built: stop trying until the settings change

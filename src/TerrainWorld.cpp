@@ -13,6 +13,11 @@ void TerrainWorldSettings::Clamp()
     fractal.baseWavelength = std::clamp(fractal.baseWavelength, 50.0f, 50000.0f);
     heightScale = std::clamp(heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax);
     viewDistance = std::clamp(viewDistance, kViewDistanceMin, kViewDistanceMax);
+    if (static_cast<int>(rivers.size()) > kMaxRivers) rivers.resize(kMaxRivers);
+    for (WorldRiver& river : rivers) {
+        if (static_cast<int>(river.path.size()) > kMaxRiverSamples) river.path.resize(kMaxRiverSamples);
+        river.carve.bankWidth = std::clamp(river.carve.bankWidth, 0.5f, 200.0f);
+    }
 }
 
 TerrainSettings MakeWorldMaterial(const TerrainWorldSettings& world)
@@ -36,14 +41,54 @@ void TerrainWorld::SetSettings(TerrainWorldSettings settings)
 {
     settings.Clamp();
     settings_ = settings;
+    RefreshRivers();
     dirty_ = true;
     failed_ = false;
+}
+
+void TerrainWorld::RefreshRivers()
+{
+    for (const WorldRiver& river : settings_.rivers) nextRiverId_ = std::max(nextRiverId_, river.id + 1);
+    for (WorldRiver& river : settings_.rivers) {
+        if (river.id <= 0) river.id = nextRiverId_++;
+    }
+    riversSnapshot_ = settings_.rivers.empty() ? nullptr : std::make_shared<const std::vector<WorldRiver>>(settings_.rivers);
+}
+
+void TerrainWorld::MarkTilesTouchedBy(const WorldRiver& river)
+{
+    for (const auto& entry : tiles_) {
+        if (RiverTouchesTile(settings_.grid, CoordOfKey(entry.first), river)) staleTiles_.insert(entry.first);
+    }
+}
+
+int TerrainWorld::AddRiver(WorldRiver river)
+{
+    if (river.path.size() < 2 || static_cast<int>(settings_.rivers.size()) >= TerrainWorldSettings::kMaxRivers) return 0;
+    if (static_cast<int>(river.path.size()) > TerrainWorldSettings::kMaxRiverSamples) river.path.resize(TerrainWorldSettings::kMaxRiverSamples);
+    if (river.id > 0) nextRiverId_ = std::max(nextRiverId_, river.id + 1); else river.id = nextRiverId_++;
+    settings_.rivers.push_back(river);
+    RefreshRivers();
+    MarkTilesTouchedBy(river);   // only the tiles it touches are rebuilt, nearest the camera first
+    return river.id;
+}
+
+bool TerrainWorld::RemoveRiver(int id)
+{
+    const auto it = std::find_if(settings_.rivers.begin(), settings_.rivers.end(), [id](const WorldRiver& river) { return river.id == id; });
+    if (it == settings_.rivers.end()) return false;
+    const WorldRiver removed = *it;
+    settings_.rivers.erase(it);
+    RefreshRivers();
+    MarkTilesTouchedBy(removed);
+    return true;
 }
 
 void TerrainWorld::UnloadAll(Scene& scene)
 {
     for (const auto& entry : tiles_) scene.Remove(entry.second);
     tiles_.clear();
+    staleTiles_.clear();
 }
 
 void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
@@ -73,14 +118,30 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
         const auto it = tiles_.find(Key(tile));
         if (it == tiles_.end()) continue;
         scene.Remove(it->second);
+        staleTiles_.erase(it->first);
         tiles_.erase(it);
+    }
+
+    // The tiles a river change touched are rebuilt first (at the level they are loaded at, or the one the plan now wants).
+    std::vector<TileRequest> requests;
+    for (const std::uint64_t key : staleTiles_) {
+        const TileCoord coord = CoordOfKey(key);
+        const auto planned = std::find_if(plan.toLoad.begin(), plan.toLoad.end(), [&](const TileRequest& r) { return r.coord == coord; });
+        int lod = 0;
+        if (planned != plan.toLoad.end()) lod = planned->lod;
+        else if (const auto loadedTile = std::find_if(loaded.begin(), loaded.end(), [&](const LoadedTile& t) { return t.coord == coord; }); loadedTile != loaded.end()) lod = loadedTile->lod;
+        else continue;
+        requests.push_back({ coord, lod });
+    }
+    for (const TileRequest& request : plan.toLoad) {
+        if (staleTiles_.count(Key(request.coord)) == 0) requests.push_back(request);
     }
 
     // Build the nearest requests first, within a budget measured in FULL tiles: a tile at level L has 4^-L of the cells, so
     // several far tiles cost about as much as one near tile. At least one request is always served, so nothing starves.
     double spent = 0.0;
     int built = 0;
-    for (const TileRequest& request : plan.toLoad) {
+    for (const TileRequest& request : requests) {
         const double cost = 1.0 / static_cast<double>(1 << (2 * request.lod));
         if (built > 0 && spent + cost > 1.0) break;
         spent += cost;
@@ -91,6 +152,7 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
         tile.coord = request.coord;
         tile.lod = request.lod;
         tile.source = source_;
+        tile.rivers = riversSnapshot_;
         Terrain* terrain = scene.Add<Terrain>(device_, tile, MakeWorldMaterial(settings_), layers_.IsValid() ? &layers_ : nullptr);
         if (!terrain) { failed_ = true; break; }
         if (!terrain->IsValid()) {
@@ -106,6 +168,7 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
         const auto old = tiles_.find(Key(request.coord));
         if (old != tiles_.end()) scene.Remove(old->second);
         tiles_[Key(request.coord)] = terrain->GetId();
+        staleTiles_.erase(Key(request.coord));
     }
 
     for (int& count : lodCounts_) count = 0;

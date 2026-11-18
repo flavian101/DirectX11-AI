@@ -117,6 +117,10 @@ private:
     FractalWorldSettings settings_;
 };
 
+// The world position (metres, along one axis) of sample `local` of tile `tile` (local may be -1 or cells + 1: the apron). Exact
+// integer arithmetic, then one multiplication in double: every tile that shares the sample gets the same number.
+double WorldSamplePosition(const WorldGridSettings& grid, int tile, int local);
+
 // --- making a tile --------------------------------------------------------------------------------------------------
 // The samples of one tile: (cells + 1) x (cells + 1), row by row (z-major, the same layout as Heightfield::Reset takes).
 std::vector<float> GenerateTileSamples(const WorldHeightSource& source, const WorldGridSettings& grid, TileCoord tile);
