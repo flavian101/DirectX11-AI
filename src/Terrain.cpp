@@ -485,20 +485,32 @@ Terrain::Terrain(ID3D11Device* device) : device_(device)
 	if (!IsValid()) LOG_ERROR("Terrain initialization failed");
 }
 
-Terrain::Terrain(ID3D11Device* device, const TerrainTile& tile, const TerrainSettings& material, const Terrain* shareLayersFrom)
+TerrainLayerSet Terrain::GetLayerSet() const
+{
+	TerrainLayerSet set;
+	set.diffHeight = layerDiffHeight_;
+	set.normRough = layerNormRough_;
+	for (int kind = 0; kind < 3; ++kind) set.fileCounts[kind] = layerFileCounts_[kind];
+	for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+		for (int map = 0; map < 3; ++map) set.mapPaths[layer][map] = layerMapPaths_[layer][map];
+	}
+	return set;
+}
+
+Terrain::Terrain(ID3D11Device* device, const TerrainTile& tile, const TerrainSettings& material, const TerrainLayerSet* shareLayers)
 	: device_(device), tile_(tile)
 {
 	heightmapPath_ = DefaultHeightmapPath();   // not used by a tile; kept so the getters and the saved paths stay valid
 	for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
 		for (int map = 0; map < 3; ++map) layerMapPaths_[layer][map] = DefaultLayerMapPath(layer, static_cast<TerrainLayerMap>(map));
 	}
-	if (shareLayersFrom && shareLayersFrom->layerDiffHeight_ && shareLayersFrom->layerNormRough_) {
+	if (shareLayers && shareLayers->IsValid()) {
 		// One set of layer textures for the whole world: the same GPU arrays, not a copy.
-		layerDiffHeight_ = shareLayersFrom->layerDiffHeight_;
-		layerNormRough_ = shareLayersFrom->layerNormRough_;
-		for (int kind = 0; kind < 3; ++kind) layerFileCounts_[kind] = shareLayersFrom->layerFileCounts_[kind];
+		layerDiffHeight_ = shareLayers->diffHeight;
+		layerNormRough_ = shareLayers->normRough;
+		for (int kind = 0; kind < 3; ++kind) layerFileCounts_[kind] = shareLayers->fileCounts[kind];
 		for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
-			for (int map = 0; map < 3; ++map) layerMapPaths_[layer][map] = shareLayersFrom->layerMapPaths_[layer][map];
+			for (int map = 0; map < 3; ++map) layerMapPaths_[layer][map] = shareLayers->mapPaths[layer][map];
 		}
 	} else {
 		RebuildLayerTextures();

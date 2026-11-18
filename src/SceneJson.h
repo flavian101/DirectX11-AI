@@ -11,6 +11,7 @@
 #include "Skybox.h"
 #include "SurfaceMaterial.h"
 #include "Terrain.h"
+#include "TerrainWorld.h"
 #include "Water.h"
 #include <nlohmann/json.hpp>
 
@@ -45,6 +46,9 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, {
 // "WITH_DEFAULT": a field missing from the file keeps the struct's default. That is what lets an OLD file load
 // after a settings struct gains a new field. Debug-only fields (debug views, wireframe...) are deliberately not
 // listed: they are not part of what a scene IS.
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WorldGridSettings, chunksPerTile, metresPerCell)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FractalWorldSettings, seed, octaves, baseWavelength)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainWorldSettings, grid, fractal, heightScale, viewDistance)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PostSettings, srgbEncode, exposureEV, toneMapper)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ShadowSettings, enabled, resolution, depthBias, slopeBias, normalOffset, strength)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WindSettings, direction, strength)

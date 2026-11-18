@@ -513,8 +513,8 @@ void EditorLayer::DrawMenuBar()
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Model from file...")) importRequested_ = true;
-        if (ImGui::MenuItem("Terrain world (3 x 3 tiles)")) addTerrainWorldRequested_ = true;
-        ImGui::SetItemTooltip("Nine 1 km terrain tiles side by side (a 3 km world) whose heights come from one world function, so the\ntiles meet without seams. Tiles cannot be sculpted or moved yet, and a world is not saved yet (a later lesson).");
+        if (ImGui::MenuItem("Terrain world (streaming tiles)", nullptr, false, scene_ && !scene_->FindFirst<TerrainWorld>())) addTerrainWorldRequested_ = true;
+        ImGui::SetItemTooltip("A world of 1 km terrain tiles whose heights come from one world function, so the tiles meet without seams.\nTiles load and unload around the camera. Select the world in the Hierarchy to change its seed, hills,\nheight and view distance. Tiles cannot be sculpted or moved yet.");
         if (ImGui::MenuItem("Scatter on terrain (trees, rocks)", nullptr, false, scene_ && scene_->GetTerrain())) addScatterRequested_ = true;
         ImGui::SetItemTooltip("Grows trees and rocks over the terrain by rules (which layer, how steep, how high),\ndrawn with instancing, frustum culling and levels of detail. Needs a terrain.");
         ImGui::EndMenu();
@@ -961,12 +961,10 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
     }
     if (addTerrainWorldRequested_) {
         addTerrainWorldRequested_ = false;
-        const TerrainWorldSettings world;   // the defaults: 3 x 3 tiles of 1024 m (256 cells of 4 m), hills 3 km across
-        const std::vector<Terrain*> tiles = SpawnTerrainWorld(ctx.scene, ctx.renderer.GetDevice(), world);
-        if (!tiles.empty()) {
-            for (Terrain* tile : tiles) RecordAdded(tile, "Add terrain tile");   // one undo step per tile
-            Select(tiles.front());   // the middle tile
-            FrameSelected();
+        if (!ctx.scene.FindFirst<TerrainWorld>()) {
+            // Only the world is added (and undoable): its tiles are streamed in around the camera by Scene::Update.
+            TerrainWorld* world = ctx.scene.Add<TerrainWorld>(ctx.renderer.GetDevice());
+            if (world) { RecordAdded(world, "Add terrain world"); Select(world); }
         }
     }
     if (addScatterRequested_) {
@@ -1184,7 +1182,7 @@ HierarchyGroup GroupOf(const SceneObject& object)
 {
     if (dynamic_cast<const Skybox*>(&object)) return HierarchyGroup::Environment;
     if (dynamic_cast<const LightObject*>(&object)) return HierarchyGroup::Lights;
-    if (dynamic_cast<const Terrain*>(&object)) return HierarchyGroup::Terrain;
+    if (dynamic_cast<const Terrain*>(&object) || dynamic_cast<const TerrainWorld*>(&object)) return HierarchyGroup::Terrain;
     if (dynamic_cast<const Water*>(&object)) return HierarchyGroup::Water;
     if (dynamic_cast<const ScatterObject*>(&object)) return HierarchyGroup::Scatter;
     return HierarchyGroup::Objects;
@@ -1194,7 +1192,7 @@ EditorIcons::Icon IconFor(const SceneObject& object)
 {
     if (dynamic_cast<const Skybox*>(&object)) return EditorIcons::Icon::Sky;
     if (const auto* light = dynamic_cast<const LightObject*>(&object)) return LightIconFor(*light);
-    if (dynamic_cast<const Terrain*>(&object)) return EditorIcons::Icon::Terrain;
+    if (dynamic_cast<const Terrain*>(&object) || dynamic_cast<const TerrainWorld*>(&object)) return EditorIcons::Icon::Terrain;
     if (dynamic_cast<const Water*>(&object)) return EditorIcons::Icon::Water;
     if (dynamic_cast<const ScatterObject*>(&object)) return EditorIcons::Icon::Scatter;
     if (dynamic_cast<const ModelObject*>(&object)) return EditorIcons::Icon::Model;
@@ -1241,6 +1239,7 @@ void EditorLayer::DrawHierarchyPanel()
         for (const auto& owned : scene_->GetObjects()) {
             SceneObject* object = owned.get();
             if (!object || GroupOf(*object) != group.group) continue;
+            if (const auto* tile = dynamic_cast<const Terrain*>(object); tile && tile->IsTile()) continue;   // the world's tiles come and go: the world stands for them
             if (filtering && LowerCopy(object->GetEditorName()).find(needle) == std::string::npos &&
                 LowerCopy(object->GetTypeName()).find(needle) == std::string::npos) continue;
             members.push_back(object);
@@ -1358,6 +1357,7 @@ void EditorLayer::DrawObjectInspector(SceneObject* object)
     if (!dynamic_cast<Skybox*>(object)) DrawTransformEditor(object);   // a sky has no position: it is always around you
 
     if (auto* terrain = dynamic_cast<Terrain*>(object)) DrawTerrainInspector(terrain);
+    if (auto* world = dynamic_cast<TerrainWorld*>(object)) DrawTerrainWorldInspector(world);
     if (auto* water = dynamic_cast<Water*>(object)) DrawWaterInspector(water);
     if (auto* light = dynamic_cast<LightObject*>(object)) DrawLightInspector(light);
     if (auto* skybox = dynamic_cast<Skybox*>(object)) DrawSkyboxInspector(skybox);
@@ -2718,6 +2718,33 @@ void EditorLayer::DrawSculptSection(Terrain* terrain)
     ImGui::PopID();
 }
 
+void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
+{
+    ImGui::SeparatorText("Terrain world");
+    TerrainWorldSettings s = world->GetSettings();
+    bool commit = false;   // applied when a control is released: dragging a slider must not rebuild every tile on every frame
+    auto commitOnRelease = [&commit] { if (ImGui::IsItemDeactivatedAfterEdit()) commit = true; };
+
+    ImGui::InputInt("Seed", &s.fractal.seed);
+    commitOnRelease();
+    ImGui::SliderInt("Detail layers", &s.fractal.octaves, 1, 8);
+    commitOnRelease();
+    ImGui::SetItemTooltip("How many sizes of bump are added together: more layers, finer detail on the hills.");
+    ImGui::SliderFloat("Hill size (m)", &s.fractal.baseWavelength, 200.0f, 20000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+    commitOnRelease();
+    ImGui::SetItemTooltip("The width of the biggest hills and valleys.");
+    ImGui::SliderFloat("Height (m)", &s.heightScale, 20.0f, 500.0f, "%.0f");
+    commitOnRelease();
+    ImGui::SliderFloat("View distance (m)", &s.viewDistance, TerrainWorldSettings::kViewDistanceMin, TerrainWorldSettings::kViewDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
+    commitOnRelease();
+    ImGui::SetItemTooltip("Tiles nearer than this to the camera are loaded. At most %d tiles are kept, however far you look.", TerrainWorldSettings::kMaxTiles);
+    ImGui::SliderFloat("Metres per cell", &s.grid.metresPerCell, 1.0f, 16.0f, "%.1f");
+    commitOnRelease();
+    ImGui::SetItemTooltip("The resolution of the whole world. A tile always has 256 cells (8 chunks), so this sets its size too.");
+    ImGui::TextDisabled("Tile: %d cells of %.1f m = %.0f m.   %d tiles loaded.", s.grid.TileCells(), s.grid.metresPerCell, s.grid.TileSize(), world->LoadedTileCount());
+    if (commit) world->SetSettings(s);   // every tile is rebuilt from the new settings
+}
+
 void EditorLayer::DrawTerrainInspector(Terrain* terrain)
 {
     // Mesh-shaping values rebuild ~half a million vertices, so they are applied when you
@@ -2731,7 +2758,7 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
 
     if (terrain->IsTile()) {
         ImGui::SeparatorText("Terrain world");
-        ImGui::TextWrapped("Tile (%d, %d) of a terrain world. Its heights, size and resolution come from the world, so it cannot be sculpted, carved or moved yet (an edit would open a seam with its neighbours). Layers and painting work as usual.",
+        ImGui::TextWrapped("Tile (%d, %d) of a terrain world. Its heights, size and resolution come from the world (select the Terrain world in the Hierarchy to change them), so it cannot be sculpted, carved or moved yet: an edit would open a seam with its neighbours. Layers and painting work as usual, but a painted tile is dropped when it is unloaded.",
                            terrain->GetTile().coord.x, terrain->GetTile().coord.z);
     } else {
         DrawSculptSection(terrain);

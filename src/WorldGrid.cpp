@@ -52,6 +52,26 @@ std::vector<TileCoord> TilesWithin(const WorldGridSettings& grid, double worldX,
     return tiles;
 }
 
+StreamingPlan PlanTileStreaming(const WorldGridSettings& grid, double cameraX, double cameraZ, double viewDistance, int maxTiles,
+                                const std::vector<TileCoord>& loaded)
+{
+    StreamingPlan plan;
+    maxTiles = std::max(maxTiles, 0);
+    const double unloadDistance = viewDistance + 0.5 * grid.TileSize();
+    std::vector<TileCoord> kept;
+    for (const TileCoord& tile : loaded) {
+        if (DistanceToTile(grid, tile, cameraX, cameraZ) > unloadDistance) plan.toUnload.push_back(tile);
+        else kept.push_back(tile);
+    }
+    // Nearest first, so that if the cap bites it is the far tiles that go.
+    std::vector<TileCoord> wanted = TilesWithin(grid, cameraX, cameraZ, viewDistance);
+    for (const TileCoord& tile : wanted) {
+        if (static_cast<int>(kept.size() + plan.toLoad.size()) >= maxTiles) break;
+        if (std::find(kept.begin(), kept.end(), tile) == kept.end()) plan.toLoad.push_back(tile);
+    }
+    return plan;
+}
+
 namespace {
 
 // The same hash and smooth value noise as Terrain.cpp, but taking world positions in double: the cell index is an exact

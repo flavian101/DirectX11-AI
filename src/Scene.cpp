@@ -1,4 +1,5 @@
 ﻿#include "Scene.h"
+#include "TerrainWorld.h"
 #include "Color.h"
 #include "ModelObject.h"
 #include "Cube.h"
@@ -166,6 +167,13 @@ void Scene::Update(float dt)
     if (weather_.timeOfDay.enabled && weather_.timeOfDay.animate) clockHour_ = TimeOfDay::AdvanceHour(clockHour_, dt, weather_.timeOfDay.dayLengthMinutes);
     else clockHour_ = weather_.timeOfDay.hour;
     for (auto& obj : objects_) if (obj) obj->Update(dt);
+    // A terrain world loads and unloads its tiles around the camera. This runs AFTER the loop above: it adds and removes objects.
+    if (auto* world = FindFirst<TerrainWorld>()) {
+        const DirectX::XMFLOAT3 eye = camera_.GetPosition();
+        world->Stream(*this, eye.x, eye.z);
+    } else {
+        RemoveOrphanTiles(*this);   // no world, no tiles
+    }
     // The scene's wind goes to every water body that follows it (each rebuilds its waves only if the wind changed).
     weather_.Clamp();
     for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) water->SetSceneWind(weather_.wind);
@@ -177,9 +185,21 @@ void Scene::Update(float dt)
         model->StepFloating(FindWaterAt(anchor.x, 1.0e5f, anchor.z), time_, dt);
     }
     // Every water body measures the terrain under it (only when something changed: this is a cheap comparison otherwise).
-    const Terrain* terrain = GetTerrain();
-    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) { water->RefreshShoreDepth(terrain); water->RefreshRiverFlow(); }
+    // The ground is every valid terrain (a world is many). The stamp changes when one is added, removed or edited (FNV-1a over
+    // each terrain's identity and revision), so the water measures again exactly then.
+    std::vector<const Terrain*> groundTerrains;
+    std::uint64_t groundStamp = 1469598103934665603ull;
+    for (const auto& obj : objects_) {
+        const auto* terrain = dynamic_cast<const Terrain*>(obj.get());
+        if (!terrain || !terrain->IsValid()) continue;
+        groundTerrains.push_back(terrain);
+        groundStamp = (groundStamp ^ static_cast<std::uint64_t>(terrain->GetId())) * 1099511628211ull;
+        groundStamp = (groundStamp ^ static_cast<std::uint64_t>(terrain->GetRevision())) * 1099511628211ull;
+    }
+    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) { water->RefreshShoreDepth(groundTerrains, groundStamp); water->RefreshRiverFlow(); }
     // Scatter follows the ground the same way: it regenerates the cells whose ground changed (within a time budget).
+    // (It still reads only the FIRST terrain: scatter over a world is a later step.)
+    const Terrain* terrain = GetTerrain();
     for (auto& obj : objects_) if (auto* scatter = dynamic_cast<ScatterObject*>(obj.get())) scatter->Refresh(terrain, camera_.GetPosition());
 }
 
@@ -197,6 +217,9 @@ bool Scene::GetGroundHeight(float worldX, float worldZ, float& worldY) const
 }
 
 // Smallest sphere containing both input spheres.
+// How far from the camera shadows reach when the scene has a terrain world (metres).
+static constexpr float kWorldShadowRadius = 400.0f;
+
 static void MergeSpheres(DirectX::XMFLOAT3& centerA, float& radiusA,
                          const DirectX::XMFLOAT3& centerB, float radiusB)
 {
@@ -220,6 +243,13 @@ bool Scene::ComputeShadowBounds(DirectX::XMFLOAT3& center, float& radius) const
         if (!object || !object->CastsShadow() || !object->GetBoundingSphere(objectCenter, objectRadius)) continue;
         if (!any) { center = objectCenter; radius = objectRadius; any = true; }
         else MergeSpheres(center, radius, objectCenter, objectRadius);
+    }
+    // In a terrain world the casters are spread over kilometres, and one shadow map stretched over all of them would be a blur.
+    // So the sun's box follows the camera and covers only the ground around it; further out nothing is shadowed.
+    // (Cascades, several maps for several distances, are the proper fix: a later lesson.)
+    if (any && radius > kWorldShadowRadius && FindFirst<TerrainWorld>()) {
+        center = camera_.GetPosition();
+        radius = kWorldShadowRadius;
     }
     return any && radius > 0.0f;
 }

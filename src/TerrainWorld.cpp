@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <vector>
 
 void TerrainWorldSettings::Clamp()
 {
@@ -11,7 +12,7 @@ void TerrainWorldSettings::Clamp()
     fractal.octaves = std::clamp(fractal.octaves, 1, 8);
     fractal.baseWavelength = std::clamp(fractal.baseWavelength, 50.0f, 50000.0f);
     heightScale = std::clamp(heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax);
-    radiusInTiles = std::clamp(radiusInTiles, 0, kRadiusMax);
+    viewDistance = std::clamp(viewDistance, kViewDistanceMin, kViewDistanceMax);
 }
 
 TerrainSettings MakeWorldMaterial(const TerrainWorldSettings& world)
@@ -31,37 +32,75 @@ TerrainSettings MakeWorldMaterial(const TerrainWorldSettings& world)
     return material;
 }
 
-std::vector<Terrain*> SpawnTerrainWorld(Scene& scene, ID3D11Device* device, TerrainWorldSettings settings)
+void TerrainWorld::SetSettings(TerrainWorldSettings settings)
 {
     settings.Clamp();
-    std::vector<Terrain*> tiles;
-    const auto source = std::make_shared<const FractalHeightSource>(settings.fractal);
-    const TerrainSettings material = MakeWorldMaterial(settings);
+    settings_ = settings;
+    dirty_ = true;
+    failed_ = false;
+}
 
-    // Nearest the middle first, so a failure (out of memory) leaves the middle of the world rather than one corner.
-    std::vector<TileCoord> coords;
-    for (int z = -settings.radiusInTiles; z <= settings.radiusInTiles; ++z)
-        for (int x = -settings.radiusInTiles; x <= settings.radiusInTiles; ++x) coords.push_back({ x, z });
-    std::stable_sort(coords.begin(), coords.end(), [](const TileCoord& a, const TileCoord& b) {
-        return a.x * a.x + a.z * a.z < b.x * b.x + b.z * b.z;
-    });
+void TerrainWorld::UnloadAll(Scene& scene)
+{
+    for (const auto& entry : tiles_) scene.Remove(entry.second);
+    tiles_.clear();
+}
 
-    const Terrain* layersFrom = nullptr;
-    for (const TileCoord& coord : coords) {
-        TerrainTile tile;
-        tile.grid = settings.grid;
-        tile.coord = coord;
-        tile.source = source;
-        Terrain* terrain = scene.Add<Terrain>(device, tile, material, layersFrom);
-        if (!terrain) continue;
-        if (!terrain->IsValid()) {
-            LOG_ERROR("Terrain world: tile (" + std::to_string(coord.x) + ", " + std::to_string(coord.z) + ") could not be built");
-            scene.Remove(terrain->GetId());
-            continue;
-        }
-        terrain->SetName("Terrain tile (" + std::to_string(coord.x) + ", " + std::to_string(coord.z) + ")");
-        if (!layersFrom) layersFrom = terrain;   // the first tile's textures are shared by all the others
-        tiles.push_back(terrain);
+void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
+{
+    if (!device_) return;
+    if (dirty_) {
+        UnloadAll(scene);
+        source_ = std::make_shared<const FractalHeightSource>(settings_.fractal);
+        layers_ = TerrainLayerSet{};   // the material may have changed with the settings: load the textures again
+        dirty_ = false;
     }
-    return tiles;
+
+    // Forget tiles that are gone from the scene without us (an undo, a cleared scene).
+    for (auto it = tiles_.begin(); it != tiles_.end();) {
+        if (scene.Find(it->second)) ++it; else it = tiles_.erase(it);
+    }
+    if (failed_) return;
+
+    std::vector<TileCoord> loaded;
+    loaded.reserve(tiles_.size());
+    for (const auto& entry : tiles_) {
+        if (const auto* terrain = dynamic_cast<const Terrain*>(scene.Find(entry.second))) loaded.push_back(terrain->GetTile().coord);
+    }
+    const StreamingPlan plan = PlanTileStreaming(settings_.grid, cameraX, cameraZ, settings_.viewDistance, TerrainWorldSettings::kMaxTiles, loaded);
+
+    for (const TileCoord& tile : plan.toUnload) {
+        const auto it = tiles_.find(Key(tile));
+        if (it == tiles_.end()) continue;
+        scene.Remove(it->second);
+        tiles_.erase(it);
+    }
+    if (plan.toLoad.empty()) return;
+
+    const TileCoord coord = plan.toLoad.front();   // the nearest missing tile; the rest follow on later frames
+    TerrainTile tile;
+    tile.grid = settings_.grid;
+    tile.coord = coord;
+    tile.source = source_;
+    Terrain* terrain = scene.Add<Terrain>(device_, tile, MakeWorldMaterial(settings_), layers_.IsValid() ? &layers_ : nullptr);
+    if (!terrain) { failed_ = true; return; }
+    if (!terrain->IsValid()) {
+        LOG_ERROR("Terrain world: tile (" + std::to_string(coord.x) + ", " + std::to_string(coord.z) + ") could not be built; streaming stopped");
+        scene.Remove(terrain->GetId());
+        failed_ = true;
+        return;
+    }
+    terrain->SetName("Terrain tile (" + std::to_string(coord.x) + ", " + std::to_string(coord.z) + ")");
+    if (!layers_.IsValid()) layers_ = terrain->GetLayerSet();   // the first tile's textures are lent to the rest
+    tiles_[Key(coord)] = terrain->GetId();
+}
+
+void RemoveOrphanTiles(Scene& scene)
+{
+    std::vector<SceneObjectId> orphans;
+    for (const auto& object : scene.GetObjects()) {
+        const auto* terrain = dynamic_cast<const Terrain*>(object.get());
+        if (terrain && terrain->IsTile()) orphans.push_back(terrain->GetId());
+    }
+    for (SceneObjectId id : orphans) scene.Remove(id);
 }

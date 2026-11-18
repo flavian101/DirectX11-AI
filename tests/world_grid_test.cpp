@@ -226,6 +226,55 @@ static void TestTiledBakeEqualsOneBigBake()
     }
 }
 
+static bool Contains(const std::vector<TileCoord>& list, TileCoord tile) { return std::find(list.begin(), list.end(), tile) != list.end(); }
+
+static void TestStreamingPlan()
+{
+    const WorldGridSettings grid = DefaultGrid();   // 1024 m tiles
+    const double view = 1500.0;
+
+    // From nothing: load everything wanted, nearest first, nothing to unload.
+    StreamingPlan first = PlanTileStreaming(grid, 512.0, 512.0, view, 64, {});
+    CHECK(first.toUnload.empty());
+    CHECK(first.toLoad == TilesWithin(grid, 512.0, 512.0, view));
+    CHECK(!first.toLoad.empty() && first.toLoad[0] == (TileCoord{ 0, 0 }));
+
+    // Everything loaded and the camera has not moved: nothing to do.
+    CHECK(PlanTileStreaming(grid, 512.0, 512.0, view, 64, first.toLoad).toLoad.empty());
+    CHECK(PlanTileStreaming(grid, 512.0, 512.0, view, 64, first.toLoad).toUnload.empty());
+
+    // The camera wobbles across a tile border: no tile is loaded and dropped over and over (the hysteresis).
+    std::vector<TileCoord> loaded = first.toLoad;
+    for (double x : { 1019.0, 1029.0, 1019.0, 1029.0 }) {
+        StreamingPlan plan = PlanTileStreaming(grid, x, 512.0, view, 64, loaded);
+        for (const TileCoord& tile : plan.toUnload) loaded.erase(std::find(loaded.begin(), loaded.end(), tile));
+        for (const TileCoord& tile : plan.toLoad) loaded.push_back(tile);
+    }
+    const std::vector<TileCoord> settled = loaded;
+    for (double x : { 1019.0, 1029.0, 1019.0, 1029.0 }) {
+        StreamingPlan plan = PlanTileStreaming(grid, x, 512.0, view, 64, loaded);
+        CHECK(plan.toLoad.empty() && plan.toUnload.empty());   // once settled, wobbling changes nothing
+    }
+    CHECK(loaded == settled);
+
+    // Moving away: new tiles ahead are loaded, tiles far behind (past view + half a tile) are unloaded, nearer ones stay.
+    StreamingPlan moved = PlanTileStreaming(grid, 5512.0, 512.0, view, 64, first.toLoad);
+    CHECK(moved.toUnload.size() == first.toLoad.size());   // everything from the old place is out of range
+    CHECK(Contains(moved.toLoad, TileCoord{ 5, 0 }));
+    StreamingPlan step = PlanTileStreaming(grid, 1536.0, 512.0, view, 64, first.toLoad);   // one tile east
+    CHECK(Contains(step.toLoad, TileCoord{ 2, 0 }));
+    CHECK(!Contains(step.toUnload, TileCoord{ 0, 0 }));    // one tile behind is still inside view + half a tile
+
+    // The cap: never more than maxTiles loaded, and the nearest are the ones kept.
+    StreamingPlan capped = PlanTileStreaming(grid, 512.0, 512.0, 5000.0, 6, {});
+    CHECK(capped.toLoad.size() == 6);
+    const std::vector<TileCoord> nearest = TilesWithin(grid, 512.0, 512.0, 5000.0);
+    CHECK(capped.toLoad == std::vector<TileCoord>(nearest.begin(), nearest.begin() + 6));
+    StreamingPlan full = PlanTileStreaming(grid, 512.0, 512.0, 5000.0, 6, capped.toLoad);
+    CHECK(full.toLoad.empty());
+    CHECK(PlanTileStreaming(grid, 512.0, 512.0, 5000.0, 0, {}).toLoad.empty());
+}
+
 int main()
 {
     TestTileMaths();
@@ -236,6 +285,7 @@ int main()
     TestApronHoldsTheNeighbours();
     TestSeamlessNormals();
     TestTiledBakeEqualsOneBigBake();
+    TestStreamingPlan();
     if (g_failures == 0) std::printf("world_grid_test: all passed\n");
     return g_failures == 0 ? 0 : 1;
 }

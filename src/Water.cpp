@@ -760,10 +760,10 @@ void Water::SetSceneWind(const WindSettings& wind)
 	if (settings_.windSource == WindSource::Scene && !settings_.HasCurrent()) RebuildWaves();
 }
 
-void Water::RefreshShoreDepth(const Terrain* terrain)
+void Water::RefreshShoreDepth(const std::vector<const Terrain*>& terrains, std::uint64_t groundStamp)
 {
 	if (!device_ || !renderable_ || !renderable_->GetModel()) return;
-	if (!terrain || !terrain->IsValid()) {
+	if (terrains.empty()) {
 		if (depthView_ || shoreKeyValid_) { ReleaseShoreMap(); shoreKeyValid_ = false; }
 		return;
 	}
@@ -772,12 +772,10 @@ void Water::RefreshShoreDepth(const Terrain* terrain)
 	// heights or its placement do.)
 	const std::array<float, 12> key = { position_.x, position_.y, position_.z, rotation_.x, rotation_.y, rotation_.z,
 										scale_.x, scale_.y, scale_.z, settings_.size, settings_.sizeZ, settings_.height };
-	if (shoreKeyValid_ && key == shoreKey_ && terrain == shoreTerrain_ && terrain->GetRevision() == shoreTerrainRevision_ &&
-		shoreLevelRevision_ == riverLevelRevision_) return;
+	if (shoreKeyValid_ && key == shoreKey_ && groundStamp == shoreGroundStamp_ && shoreLevelRevision_ == riverLevelRevision_) return;
 	shoreKey_ = key;
 	shoreLevelRevision_ = riverLevelRevision_;
-	shoreTerrain_ = terrain;
-	shoreTerrainRevision_ = terrain->GetRevision();
+	shoreGroundStamp_ = groundStamp;
 	shoreKeyValid_ = true;
 
 	int width = 0, height = 0;
@@ -789,7 +787,16 @@ void Water::RefreshShoreDepth(const Terrain* terrain)
 			worldX = XMVectorGetX(p);
 			worldZ = XMVectorGetZ(p);
 		},
-		[terrain](float worldX, float worldZ, float& groundY) { return terrain->GetHeightAt(worldX, worldZ, groundY); },
+		[&terrains](float worldX, float worldZ, float& groundY) {   // the highest ground of the terrains that cover this point
+			bool found = false;
+			for (const Terrain* terrain : terrains) {
+				float height = 0.0f;
+				if (!terrain->GetHeightAt(worldX, worldZ, height)) continue;
+				if (!found || height > groundY) groundY = height;
+				found = true;
+			}
+			return found;
+		},
 		riverLevels_.empty() ? nullptr : &riverLevels_);   // a river that falls: depth = its level there - the ground (ignored if it is not this map's size)
 
 	D3D11_TEXTURE2D_DESC desc{};

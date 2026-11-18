@@ -56,6 +56,19 @@ double DistanceToTile(const WorldGridSettings& grid, TileCoord tile, double worl
 // same every time). The streaming list of a later patch.
 std::vector<TileCoord> TilesWithin(const WorldGridSettings& grid, double worldX, double worldZ, double radius);
 
+// --- streaming ------------------------------------------------------------------------------------------------------
+// What to load and what to unload as the camera moves (lesson 49). A pure decision: the caller does the loading.
+//  - A tile is WANTED when it comes within `viewDistance` of the camera.
+//  - A loaded tile is only UNLOADED when it is farther than viewDistance + half a tile. The gap is the hysteresis: a camera
+//    standing on the edge of the loaded area, or wobbling across it, would otherwise load and drop the same tile every frame.
+//  - At most `maxTiles` stay loaded, nearest first.
+struct StreamingPlan {
+    std::vector<TileCoord> toLoad;     // nearest first
+    std::vector<TileCoord> toUnload;
+};
+StreamingPlan PlanTileStreaming(const WorldGridSettings& grid, double cameraX, double cameraZ, double viewDistance, int maxTiles,
+                                const std::vector<TileCoord>& loaded);
+
 // --- what the ground is ---------------------------------------------------------------------------------------------
 // The ground as a function of the world position alone. 0..1, like every height in the engine (times heightScale = metres).
 class WorldHeightSource {

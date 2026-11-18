@@ -176,6 +176,9 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
             }
         }
         entry["settings"] = settings;
+    } else if (const auto* world = dynamic_cast<const TerrainWorld*>(&object)) {
+        entry["type"] = "TerrainWorld";
+        entry["settings"] = world->GetSettings();
     } else {
         warn(std::string("Skipped an object this editor cannot save yet: ") + object.GetEditorName());
         return nullptr;
@@ -308,6 +311,8 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
             }
         }
         scatter->SetSettings(loaded);
+    } else if (auto* world = dynamic_cast<TerrainWorld*>(&object)) {
+        world->SetSettings(entry.value("settings", TerrainWorldSettings{}));
     }
 
     // Transform LAST: setting the transform of some objects (the cube, the water) changes other state.
@@ -381,7 +386,6 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
     const fs::path folder = file.parent_path();
     int sculptedTerrains = 0;   // how many sculpted terrains have been written so far (names their PNG files)
     int paintedTerrains = 0;    // the same for painted ones
-    int skippedTiles = 0;       // tiles of a terrain world, which are not saved yet
 
     json root;
     root["format"] = kFormatName;
@@ -395,9 +399,10 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
     json objects = json::array();
     for (const auto& owned : scene.GetObjects()) {
         if (!owned) continue;
-        // The tiles of a terrain world are made from the world's settings, which are not saved yet (a later lesson). Saving a tile
-        // as an ordinary terrain would reload it as a heightmap terrain, so it is left out and the file says so.
-        if (const auto* tile = dynamic_cast<const Terrain*>(owned.get()); tile && tile->IsTile()) { ++skippedTiles; continue; }
+        // The tiles of a terrain world are derived from the world's settings, which ARE saved (the TerrainWorld object): the
+        // world grows its tiles again when the scene is loaded. A tile saved as an ordinary terrain would come back as a
+        // heightmap terrain, so tiles are left out.
+        if (const auto* tile = dynamic_cast<const Terrain*>(owned.get()); tile && tile->IsTile()) continue;
         json entry = DescribeObject(*owned, &folder, &warnings, assetsRoot);
         if (entry.is_null()) continue;
         // A sculpted terrain's heights go in a 16-bit PNG next to the scene file, and the entry points at it. If that
@@ -427,7 +432,6 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
         }
         objects.push_back(std::move(entry));
     }
-    if (skippedTiles > 0) warnings.push_back(std::to_string(skippedTiles) + " tiles of a terrain world were not saved: a world is not saved yet, it comes back empty when this scene is loaded.");
     root["objects"] = std::move(objects);
 
     // Write to a temporary file first, then swap it in: a crash half-way through must never leave a
@@ -499,6 +503,7 @@ bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std:
             else if (type == "Cube") created = scene.Add<Cube>(device);
             else if (type == "Light") created = scene.Add<LightObject>(LightKind::Point);
             else if (type == "Scatter") created = scene.Add<ScatterObject>(device);
+            else if (type == "TerrainWorld") created = scene.Add<TerrainWorld>(device);
             else if (type == "Model") {
                 fs::path modelPath(entry.value("path", ""));
                 if (modelPath.is_relative()) modelPath = sceneFolder / modelPath;   // stored relative to the scene file

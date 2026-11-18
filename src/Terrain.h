@@ -108,6 +108,16 @@ struct TerrainSettings {
 	bool SameSplatRules(const TerrainSettings& other) const; // true if the rules that decide where each layer goes agree (they are baked, lesson 29)
 };
 
+// The layer textures of a terrain (the two packed texture arrays and where they came from), as one value. A world keeps one so
+// that tiles loaded later share the textures of the first, even after the first tile itself has been unloaded (lesson 49).
+struct TerrainLayerSet {
+	std::shared_ptr<TextureArray> diffHeight;
+	std::shared_ptr<TextureArray> normRough;
+	int fileCounts[3] = {};
+	std::string mapPaths[kTerrainLayerCount][3];
+	bool IsValid() const { return diffHeight && normRough; }
+};
+
 // One tile of a world (lesson 48). The heights are not a picture stretched over the terrain: they come from `source`, a
 // function of the WORLD position, so neighbouring tiles agree along their shared edge (WorldGrid.h).
 struct TerrainTile {
@@ -121,8 +131,9 @@ public:
 	explicit Terrain(ID3D11Device* device);
 	// A terrain that is one TILE of a world. `material` supplies the look (layers, rules, LOD distances); its width, resolution
 	// and noise are replaced by the tile's own. `shareLayersFrom` lets tiles of one world use ONE set of layer textures instead
-	// of each reading and packing twelve images (null: this tile loads its own).
-	Terrain(ID3D11Device* device, const TerrainTile& tile, const TerrainSettings& material, const Terrain* shareLayersFrom);
+	// of each reading and packing twelve images (null, or not valid: this tile loads its own).
+	Terrain(ID3D11Device* device, const TerrainTile& tile, const TerrainSettings& material, const TerrainLayerSet* shareLayers);
+	TerrainLayerSet GetLayerSet() const;
 	~Terrain() override;
 
 	const char* GetEditorName() const override { return "Terrain"; }

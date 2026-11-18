@@ -102,12 +102,27 @@ void ShadowMap::Begin(ID3D11DeviceContext* ctx, const XMFLOAT3& lightDirection,
     // 2. The sun's camera: an orthographic box that wraps the bounding sphere.
     XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&lightDirection));
     if (XMVectorGetX(XMVector3LengthSq(dir)) < 0.5f) dir = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f);
-    const XMVECTOR target = XMLoadFloat3(&center);
-    const XMVECTOR eye = target - dir * radius;                 // one radius back, towards the sun
+    XMVECTOR target = XMLoadFloat3(&center);
+    XMVECTOR eye = target - dir * radius;                       // one radius back, towards the sun
     const XMVECTOR up = std::fabs(XMVectorGetY(dir)) > 0.99f
         ? XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f)                   // looking straight down: Y is not a usable "up"
         : XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    XMStoreFloat4x4(&view_, XMMatrixLookAtLH(eye, target, up));
+    XMMATRIX lightView = XMMatrixLookAtLH(eye, target, up);
+    // Snap the centre to whole texels IN THE SUN'S OWN SPACE. When the box follows the camera (a terrain world) its texel grid
+    // would otherwise slide over the ground as you walk, and every shadow edge would shimmer. Snapped, a shadow edge falls on
+    // the same texels from frame to frame; it only changes when the box has moved a whole texel. A box that does not move
+    // (the usual scene) is moved by less than one texel: nothing to see.
+    {
+        const float texel = 2.0f * radius / static_cast<float>(target_.GetWidth());
+        const XMVECTOR inLight = XMVector3TransformCoord(target, lightView);
+        const float x = XMVectorGetX(inLight), y = XMVectorGetY(inLight);
+        const XMVECTOR shift = XMVectorSet(std::floor(x / texel + 0.5f) * texel - x, std::floor(y / texel + 0.5f) * texel - y, 0.0f, 0.0f);
+        const XMVECTOR worldShift = XMVector3TransformNormal(shift, XMMatrixInverse(nullptr, lightView));
+        target += worldShift;
+        eye += worldShift;
+        lightView = XMMatrixLookAtLH(eye, target, up);
+    }
+    XMStoreFloat4x4(&view_, lightView);
     XMStoreFloat4x4(&proj_, XMMatrixOrthographicLH(2.0f * radius, 2.0f * radius, 0.0f, 2.0f * radius));
     XMStoreFloat3(&lightPosition_, eye);
     texelWorldSize_ = 2.0f * radius / static_cast<float>(target_.GetWidth());

@@ -15,6 +15,7 @@
 #include <vector>
 #include <string>
 #include "Scene.h"
+#include "TerrainWorld.h"
 #include "SurfaceMaterial.h"
 #include "Water.h"
 
@@ -69,6 +70,7 @@ private:
     void DrawShadowInspector();
     void DrawEnvironmentInspector();
     void DrawTerrainInspector(Terrain* terrain);
+    void DrawTerrainWorldInspector(TerrainWorld* world);
     void DrawSculptSection(Terrain* terrain);
     void DrawWaterInspector(Water* water);
     void DrawAddWaterItems();

@@ -96,8 +96,10 @@ public:
 	// --- the ground under the water (src/WaterShore.h) ---
 	// The scene calls this every frame. It measures the terrain under this body (depth = level - ground height) into a
 	// small map that the shaders and SampleHeight read, and only measures AGAIN when the terrain, the body's place or size,
-	// or its level changed. Null = no terrain: the body then has no shore effects at all.
-	void RefreshShoreDepth(const Terrain* terrain);
+	// or its level changed. No terrain (an empty list): the body then has no shore effects at all. A world is many terrains
+	// (tiles): the ground at a point is the highest of those that cover it. `groundStamp` changes whenever any of them is
+	// added, removed or edited (Scene::Update makes it), so a tile streaming in under the water makes it measure again.
+	void RefreshShoreDepth(const std::vector<const Terrain*>& terrains, std::uint64_t groundStamp);
 	bool HasShoreDepth() const { return depthView_ != nullptr; }
 	// The river's curve (lesson 38). Measured again when the curve, the body or its size changes (called once a frame by the scene).
 	void RefreshRiverFlow();
@@ -165,8 +167,7 @@ private:
 	DirectX::XMFLOAT4X4 worldToLocal_{};
 	bool worldToLocalValid_ = false;
 	std::array<float, 12> shoreKey_{};     // body place, turn, scale, size and level when the map was last measured...
-	unsigned shoreTerrainRevision_ = 0;    // ...and which version of which terrain
-	const Terrain* shoreTerrain_ = nullptr;
+	std::uint64_t shoreGroundStamp_ = 0;   // ...and which terrains, in which version
 	bool shoreKeyValid_ = false;
 	std::vector<Tile> tiles_;
 	WindSettings sceneWind_;                // the scene's wind as last pushed by the scene (SetSceneWind)
