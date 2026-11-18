@@ -90,20 +90,46 @@ std::vector<TileCoord> TilesWithin(const WorldGridSettings& grid, double worldX,
     return tiles;
 }
 
+void WorldBounds::Normalize()
+{
+    if (!bounded) return;
+    if (minX > maxX) std::swap(minX, maxX);
+    if (minZ > maxZ) std::swap(minZ, maxZ);
+    maxX = (std::min)(maxX, minX + kMaxTilesAcross - 1);
+    maxZ = (std::min)(maxZ, minZ + kMaxTilesAcross - 1);
+}
+
+WorldBounds WorldBounds::Covering(const WorldGridSettings& grid, double minXm, double minZm, double maxXm, double maxZm)
+{
+    const double size = grid.TileSize();
+    // A tiny tolerance, so that a rectangle that ends exactly on a border (240 m picture, 240 m tile) is not rounded up by the
+    // last bit of floating-point noise into a second, empty tile.
+    const double eps = 1e-9;
+    WorldBounds bounds;
+    bounds.bounded = true;
+    bounds.minX = static_cast<int>(std::floor(minXm / size + eps));
+    bounds.minZ = static_cast<int>(std::floor(minZm / size + eps));
+    bounds.maxX = (std::max)(bounds.minX, static_cast<int>(std::ceil(maxXm / size - eps)) - 1);
+    bounds.maxZ = (std::max)(bounds.minZ, static_cast<int>(std::ceil(maxZm / size - eps)) - 1);
+    bounds.Normalize();
+    return bounds;
+}
+
 StreamingPlan PlanTileStreaming(const WorldGridSettings& grid, double cameraX, double cameraZ, double viewDistance, int maxTiles,
-                                const std::vector<LoadedTile>& loaded)
+                                const std::vector<LoadedTile>& loaded, const WorldBounds& bounds)
 {
     StreamingPlan plan;
     maxTiles = std::max(maxTiles, 0);
     const double unloadDistance = viewDistance + 0.5 * grid.TileSize();
     std::vector<LoadedTile> kept;
     for (const LoadedTile& tile : loaded) {
-        if (DistanceToTile(grid, tile.coord, cameraX, cameraZ) > unloadDistance) plan.toUnload.push_back(tile.coord);
+        if (!bounds.Contains(tile.coord) || DistanceToTile(grid, tile.coord, cameraX, cameraZ) > unloadDistance) plan.toUnload.push_back(tile.coord);
         else kept.push_back(tile);
     }
     int newTiles = 0;   // a rebuild at another level does not change how many tiles are alive
     // Nearest first, so that if the cap bites it is the far tiles that go.
     for (const TileCoord& tile : TilesWithin(grid, cameraX, cameraZ, viewDistance)) {
+        if (!bounds.Contains(tile)) continue;   // the edge of a bounded world: no land beyond it
         const auto found = std::find_if(kept.begin(), kept.end(), [&](const LoadedTile& other) { return other.coord == tile; });
         const double distance = DistanceToTile(grid, tile, cameraX, cameraZ);
         if (found == kept.end()) {

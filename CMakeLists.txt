@@ -99,6 +99,7 @@ add_library(Engine STATIC
 	src/DemoScene.cpp
 	src/Terrain.cpp
 	src/WorldGrid.cpp
+	src/WorldPicture.cpp
 	src/WorldRivers.cpp
 	src/TerrainWorld.cpp
 	src/Heightfield.cpp
@@ -245,6 +246,9 @@ if(BUILD_TESTS)
     add_executable(WorldGridTests tests/world_grid_test.cpp src/WorldGrid.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
     target_include_directories(WorldGridTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME WorldGrid COMMAND WorldGridTests)
+    add_executable(WorldPictureTests tests/world_picture_test.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/Heightfield.cpp src/Png16.cpp src/libs/stb_image.cpp)
+    target_include_directories(WorldPictureTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME WorldPicture COMMAND WorldPictureTests)
     add_executable(ImageDownscaleTests tests/image_downscale_test.cpp)
     target_include_directories(ImageDownscaleTests PRIVATE ${CMAKE_SOURCE_DIR}/editor)
     add_test(NAME ImageDownscale COMMAND ImageDownscaleTests)

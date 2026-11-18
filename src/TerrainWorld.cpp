@@ -11,6 +11,11 @@ void TerrainWorldSettings::Clamp()
     grid.Clamp();
     fractal.octaves = std::clamp(fractal.octaves, 1, 8);
     fractal.baseWavelength = std::clamp(fractal.baseWavelength, 50.0f, 50000.0f);
+    if (source != WorldSourceKind::Fractal && source != WorldSourceKind::Picture) source = WorldSourceKind::Fractal;   // a scene file from a newer version
+    pictureWidth = std::clamp(pictureWidth, kPictureWidthMin, kPictureWidthMax);
+    pictureOffsetX = std::clamp(pictureOffsetX, -kPictureOffsetMax, kPictureOffsetMax);
+    pictureOffsetZ = std::clamp(pictureOffsetZ, -kPictureOffsetMax, kPictureOffsetMax);
+    bounds.Normalize();
     heightScale = std::clamp(heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax);
     viewDistance = std::clamp(viewDistance, kViewDistanceMin, kViewDistanceMax);
     if (static_cast<int>(rivers.size()) > kMaxRivers) rivers.resize(kMaxRivers);
@@ -84,6 +89,34 @@ bool TerrainWorld::RemoveRiver(int id)
     return true;
 }
 
+// Makes the ground (source_) and the edge of the world (activeBounds_) from the settings. If the picture cannot be read the world
+// has no land: failed_ stops the streaming until the settings change, and status_ says why.
+void TerrainWorld::BuildSource()
+{
+    status_.clear();
+    activeBounds_ = settings_.bounds;
+    if (settings_.source != WorldSourceKind::Picture) {
+        source_ = std::make_shared<const FractalHeightSource>(settings_.fractal);
+        return;
+    }
+    const std::string path = settings_.picturePath.empty() ? std::string(Terrain::DefaultHeightmapPath()) : settings_.picturePath;
+    auto image = std::make_shared<HeightImage>();
+    std::string error;
+    if (!LoadHeightImage(path, *image, error)) {
+        status_ = "Terrain world: " + error;
+        LOG_ERROR(status_);
+        source_ = nullptr;
+        activeBounds_ = WorldBounds{};
+        failed_ = true;   // no ground, no tiles; changing a setting (another picture) tries again
+        return;
+    }
+    const double width = settings_.pictureWidth;
+    const double depth = PictureDepth(width, image->width, image->height);
+    const double offsetX = settings_.pictureOffsetX, offsetZ = settings_.pictureOffsetZ;
+    source_ = std::make_shared<const PictureHeightSource>(image, offsetX, offsetZ, width, depth);
+    activeBounds_ = WorldBounds::Covering(settings_.grid, offsetX, offsetZ, offsetX + width, offsetZ + depth);
+}
+
 void TerrainWorld::UnloadAll(Scene& scene)
 {
     for (const auto& entry : tiles_) scene.Remove(entry.second);
@@ -96,7 +129,7 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
     if (!device_) return;
     if (dirty_) {
         UnloadAll(scene);
-        source_ = std::make_shared<const FractalHeightSource>(settings_.fractal);
+        BuildSource();
         layers_ = TerrainLayerSet{};   // the material may have changed with the settings: load the textures again
         dirty_ = false;
     }
@@ -112,7 +145,7 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
     for (const auto& entry : tiles_) {
         if (const auto* terrain = dynamic_cast<const Terrain*>(scene.Find(entry.second))) loaded.push_back({ terrain->GetTile().coord, terrain->GetTile().lod });
     }
-    const StreamingPlan plan = PlanTileStreaming(settings_.grid, cameraX, cameraZ, settings_.viewDistance, TerrainWorldSettings::kMaxTiles, loaded);
+    const StreamingPlan plan = PlanTileStreaming(settings_.grid, cameraX, cameraZ, settings_.viewDistance, TerrainWorldSettings::kMaxTiles, loaded, activeBounds_);
 
     for (const TileCoord& tile : plan.toUnload) {
         const auto it = tiles_.find(Key(tile));

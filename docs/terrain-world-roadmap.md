@@ -18,8 +18,8 @@ Verify each row against the current `Terrain` code before ticking it.
 
 | Old terrain feature                          | World equivalent                              | Done |
 |----------------------------------------------|-----------------------------------------------|------|
-| Heightmap from a picture                      | Picture as a world *source*                   | [ ]  |
-| Height scale in real units (km / metres)      | World size in metres, metres-per-texel, max height in metres | [ ] |
+| Heightmap from a picture                      | Picture as a world *source*                   | [~]  |
+| Height scale in real units (km / metres)      | World size in metres, metres-per-texel, max height in metres | [~] |
 | Chunking / LOD                                | Per-tile chunks, LOD across tile borders      | [ ] |
 | Automatic texturing (height / slope rules)    | Same rules, evaluated per tile                | [ ] |
 | Splat-map painting (RGBA, 4 layers)           | Per-tile splat maps, seamless across borders  | [ ] |
@@ -40,6 +40,23 @@ Verify each row against the current `Terrain` code before ticking it.
 - Heightmap scale is explicit: `metresPerTexel`, `minHeight`, `maxHeight`.
   Never an implicit "0..1 times some number".
 - Acceptance: the existing demo terrain loads as a world and looks the same.
+
+**Phase 1 status** (`[~]` in the table = written and unit-tested, not yet run in the editor):
+
+- `WorldBounds` (`WorldGrid.h`): a rectangle of tiles. `PlanTileStreaming` never wants a tile outside it and unloads one that
+  falls outside it. `WorldBounds::Covering` gives the tiles that cover a rectangle of metres (an exact fit does not pull in a
+  second tile).
+- `PictureHeightSource` (`WorldPicture.h`): a picture placed in the world by its corner, with the old terrain's sampling
+  convention, so the same picture gives the same heights. `LoadHeightImage` reads 8-bit and 16-bit images.
+- `TerrainWorldSettings`: `source` (fractal or picture), `picturePath`, `pictureWidth`, `pictureOffsetX/Z`, `bounds`.
+  Saved with the scene; a scene saved before this loads as the endless fractal world it was.
+- Editor: Ground combo, picture browse/width/corner, bounded fractal worlds, and
+  *Add > Terrain world from this terrain's heightmap* (one tile as wide as the terrain, same cell size, same place).
+- Tests: `tests/world_picture_test.cpp` (sampling, placement, shared tile edges at every level of detail, bounds, bounded
+  streaming, "one tile equals the old terrain sample for sample", 16-bit PNG round trip).
+- Not done in this phase: the heightmap loader still exists twice (`LoadHeightmapFile` in `Terrain.cpp` and `LoadHeightImage`);
+  the copy in `Terrain.cpp` goes with the old terrain. A picture whose shape is not a whole number of tiles shows the repeated
+  edge pixel in the unused part of its last tile.
 
 ### Phase 2 - Waterfalls on the world (roadmap 20d)
 - The river carve is already part of the world, so this phase builds on it.

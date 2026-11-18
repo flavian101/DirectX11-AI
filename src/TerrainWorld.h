@@ -4,21 +4,42 @@
 #include "SceneObject.h"
 #include "Terrain.h"
 #include "WorldGrid.h"
+#include "WorldPicture.h"
 #include <d3d11.h>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
 class Scene;
 
+// Where the ground of a world comes from (phase 1 of docs/terrain-world-roadmap.md). Both are functions of the WORLD position, so
+// tiles meet without seams either way.
+enum class WorldSourceKind : int {
+    Fractal = 0,   // endless hills from layered noise (the default)
+    Picture = 1,   // a heightmap picture placed in the world; the world is bounded to the tiles that cover it
+};
+
 struct TerrainWorldSettings {
     WorldGridSettings grid;         // tile size and metres per cell (8 chunks x 32 cells x 4 m = 1024 m tiles)
-    FractalWorldSettings fractal;   // the hills: seed, octaves, size of the biggest features in metres
+    WorldSourceKind source = WorldSourceKind::Fractal;
+    FractalWorldSettings fractal;   // the hills: seed, octaves, size of the biggest features in metres (source Fractal)
+    // Source Picture: an 8-bit or 16-bit greyscale image. Its top-left corner is at (pictureOffsetX, pictureOffsetZ) in world
+    // metres, it is `pictureWidth` metres wide and its depth follows its shape, like the old terrain. Empty path: the default
+    // heightmap. The world is bounded to the tiles covering the picture (the `bounds` below are ignored).
+    std::string picturePath;
+    float pictureWidth = 1024.0f;
+    float pictureOffsetX = 0.0f, pictureOffsetZ = 0.0f;
+    // The edge of the world for the Fractal source: unbounded (endless) unless bounded is set. A bounded fractal world is a
+    // rectangle of tiles, which is also how a small test world is made.
+    WorldBounds bounds;
     float heightScale = 240.0f;     // metres for a ground height of 1.0
     float viewDistance = 5000.0f;   // tiles closer than this to the camera are loaded (far ones at a lower level of detail)
     std::vector<WorldRiver> rivers; // the rivers dug into the ground (lesson 51): part of the world, so they survive streaming
 
+    static constexpr float kPictureWidthMin = 40.0f, kPictureWidthMax = 20000.0f;
+    static constexpr float kPictureOffsetMax = 100000.0f;
     static constexpr float kViewDistanceMin = 500.0f, kViewDistanceMax = 8000.0f;
     static constexpr int kMaxRivers = 32, kMaxRiverSamples = 4096;
     static constexpr int kMaxTiles = 256;   // however far you look, at most this many tiles are alive (far tiles are cheap: 1/4, 1/16, 1/64 of the cells)
@@ -42,6 +63,11 @@ public:
     // id to put a removed one back under the same name (redo).
     int AddRiver(WorldRiver river);
     bool RemoveRiver(int id);
+    // The edge the world has right now: the settings' bounds for the fractal source, the tiles that cover the picture for the
+    // picture source (known once the picture is read). `bounded` is false for an endless world.
+    const WorldBounds& ActiveBounds() const { return activeBounds_; }
+    // Empty when all is well; otherwise why the world has no land (for example: the picture could not be read). Shown by the inspector.
+    const std::string& StatusMessage() const { return status_; }
     int LoadedTileCount() const { return static_cast<int>(tiles_.size()); }
     int LoadedTileCountAtLod(int lod) const { return lod >= 0 && lod <= WorldGridSettings::kTileLodMax ? lodCounts_[lod] : 0; }
 
@@ -69,7 +95,10 @@ private:
     std::shared_ptr<const std::vector<WorldRiver>> riversSnapshot_;   // what new tiles are built with: replaced whenever the rivers change
     std::unordered_set<std::uint64_t> staleTiles_;                    // loaded tiles that a river change touched: rebuilt first
     int nextRiverId_ = 1;
+    WorldBounds activeBounds_;   // see ActiveBounds()
+    std::string status_;
     static TileCoord CoordOfKey(std::uint64_t key) { return { static_cast<int>(static_cast<std::uint32_t>(key >> 32)), static_cast<int>(static_cast<std::uint32_t>(key)) }; }
+    void BuildSource();                           // the ground and the edge of the world, from the settings (see TerrainWorld.cpp)
     void RefreshRivers();                         // new snapshot, and ids for rivers that have none
     void MarkTilesTouchedBy(const WorldRiver& river);
     int lodCounts_[WorldGridSettings::kTileLodMax + 1] = {};   // loaded tiles per level of detail (for the inspector)

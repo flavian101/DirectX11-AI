@@ -54,6 +54,25 @@ struct WorldGridSettings {
     WorldGridSettings ForLod(int level) const;    // the grid of a tile at that level (clamped to MaxTileLod)
 };
 
+// THE EDGE OF THE WORLD (phase 1 of docs/terrain-world-roadmap.md). A world is endless unless it is BOUNDED: a rectangle of
+// tiles, given by its first and last tile (both inclusive, negative numbers allowed). No tile outside it is ever wanted, and a
+// loaded one outside it is dropped. A small terrain is then a small world: the old single terrain is "one tile, heights from a
+// picture" (roadmap, "Phasing out the single terrain").
+struct WorldBounds {
+    bool bounded = false;                       // false: the world has no edge and the numbers below are ignored
+    int minX = 0, minZ = 0, maxX = 0, maxZ = 0; // first and last tile, inclusive
+
+    static constexpr int kMaxTilesAcross = 64;  // a bounded world is at most 64 x 64 tiles (it keeps the numbers small and the editor sane)
+
+    bool Contains(TileCoord tile) const { return !bounded || (tile.x >= minX && tile.x <= maxX && tile.z >= minZ && tile.z <= maxZ); }
+    int TilesAcrossX() const { return bounded ? maxX - minX + 1 : 0; }
+    int TilesAcrossZ() const { return bounded ? maxZ - minZ + 1 : 0; }
+    void Normalize();   // swaps first/last if they are the wrong way round and keeps each side within kMaxTilesAcross
+    // The smallest bounded rectangle of tiles that covers the world rectangle [minXm, maxXm] x [minZm, maxZm] (metres). A
+    // rectangle whose edge lies exactly on a tile border does not pull in the next tile.
+    static WorldBounds Covering(const WorldGridSettings& grid, double minXm, double minZm, double maxXm, double maxZm);
+};
+
 // --- where things are -----------------------------------------------------------------------------------------------
 TileCoord TileContaining(const WorldGridSettings& grid, double worldX, double worldZ);
 void TileCenter(const WorldGridSettings& grid, TileCoord tile, double& worldX, double& worldZ);
@@ -84,8 +103,9 @@ struct StreamingPlan {
     std::vector<TileRequest> toLoad;   // nearest first. A request for a tile that is already loaded at another level means "rebuild it"
     std::vector<TileCoord> toUnload;
 };
+//  - In a BOUNDED world (WorldBounds) a tile outside the bounds is never wanted, and a loaded one outside them is unloaded.
 StreamingPlan PlanTileStreaming(const WorldGridSettings& grid, double cameraX, double cameraZ, double viewDistance, int maxTiles,
-                                const std::vector<LoadedTile>& loaded);
+                                const std::vector<LoadedTile>& loaded, const WorldBounds& bounds = WorldBounds{});
 
 // The level a tile should be at, given how far its nearest edge is from the camera. Level 1 starts 1.5 tiles out, level 2 at 3,
 // level 3 at 6. `currentLod` is the level it is loaded at (-1 if it is not): it is kept until the distance is a quarter of a

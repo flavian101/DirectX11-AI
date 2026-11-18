@@ -83,7 +83,7 @@ This is a design note, not a lesson. It answers three questions: how big worlds 
 
 A tile already IS a `Terrain`, so the world is not a second system next to the old one: it is the manager that builds, streams and edits many of them. The old single terrain is the special case "one tile, heights from a picture, edited by hand". The plan is to make the world cover that case, one capability at a time, and only then retire the single-terrain path:
 
-1. **Sources.** A height source that is a picture placed in the world (the heightmap terrain), beside the fractal one; and a world that is BOUNDED (a rectangle of tiles) instead of endless. A small terrain is then a small world: one tile as wide as the old terrain (for 240 m: 8 chunks of about 0.94 m).
+1. **Sources** (first version written, see `docs/terrain-world-roadmap.md`, Phase 1). A height source that is a picture placed in the world (the heightmap terrain), beside the fractal one; and a world that is BOUNDED (a rectangle of tiles) instead of endless. A small terrain is then a small world: one tile as wide as the old terrain (for 240 m: 8 chunks of about 0.94 m).
 2. **Edits.** Sculpting and painting stored per tile in the world (sparse height deltas and paint weights, saved with the scene), applied on top of the source when a tile is built, so they survive streaming and cross tile borders. This is what the river carve already does for rivers.
 3. **Scatter** reads the ground of every tile.
 4. **Migration.** Loading an old scene with a `Terrain` turns it into a bounded heightmap world carrying its sculpting and paint. Then the single-terrain code (`GetTerrain()` callers, `Terrain::CarveRiver`, heightmap-only settings) can go.

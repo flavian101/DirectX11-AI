@@ -139,6 +139,7 @@ private:
     void DrawHistoryPanel();
     void HandleSceneFileRequests(LayerContext& ctx);
     void HandleTerrainFileRequest(LayerContext& ctx);
+    void HandleWorldPictureRequest(LayerContext& ctx);   // Terrain world > Picture > Browse...
     void ShowMessage(const std::string& title, const std::string& text);
     void DrawTransformEditor(SceneObject* object);
 
@@ -204,6 +205,8 @@ private:
     int addLightKind_ = -1;   // a light to add next frame: 0 sun, 1 moon, 2 point light (-1 = none)
     bool addScatterRequested_ = false;   // add a scatter (trees and rocks on the terrain) at the start of the next frame
     bool addTerrainWorldRequested_ = false;   // add a 3 x 3 terrain world (lesson 48) at the start of the next frame
+    bool addWorldFromTerrainRequested_ = false;   // rebuild the scene's terrain as a bounded terrain world (roadmap phase 1) at the start of the next frame
+    bool worldPictureRequested_ = false;          // open the image dialog for the terrain world's picture next frame
     int addWaterType_ = -1;           // >= 0: add a water body of this WaterBodyType at the start of the next frame
     bool duplicateRequested_ = false;
     bool deleteRequested_ = false;

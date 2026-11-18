@@ -364,6 +364,7 @@ void EditorLayer::OnFrame(LayerContext& ctx)
     }
     HandleSceneFileRequests(ctx);   // File > Open / Save, also before the UI frame starts
     HandleTerrainFileRequest(ctx);  // Terrain > Texture files
+    HandleWorldPictureRequest(ctx); // Terrain world > Picture
     ProcessPendingActions(ctx);     // add / duplicate / delete asked for by the previous frame's UI
 
     // Apply the size the Viewport panel measured LAST frame. The panel only knows its size while
@@ -515,6 +516,12 @@ void EditorLayer::DrawMenuBar()
         if (ImGui::MenuItem("Model from file...")) importRequested_ = true;
         if (ImGui::MenuItem("Terrain world (streaming tiles)", nullptr, false, scene_ && !scene_->FindFirst<TerrainWorld>())) addTerrainWorldRequested_ = true;
         ImGui::SetItemTooltip("A world of 1 km terrain tiles whose heights come from one world function, so the tiles meet without seams.\nTiles load and unload around the camera. Select the world in the Hierarchy to change its seed, hills,\nheight and view distance. Tiles cannot be sculpted or moved yet.");
+        {
+            const Terrain* single = scene_ ? scene_->GetTerrain() : nullptr;
+            const bool canRebuild = scene_ && single && !single->IsTile() && !scene_->FindFirst<TerrainWorld>();
+            if (ImGui::MenuItem("Terrain world from this terrain's heightmap", nullptr, false, canRebuild)) addWorldFromTerrainRequested_ = true;
+            ImGui::SetItemTooltip("Rebuilds the terrain as a small BOUNDED world: one tile as wide as the terrain, with the same heightmap, height\nand cell size, standing where the terrain stands. The terrain itself stays until you delete it. Sculpting, painting and\nrivers are not carried over yet (they come with the world's edits).");
+        }
         if (ImGui::MenuItem("Scatter on terrain (trees, rocks)", nullptr, false, scene_ && scene_->GetTerrain())) addScatterRequested_ = true;
         ImGui::SetItemTooltip("Grows trees and rocks over the terrain by rules (which layer, how steep, how high),\ndrawn with instancing, frustum culling and levels of detail. Needs a terrain.");
         ImGui::EndMenu();
@@ -965,6 +972,34 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
             // Only the world is added (and undoable): its tiles are streamed in around the camera by Scene::Update.
             TerrainWorld* world = ctx.scene.Add<TerrainWorld>(ctx.renderer.GetDevice());
             if (world) { RecordAdded(world, "Add terrain world"); Select(world); }
+        }
+    }
+    if (addWorldFromTerrainRequested_) {
+        addWorldFromTerrainRequested_ = false;
+        const Terrain* single = ctx.scene.GetTerrain();
+        if (single && !single->IsTile() && !ctx.scene.FindFirst<TerrainWorld>()) {
+            // The old terrain is centred on its position and its width, depth and height are scaled by its transform. The world's picture
+            // is placed by its corner, so the corner is the position minus half the size. The world's tiles start at ground level 0.
+            DirectX::XMFLOAT3 position, rotation, scale;
+            if (!single->GetEditorTransform(position, rotation, scale)) { position = { 0.0f, 0.0f, 0.0f }; scale = { 1.0f, 1.0f, 1.0f }; }
+            const HeightfieldLayout& layout = single->GetHeightfield().GetLayout();
+            const float width = layout.sizeX * scale.x, depth = layout.sizeZ * scale.z;
+
+            TerrainWorldSettings settings;
+            settings.source = WorldSourceKind::Picture;
+            settings.picturePath = single->GetHeightmapPath();
+            settings.pictureWidth = width;
+            settings.pictureOffsetX = position.x - 0.5f * width;
+            settings.pictureOffsetZ = position.z - 0.5f * depth;
+            settings.heightScale = single->GetSettings().heightScale * scale.y;
+            settings.grid = WorldGridForTerrain(width, single->GetSettings().maxCells);
+            TerrainWorld* world = ctx.scene.Add<TerrainWorld>(ctx.renderer.GetDevice());
+            if (world) {
+                world->SetSettings(settings);
+                world->SetName("Terrain world (from terrain)");
+                RecordAdded(world, "Add terrain world from terrain");
+                Select(world);
+            }
         }
     }
     if (addScatterRequested_) {
@@ -1442,6 +1477,23 @@ void EditorLayer::HandleTerrainFileRequest(LayerContext& ctx)
         ShowMessage("Could not use that image", "The image could not be read (or the terrain could not be rebuilt with it):\n" + path);
     } else if (!IsInsideAssets(path, AssetsRootText())) {
         ShowMessage("Image applied, with a warning", "That image is outside the assets folder, so it will not be shipped with the game.\nCopy it into assets/ (for example assets/Terrain/<Layer>/) and choose it again from there.");
+    }
+}
+
+void EditorLayer::HandleWorldPictureRequest(LayerContext& ctx)
+{
+    if (!worldPictureRequested_) return;
+    worldPictureRequested_ = false;
+    TerrainWorld* world = ctx.scene.FindFirst<TerrainWorld>();
+    if (!world) return;
+    const std::string path = PickImageFile(hwnd_);
+    if (path.empty()) return;   // cancelled
+    TerrainWorldSettings settings = world->GetSettings();
+    settings.source = WorldSourceKind::Picture;
+    settings.picturePath = path;
+    world->SetSettings(settings);   // every tile is rebuilt; if the picture cannot be read the inspector says so
+    if (!IsInsideAssets(path, AssetsRootText())) {
+        ShowMessage("Image applied, with a warning", "That image is outside the assets folder, so it will not be shipped with the game.\nCopy it into assets/ and choose it again from there.");
     }
 }
 
@@ -2732,14 +2784,66 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
     bool commit = false;
     auto commitOnRelease = [&commit] { if (ImGui::IsItemDeactivatedAfterEdit()) commit = true; };
 
-    ImGui::InputInt("Seed", &s.fractal.seed);
-    commitOnRelease();
-    ImGui::SliderInt("Detail layers", &s.fractal.octaves, 1, 8);
-    commitOnRelease();
-    ImGui::SetItemTooltip("How many sizes of bump are added together: more layers, finer detail on the hills.");
-    ImGui::SliderFloat("Hill size (m)", &s.fractal.baseWavelength, 200.0f, 20000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
-    commitOnRelease();
-    ImGui::SetItemTooltip("The width of the biggest hills and valleys.");
+    // WHERE THE GROUND COMES FROM (roadmap phase 1): endless fractal hills, or a heightmap picture placed in the world.
+    int sourceIndex = static_cast<int>(s.source);
+    if (ImGui::Combo("Ground", &sourceIndex, "Fractal hills (endless)\0Heightmap picture (bounded)\0")) {
+        s.source = static_cast<WorldSourceKind>(sourceIndex);
+        commit = true;
+    }
+    ImGui::SetItemTooltip("Fractal hills: endless noise, the same everywhere. Heightmap picture: the ground is an image placed in the world,\nand the world ends where the picture does. Either way the tiles meet without seams.");
+
+    if (s.source == WorldSourceKind::Picture) {
+        const std::string shownPath = s.picturePath.empty() ? std::string(Terrain::DefaultHeightmapPath()) + " (default)" : s.picturePath;
+        ImGui::TextUnformatted("Picture");
+        ImGui::SameLine(90.0f);
+        if (ImGui::Button("Browse...")) worldPictureRequested_ = true;
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", shownPath.c_str());
+        ImGui::SetItemTooltip("%s\nA 16-bit greyscale image gives much smoother slopes than 8-bit.", shownPath.c_str());
+        float widthKm = s.pictureWidth / 1000.0f;
+        if (ImGui::SliderFloat("Width (km)", &widthKm, TerrainWorldSettings::kPictureWidthMin / 1000.0f, 20.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) s.pictureWidth = widthKm * 1000.0f;
+        commitOnRelease();
+        ImGui::SetItemTooltip("How wide the picture is in the world. Its depth follows its shape.");
+        ImGui::DragFloat("Corner X (m)", &s.pictureOffsetX, 1.0f, -TerrainWorldSettings::kPictureOffsetMax, TerrainWorldSettings::kPictureOffsetMax, "%.0f");
+        commitOnRelease();
+        ImGui::DragFloat("Corner Z (m)", &s.pictureOffsetZ, 1.0f, -TerrainWorldSettings::kPictureOffsetMax, TerrainWorldSettings::kPictureOffsetMax, "%.0f");
+        commitOnRelease();
+        ImGui::SetItemTooltip("Where the picture's top-left corner is, in world metres.");
+        if (!world->StatusMessage().empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s", world->StatusMessage().c_str());
+    } else {
+        ImGui::InputInt("Seed", &s.fractal.seed);
+        commitOnRelease();
+        ImGui::SliderInt("Detail layers", &s.fractal.octaves, 1, 8);
+        commitOnRelease();
+        ImGui::SetItemTooltip("How many sizes of bump are added together: more layers, finer detail on the hills.");
+        ImGui::SliderFloat("Hill size (m)", &s.fractal.baseWavelength, 200.0f, 20000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+        commitOnRelease();
+        ImGui::SetItemTooltip("The width of the biggest hills and valleys.");
+        // The edge: endless, or a rectangle of tiles starting at tile (0, 0).
+        bool bounded = s.bounds.bounded;
+        if (ImGui::Checkbox("Bounded (a rectangle of tiles)", &bounded)) {
+            s.bounds.bounded = bounded;
+            if (bounded && s.bounds.maxX < s.bounds.minX) { s.bounds.minX = 0; s.bounds.minZ = 0; s.bounds.maxX = 3; s.bounds.maxZ = 3; }
+            commit = true;
+        }
+        ImGui::SetItemTooltip("Give the world an edge: only the tiles inside the rectangle exist. Unticked, the world is endless.");
+        if (s.bounds.bounded) {
+            int across[2] = { s.bounds.TilesAcrossX(), s.bounds.TilesAcrossZ() };
+            if (ImGui::DragInt2("Tiles (X, Z)", across, 0.2f, 1, WorldBounds::kMaxTilesAcross)) {
+                s.bounds.maxX = s.bounds.minX + (std::max)(across[0], 1) - 1;
+                s.bounds.maxZ = s.bounds.minZ + (std::max)(across[1], 1) - 1;
+            }
+            commitOnRelease();
+            int first[2] = { s.bounds.minX, s.bounds.minZ };
+            if (ImGui::DragInt2("First tile", first, 0.2f, -1000, 1000)) {
+                const int sizeX = s.bounds.TilesAcrossX(), sizeZ = s.bounds.TilesAcrossZ();   // moving the rectangle keeps its size
+                s.bounds.minX = first[0]; s.bounds.maxX = first[0] + sizeX - 1;
+                s.bounds.minZ = first[1]; s.bounds.maxZ = first[1] + sizeZ - 1;
+            }
+            commitOnRelease();
+            ImGui::SetItemTooltip("The tile at the top-left of the rectangle (tile 0, 0 starts at the world origin). Changing it moves the rectangle.");
+        }
+    }
     ImGui::SliderFloat("Height (m)", &s.heightScale, 20.0f, 500.0f, "%.0f");
     commitOnRelease();
     ImGui::SliderFloat("View distance (m)", &s.viewDistance, TerrainWorldSettings::kViewDistanceMin, TerrainWorldSettings::kViewDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
@@ -2749,6 +2853,12 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
     commitOnRelease();
     ImGui::SetItemTooltip("The resolution of the whole world. A tile always has 256 cells (8 chunks), so this sets its size too.");
     ImGui::TextDisabled("Tile: %d cells of %.1f m = %.0f m.   %d tiles loaded.", s.grid.TileCells(), s.grid.metresPerCell, s.grid.TileSize(), world->LoadedTileCount());
+    if (world->ActiveBounds().bounded) {
+        const WorldBounds& edge = world->ActiveBounds();
+        ImGui::TextDisabled("Bounded: %d x %d tiles = %.0f x %.0f m.", edge.TilesAcrossX(), edge.TilesAcrossZ(), edge.TilesAcrossX() * s.grid.TileSize(), edge.TilesAcrossZ() * s.grid.TileSize());
+    } else {
+        ImGui::TextDisabled("Endless: no edge.");
+    }
     ImGui::TextDisabled("By detail (full, 1/4, 1/16, 1/64 of the cells): %d, %d, %d, %d", world->LoadedTileCountAtLod(0), world->LoadedTileCountAtLod(1),
                         world->LoadedTileCountAtLod(2), world->LoadedTileCountAtLod(3));
     if (commit) world->SetSettings(s);   // every tile is rebuilt from the new settings

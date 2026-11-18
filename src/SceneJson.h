@@ -48,6 +48,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, {
 // listed: they are not part of what a scene IS.
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WorldGridSettings, chunksPerTile, metresPerCell)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FractalWorldSettings, seed, octaves, baseWavelength)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WorldBounds, bounded, minX, minZ, maxX, maxZ)   // (phase 1 of docs/terrain-world-roadmap.md)
 // A river of the world: its settings, and the path as [x, z, halfWidth, level] per sample (the carve needs no more than that).
 inline void to_json(json& j, const WorldRiver& river)
 {
@@ -75,7 +76,9 @@ inline void from_json(const json& j, WorldRiver& river)
         river.path.push_back(s);
     }
 }
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainWorldSettings, grid, fractal, heightScale, viewDistance, rivers)
+// source is stored as a number (0 fractal hills, 1 picture). A scene saved before the picture source existed has none of the
+// new keys and loads as the endless fractal world it always was.
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainWorldSettings, grid, source, fractal, picturePath, pictureWidth, pictureOffsetX, pictureOffsetZ, bounds, heightScale, viewDistance, rivers)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PostSettings, srgbEncode, exposureEV, toneMapper)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ShadowSettings, enabled, resolution, depthBias, slopeBias, normalOffset, strength)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WindSettings, direction, strength)
