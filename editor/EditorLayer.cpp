@@ -2737,12 +2737,23 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
     commitOnRelease();
     ImGui::SliderFloat("View distance (m)", &s.viewDistance, TerrainWorldSettings::kViewDistanceMin, TerrainWorldSettings::kViewDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
     commitOnRelease();
-    ImGui::SetItemTooltip("Tiles nearer than this to the camera are loaded. At most %d tiles are kept, however far you look.", TerrainWorldSettings::kMaxTiles);
+    ImGui::SetItemTooltip("Tiles nearer than this to the camera are loaded. Far tiles are built with fewer cells (every level has a quarter of\nthe cells of the one before), so a long view is cheap. At most %d tiles are kept.", TerrainWorldSettings::kMaxTiles);
     ImGui::SliderFloat("Metres per cell", &s.grid.metresPerCell, 1.0f, 16.0f, "%.1f");
     commitOnRelease();
     ImGui::SetItemTooltip("The resolution of the whole world. A tile always has 256 cells (8 chunks), so this sets its size too.");
     ImGui::TextDisabled("Tile: %d cells of %.1f m = %.0f m.   %d tiles loaded.", s.grid.TileCells(), s.grid.metresPerCell, s.grid.TileSize(), world->LoadedTileCount());
+    ImGui::TextDisabled("By detail (full, 1/4, 1/16, 1/64 of the cells): %d, %d, %d, %d", world->LoadedTileCountAtLod(0), world->LoadedTileCountAtLod(1),
+                        world->LoadedTileCountAtLod(2), world->LoadedTileCountAtLod(3));
     if (commit) world->SetSettings(s);   // every tile is rebuilt from the new settings
+
+    // Beyond the view distance there is no land at all. Fog is what makes that look like distance instead of an edge.
+    if (ImGui::Button("Fog: hide the edge")) {
+        FogSettings& fog = scene_->GetWeather().fog;
+        fog.enabled = true;
+        fog.visibility = s.viewDistance * 0.8f;   // 95% hidden a little before the last tile
+        fog.Clamp();
+    }
+    ImGui::SetItemTooltip("Turns the scene's fog on and sets its visibility to 80%% of the view distance, so the far tiles fade out before the\nworld ends. You can tune it in the Weather panel; the world never changes the fog by itself.");
 }
 
 void EditorLayer::DrawTerrainInspector(Terrain* terrain)

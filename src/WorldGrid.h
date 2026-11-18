@@ -44,6 +44,14 @@ struct WorldGridSettings {
     int TileCells() const { return chunksPerTile * kWorldChunkCells; }
     double TileSize() const { return static_cast<double>(TileCells()) * static_cast<double>(metresPerCell); }   // metres
     void Clamp();
+
+    // LEVEL OF DETAIL OF A WHOLE TILE (lesson 50). Level L is the same square of the world with 2^L times fewer cells along each
+    // side, each 2^L times wider: 8 chunks of 4 m, then 4 chunks of 8 m, 2 of 16 m, 1 of 32 m. All sizes are powers of two, so
+    // the square is exactly the same size at every level, and a coarse tile's samples are a subset of the fine tile's: along a
+    // border they meet at the same points (the test checks it bit for bit). Far tiles are a fraction of the work.
+    static constexpr int kTileLodMax = 3;
+    int MaxTileLod() const;                       // how many times this grid can be halved evenly (3 for the default 8 chunks of 4 m)
+    WorldGridSettings ForLod(int level) const;    // the grid of a tile at that level (clamped to MaxTileLod)
 };
 
 // --- where things are -----------------------------------------------------------------------------------------------
@@ -62,12 +70,28 @@ std::vector<TileCoord> TilesWithin(const WorldGridSettings& grid, double worldX,
 //  - A loaded tile is only UNLOADED when it is farther than viewDistance + half a tile. The gap is the hysteresis: a camera
 //    standing on the edge of the loaded area, or wobbling across it, would otherwise load and drop the same tile every frame.
 //  - At most `maxTiles` stay loaded, nearest first.
+//  - A tile's LEVEL OF DETAIL comes from its distance (WantedTileLod): near tiles are full, far tiles use fewer cells. Changing
+//    level means building the tile again, so the level only changes when the distance is well past the boundary (hysteresis again).
+struct LoadedTile {
+    TileCoord coord;
+    int lod = 0;
+};
+struct TileRequest {
+    TileCoord coord;
+    int lod = 0;
+};
 struct StreamingPlan {
-    std::vector<TileCoord> toLoad;     // nearest first
+    std::vector<TileRequest> toLoad;   // nearest first. A request for a tile that is already loaded at another level means "rebuild it"
     std::vector<TileCoord> toUnload;
 };
 StreamingPlan PlanTileStreaming(const WorldGridSettings& grid, double cameraX, double cameraZ, double viewDistance, int maxTiles,
-                                const std::vector<TileCoord>& loaded);
+                                const std::vector<LoadedTile>& loaded);
+
+// The level a tile should be at, given how far its nearest edge is from the camera. Level 1 starts 1.5 tiles out, level 2 at 3,
+// level 3 at 6. `currentLod` is the level it is loaded at (-1 if it is not): it is kept until the distance is a quarter of a
+// tile past the boundary, so a camera on a ring does not rebuild the same tile back and forth.
+constexpr double kTileLodStartInTiles[WorldGridSettings::kTileLodMax] = { 1.5, 3.0, 6.0 };
+int WantedTileLod(const WorldGridSettings& grid, double distance, int currentLod);
 
 // --- what the ground is ---------------------------------------------------------------------------------------------
 // The ground as a function of the world position alone. 0..1, like every height in the engine (times heightScale = metres).

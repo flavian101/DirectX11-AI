@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 #include <vector>
 
 static int g_failures = 0;
@@ -227,6 +228,71 @@ static void TestTiledBakeEqualsOneBigBake()
 }
 
 static bool Contains(const std::vector<TileCoord>& list, TileCoord tile) { return std::find(list.begin(), list.end(), tile) != list.end(); }
+static std::vector<TileCoord> Coords(const std::vector<TileRequest>& requests)
+{
+    std::vector<TileCoord> coords;
+    for (const TileRequest& request : requests) coords.push_back(request.coord);
+    return coords;
+}
+// Applies a plan the way TerrainWorld::Stream does when it builds everything at once.
+static void Apply(const StreamingPlan& plan, std::vector<LoadedTile>& loaded)
+{
+    for (const TileCoord& tile : plan.toUnload)
+        loaded.erase(std::remove_if(loaded.begin(), loaded.end(), [&](const LoadedTile& t) { return t.coord == tile; }), loaded.end());
+    for (const TileRequest& request : plan.toLoad) {
+        const auto found = std::find_if(loaded.begin(), loaded.end(), [&](const LoadedTile& t) { return t.coord == request.coord; });
+        if (found != loaded.end()) found->lod = request.lod; else loaded.push_back({ request.coord, request.lod });
+    }
+}
+
+static void TestTileLevelOfDetail()
+{
+    const WorldGridSettings grid = DefaultGrid();   // 8 chunks of 4 m
+    CHECK(grid.MaxTileLod() == 3);
+    for (int level = 0; level <= 3; ++level) {
+        const WorldGridSettings lod = grid.ForLod(level);
+        CHECK(lod.TileSize() == grid.TileSize());                       // the same square at every level
+        CHECK(lod.TileCells() == grid.TileCells() >> level);
+        CHECK(lod.metresPerCell == grid.metresPerCell * static_cast<float>(1 << level));
+    }
+    CHECK(grid.ForLod(9).chunksPerTile == 1);                           // clamped to the deepest level
+    CHECK(grid.ForLod(-2).chunksPerTile == 8);
+    WorldGridSettings odd;
+    odd.chunksPerTile = 6;                                              // 6 -> 3 and no further
+    CHECK(odd.MaxTileLod() == 1 && odd.ForLod(3).chunksPerTile == 3 && odd.ForLod(3).TileSize() == odd.TileSize());
+    WorldGridSettings coarse;
+    coarse.metresPerCell = 16.0f;                                       // 16 -> 32 is the widest cell allowed
+    CHECK(coarse.MaxTileLod() == 1);
+
+    // A coarse tile's samples are a SUBSET of the fine tile's: along a border the two meet at the same points, bit for bit.
+    const FractalHeightSource source(kHills);
+    for (const TileCoord tile : { TileCoord{ 0, 0 }, TileCoord{ -3, 7 } }) {
+        const auto fine = GenerateTileSamples(source, grid, tile);
+        for (int level = 1; level <= 3; ++level) {
+            const WorldGridSettings lod = grid.ForLod(level);
+            const auto coarseSamples = GenerateTileSamples(source, lod, tile);
+            const int fineCells = grid.TileCells(), coarseCells = lod.TileCells(), step = 1 << level;
+            bool same = coarseSamples.size() == static_cast<size_t>(coarseCells + 1) * (coarseCells + 1);
+            for (int z = 0; z <= coarseCells && same; ++z)
+                for (int x = 0; x <= coarseCells; ++x)
+                    same = same && At(coarseSamples, coarseCells, x, z) == At(fine, fineCells, x * step, z * step);
+            CHECK(same);
+        }
+    }
+
+    // Which level a tile gets: 1.5 / 3 / 6 tiles out, and a quarter tile of hysteresis for a loaded tile.
+    const double size = grid.TileSize();
+    CHECK(WantedTileLod(grid, 0.0, -1) == 0 && WantedTileLod(grid, 1.4 * size, -1) == 0);
+    CHECK(WantedTileLod(grid, 1.6 * size, -1) == 1 && WantedTileLod(grid, 3.2 * size, -1) == 2 && WantedTileLod(grid, 7.0 * size, -1) == 3);
+    CHECK(WantedTileLod(grid, 1.6 * size, 0) == 0);        // loaded at 0: stays until 1.5 + 0.25 tiles
+    CHECK(WantedTileLod(grid, 1.8 * size, 0) == 1);
+    CHECK(WantedTileLod(grid, 1.4 * size, 1) == 1);        // loaded at 1: stays until 1.5 - 0.25 tiles
+    CHECK(WantedTileLod(grid, 1.2 * size, 1) == 0);
+    CHECK(WantedTileLod(grid, 7.0 * size, 0) == 3);        // may jump several levels at once
+    CHECK(WantedTileLod(grid, 0.0, 3) == 0);
+    odd.chunksPerTile = 6;
+    CHECK(WantedTileLod(odd, 100.0 * odd.TileSize(), -1) == 1);   // never deeper than the grid allows
+}
 
 static void TestStreamingPlan()
 {
@@ -236,43 +302,73 @@ static void TestStreamingPlan()
     // From nothing: load everything wanted, nearest first, nothing to unload.
     StreamingPlan first = PlanTileStreaming(grid, 512.0, 512.0, view, 64, {});
     CHECK(first.toUnload.empty());
-    CHECK(first.toLoad == TilesWithin(grid, 512.0, 512.0, view));
-    CHECK(!first.toLoad.empty() && first.toLoad[0] == (TileCoord{ 0, 0 }));
+    CHECK(Coords(first.toLoad) == TilesWithin(grid, 512.0, 512.0, view));
+    CHECK(!first.toLoad.empty() && first.toLoad[0].coord == (TileCoord{ 0, 0 }) && first.toLoad[0].lod == 0);
 
     // Everything loaded and the camera has not moved: nothing to do.
-    CHECK(PlanTileStreaming(grid, 512.0, 512.0, view, 64, first.toLoad).toLoad.empty());
-    CHECK(PlanTileStreaming(grid, 512.0, 512.0, view, 64, first.toLoad).toUnload.empty());
+    std::vector<LoadedTile> loaded;
+    Apply(first, loaded);
+    CHECK(PlanTileStreaming(grid, 512.0, 512.0, view, 64, loaded).toLoad.empty());
+    CHECK(PlanTileStreaming(grid, 512.0, 512.0, view, 64, loaded).toUnload.empty());
 
-    // The camera wobbles across a tile border: no tile is loaded and dropped over and over (the hysteresis).
-    std::vector<TileCoord> loaded = first.toLoad;
+    // The camera wobbles across a tile border: once settled, nothing loads, unloads or changes level (the hysteresis).
+    for (double x : { 1019.0, 1029.0, 1019.0, 1029.0 }) Apply(PlanTileStreaming(grid, x, 512.0, view, 64, loaded), loaded);
+    const std::vector<LoadedTile> settled = loaded;
     for (double x : { 1019.0, 1029.0, 1019.0, 1029.0 }) {
         StreamingPlan plan = PlanTileStreaming(grid, x, 512.0, view, 64, loaded);
-        for (const TileCoord& tile : plan.toUnload) loaded.erase(std::find(loaded.begin(), loaded.end(), tile));
-        for (const TileCoord& tile : plan.toLoad) loaded.push_back(tile);
+        CHECK(plan.toLoad.empty() && plan.toUnload.empty());
     }
-    const std::vector<TileCoord> settled = loaded;
-    for (double x : { 1019.0, 1029.0, 1019.0, 1029.0 }) {
-        StreamingPlan plan = PlanTileStreaming(grid, x, 512.0, view, 64, loaded);
-        CHECK(plan.toLoad.empty() && plan.toUnload.empty());   // once settled, wobbling changes nothing
-    }
-    CHECK(loaded == settled);
+    CHECK(loaded.size() == settled.size());
 
     // Moving away: new tiles ahead are loaded, tiles far behind (past view + half a tile) are unloaded, nearer ones stay.
-    StreamingPlan moved = PlanTileStreaming(grid, 5512.0, 512.0, view, 64, first.toLoad);
-    CHECK(moved.toUnload.size() == first.toLoad.size());   // everything from the old place is out of range
-    CHECK(Contains(moved.toLoad, TileCoord{ 5, 0 }));
-    StreamingPlan step = PlanTileStreaming(grid, 1536.0, 512.0, view, 64, first.toLoad);   // one tile east
-    CHECK(Contains(step.toLoad, TileCoord{ 2, 0 }));
+    std::vector<LoadedTile> atStart;
+    Apply(first, atStart);
+    StreamingPlan moved = PlanTileStreaming(grid, 5512.0, 512.0, view, 64, atStart);
+    CHECK(moved.toUnload.size() == atStart.size());   // everything from the old place is out of range
+    CHECK(Contains(Coords(moved.toLoad), TileCoord{ 5, 0 }));
+    StreamingPlan step = PlanTileStreaming(grid, 1536.0, 512.0, view, 64, atStart);   // one tile east
+    CHECK(Contains(Coords(step.toLoad), TileCoord{ 2, 0 }));
     CHECK(!Contains(step.toUnload, TileCoord{ 0, 0 }));    // one tile behind is still inside view + half a tile
 
     // The cap: never more than maxTiles loaded, and the nearest are the ones kept.
     StreamingPlan capped = PlanTileStreaming(grid, 512.0, 512.0, 5000.0, 6, {});
     CHECK(capped.toLoad.size() == 6);
     const std::vector<TileCoord> nearest = TilesWithin(grid, 512.0, 512.0, 5000.0);
-    CHECK(capped.toLoad == std::vector<TileCoord>(nearest.begin(), nearest.begin() + 6));
-    StreamingPlan full = PlanTileStreaming(grid, 512.0, 512.0, 5000.0, 6, capped.toLoad);
-    CHECK(full.toLoad.empty());
+    CHECK(Coords(capped.toLoad) == std::vector<TileCoord>(nearest.begin(), nearest.begin() + 6));
+    std::vector<LoadedTile> six;
+    Apply(capped, six);
+    CHECK(PlanTileStreaming(grid, 512.0, 512.0, 5000.0, 6, six).toLoad.empty());
     CHECK(PlanTileStreaming(grid, 512.0, 512.0, 5000.0, 0, {}).toLoad.empty());
+
+    // A long view: far tiles come in coarse, and the plan is stable once everything is loaded.
+    std::vector<LoadedTile> far;
+    for (int i = 0; i < 4; ++i) Apply(PlanTileStreaming(grid, 512.0, 512.0, 8000.0, 256, far), far);
+    int levelCount[4] = { 0, 0, 0, 0 };
+    for (const LoadedTile& tile : far) {
+        ++levelCount[tile.lod];
+        CHECK(tile.lod == WantedTileLod(grid, DistanceToTile(grid, tile.coord, 512.0, 512.0), tile.lod));
+    }
+    CHECK(levelCount[0] > 0 && levelCount[1] > 0 && levelCount[2] > 0 && levelCount[3] > 0);
+    std::printf("view 8 km: %d tiles loaded (levels 0..3: %d %d %d %d)\n", static_cast<int>(far.size()), levelCount[0], levelCount[1], levelCount[2], levelCount[3]);
+    CHECK(PlanTileStreaming(grid, 512.0, 512.0, 8000.0, 256, far).toLoad.empty());
+    // Walking across the rings, a tile changes level when the camera really approaches or leaves it (at most 3 levels each way),
+    // never back and forth because the camera sits near a boundary.
+    std::vector<std::pair<TileCoord, int>> changes;
+    int total = 0, worst = 0;
+    for (int step2 = 0; step2 <= 400; ++step2) {
+        StreamingPlan plan = PlanTileStreaming(grid, 512.0 + 10.0 * step2, 512.0, 8000.0, 256, far);
+        for (const TileRequest& request : plan.toLoad) {
+            const auto found = std::find_if(far.begin(), far.end(), [&](const LoadedTile& t) { return t.coord == request.coord; });
+            if (found == far.end()) continue;
+            ++total;
+            auto entry = std::find_if(changes.begin(), changes.end(), [&](const auto& c) { return c.first == request.coord; });
+            if (entry == changes.end()) { changes.push_back({ request.coord, 1 }); entry = changes.end() - 1; } else ++entry->second;
+            worst = std::max(worst, entry->second);
+        }
+        Apply(plan, far);
+    }
+    std::printf("walking 4 km: %d level changes over %d tiles, at most %d for one tile\n", total, static_cast<int>(changes.size()), worst);
+    CHECK(worst <= 6);
 }
 
 int main()
@@ -285,6 +381,7 @@ int main()
     TestApronHoldsTheNeighbours();
     TestSeamlessNormals();
     TestTiledBakeEqualsOneBigBake();
+    TestTileLevelOfDetail();
     TestStreamingPlan();
     if (g_failures == 0) std::printf("world_grid_test: all passed\n");
     return g_failures == 0 ? 0 : 1;

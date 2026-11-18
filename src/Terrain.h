@@ -123,6 +123,7 @@ struct TerrainLayerSet {
 struct TerrainTile {
 	WorldGridSettings grid;                          // tile size and resolution: the same for every tile of the world
 	TileCoord coord;                                 // which tile this is
+	int lod = 0;                                     // its level of detail (WorldGridSettings::ForLod): `grid` is already the grid at this level
 	std::shared_ptr<const WorldHeightSource> source; // the ground, shared by every tile of the world
 };
 

@@ -62,10 +62,10 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
     }
     if (failed_) return;
 
-    std::vector<TileCoord> loaded;
+    std::vector<LoadedTile> loaded;
     loaded.reserve(tiles_.size());
     for (const auto& entry : tiles_) {
-        if (const auto* terrain = dynamic_cast<const Terrain*>(scene.Find(entry.second))) loaded.push_back(terrain->GetTile().coord);
+        if (const auto* terrain = dynamic_cast<const Terrain*>(scene.Find(entry.second))) loaded.push_back({ terrain->GetTile().coord, terrain->GetTile().lod });
     }
     const StreamingPlan plan = PlanTileStreaming(settings_.grid, cameraX, cameraZ, settings_.viewDistance, TerrainWorldSettings::kMaxTiles, loaded);
 
@@ -75,24 +75,43 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
         scene.Remove(it->second);
         tiles_.erase(it);
     }
-    if (plan.toLoad.empty()) return;
 
-    const TileCoord coord = plan.toLoad.front();   // the nearest missing tile; the rest follow on later frames
-    TerrainTile tile;
-    tile.grid = settings_.grid;
-    tile.coord = coord;
-    tile.source = source_;
-    Terrain* terrain = scene.Add<Terrain>(device_, tile, MakeWorldMaterial(settings_), layers_.IsValid() ? &layers_ : nullptr);
-    if (!terrain) { failed_ = true; return; }
-    if (!terrain->IsValid()) {
-        LOG_ERROR("Terrain world: tile (" + std::to_string(coord.x) + ", " + std::to_string(coord.z) + ") could not be built; streaming stopped");
-        scene.Remove(terrain->GetId());
-        failed_ = true;
-        return;
+    // Build the nearest requests first, within a budget measured in FULL tiles: a tile at level L has 4^-L of the cells, so
+    // several far tiles cost about as much as one near tile. At least one request is always served, so nothing starves.
+    double spent = 0.0;
+    int built = 0;
+    for (const TileRequest& request : plan.toLoad) {
+        const double cost = 1.0 / static_cast<double>(1 << (2 * request.lod));
+        if (built > 0 && spent + cost > 1.0) break;
+        spent += cost;
+        ++built;
+
+        TerrainTile tile;
+        tile.grid = settings_.grid.ForLod(request.lod);
+        tile.coord = request.coord;
+        tile.lod = request.lod;
+        tile.source = source_;
+        Terrain* terrain = scene.Add<Terrain>(device_, tile, MakeWorldMaterial(settings_), layers_.IsValid() ? &layers_ : nullptr);
+        if (!terrain) { failed_ = true; break; }
+        if (!terrain->IsValid()) {
+            LOG_ERROR("Terrain world: tile (" + std::to_string(request.coord.x) + ", " + std::to_string(request.coord.z) + ") could not be built; streaming stopped");
+            scene.Remove(terrain->GetId());
+            failed_ = true;
+            break;
+        }
+        terrain->SetName("Terrain tile (" + std::to_string(request.coord.x) + ", " + std::to_string(request.coord.z) + ") level " + std::to_string(request.lod));
+        if (!layers_.IsValid()) layers_ = terrain->GetLayerSet();   // the first tile's textures are lent to the rest
+        // A rebuild at another level: the new tile is in place before the old one goes, in the same call, so no frame sees a hole
+        // or two tiles on top of each other.
+        const auto old = tiles_.find(Key(request.coord));
+        if (old != tiles_.end()) scene.Remove(old->second);
+        tiles_[Key(request.coord)] = terrain->GetId();
     }
-    terrain->SetName("Terrain tile (" + std::to_string(coord.x) + ", " + std::to_string(coord.z) + ")");
-    if (!layers_.IsValid()) layers_ = terrain->GetLayerSet();   // the first tile's textures are lent to the rest
-    tiles_[Key(coord)] = terrain->GetId();
+
+    for (int& count : lodCounts_) count = 0;
+    for (const auto& entry : tiles_) {
+        if (const auto* terrain = dynamic_cast<const Terrain*>(scene.Find(entry.second))) ++lodCounts_[std::clamp(terrain->GetTile().lod, 0, WorldGridSettings::kTileLodMax)];
+    }
 }
 
 void RemoveOrphanTiles(Scene& scene)

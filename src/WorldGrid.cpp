@@ -8,6 +8,44 @@ void WorldGridSettings::Clamp()
     metresPerCell = std::clamp(metresPerCell, kMetresPerCellMin, kMetresPerCellMax);
 }
 
+int WorldGridSettings::MaxTileLod() const
+{
+    int level = 0, chunks = chunksPerTile;
+    float cell = metresPerCell;
+    while (level < kTileLodMax && chunks >= 2 && chunks % 2 == 0 && cell * 2.0f <= kMetresPerCellMax) {
+        chunks /= 2;
+        cell *= 2.0f;
+        ++level;
+    }
+    return level;
+}
+
+WorldGridSettings WorldGridSettings::ForLod(int level) const
+{
+    level = std::clamp(level, 0, MaxTileLod());
+    WorldGridSettings result = *this;
+    result.chunksPerTile = chunksPerTile >> level;
+    result.metresPerCell = metresPerCell * static_cast<float>(1 << level);
+    return result;
+}
+
+int WantedTileLod(const WorldGridSettings& grid, double distance, int currentLod)
+{
+    const double size = grid.TileSize();
+    const int maxLod = grid.MaxTileLod();
+    auto start = [&](int level) { return kTileLodStartInTiles[level - 1] * size; };   // where `level` (>= 1) begins
+    if (currentLod < 0) {
+        int level = 0;
+        while (level < maxLod && distance >= start(level + 1)) ++level;
+        return level;
+    }
+    const double margin = 0.25 * size;
+    int level = std::clamp(currentLod, 0, maxLod);
+    while (level < maxLod && distance > start(level + 1) + margin) ++level;   // coarser only well past the boundary
+    while (level > 0 && distance < start(level) - margin) --level;            // finer only well inside it
+    return level;
+}
+
 TileCoord TileContaining(const WorldGridSettings& grid, double worldX, double worldZ)
 {
     const double size = grid.TileSize();
@@ -53,21 +91,29 @@ std::vector<TileCoord> TilesWithin(const WorldGridSettings& grid, double worldX,
 }
 
 StreamingPlan PlanTileStreaming(const WorldGridSettings& grid, double cameraX, double cameraZ, double viewDistance, int maxTiles,
-                                const std::vector<TileCoord>& loaded)
+                                const std::vector<LoadedTile>& loaded)
 {
     StreamingPlan plan;
     maxTiles = std::max(maxTiles, 0);
     const double unloadDistance = viewDistance + 0.5 * grid.TileSize();
-    std::vector<TileCoord> kept;
-    for (const TileCoord& tile : loaded) {
-        if (DistanceToTile(grid, tile, cameraX, cameraZ) > unloadDistance) plan.toUnload.push_back(tile);
+    std::vector<LoadedTile> kept;
+    for (const LoadedTile& tile : loaded) {
+        if (DistanceToTile(grid, tile.coord, cameraX, cameraZ) > unloadDistance) plan.toUnload.push_back(tile.coord);
         else kept.push_back(tile);
     }
+    int newTiles = 0;   // a rebuild at another level does not change how many tiles are alive
     // Nearest first, so that if the cap bites it is the far tiles that go.
-    std::vector<TileCoord> wanted = TilesWithin(grid, cameraX, cameraZ, viewDistance);
-    for (const TileCoord& tile : wanted) {
-        if (static_cast<int>(kept.size() + plan.toLoad.size()) >= maxTiles) break;
-        if (std::find(kept.begin(), kept.end(), tile) == kept.end()) plan.toLoad.push_back(tile);
+    for (const TileCoord& tile : TilesWithin(grid, cameraX, cameraZ, viewDistance)) {
+        const auto found = std::find_if(kept.begin(), kept.end(), [&](const LoadedTile& other) { return other.coord == tile; });
+        const double distance = DistanceToTile(grid, tile, cameraX, cameraZ);
+        if (found == kept.end()) {
+            if (static_cast<int>(kept.size()) + newTiles >= maxTiles) continue;
+            plan.toLoad.push_back({ tile, WantedTileLod(grid, distance, -1) });
+            ++newTiles;
+        } else {
+            const int wanted = WantedTileLod(grid, distance, found->lod);
+            if (wanted != found->lod) plan.toLoad.push_back({ tile, wanted });
+        }
     }
     return plan;
 }

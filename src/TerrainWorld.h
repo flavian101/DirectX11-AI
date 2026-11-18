@@ -15,10 +15,10 @@ struct TerrainWorldSettings {
     WorldGridSettings grid;         // tile size and metres per cell (8 chunks x 32 cells x 4 m = 1024 m tiles)
     FractalWorldSettings fractal;   // the hills: seed, octaves, size of the biggest features in metres
     float heightScale = 240.0f;     // metres for a ground height of 1.0
-    float viewDistance = 2000.0f;   // tiles closer than this to the camera are loaded
+    float viewDistance = 5000.0f;   // tiles closer than this to the camera are loaded (far ones at a lower level of detail)
 
-    static constexpr float kViewDistanceMin = 500.0f, kViewDistanceMax = 10000.0f;
-    static constexpr int kMaxTiles = 64;   // however far you look, at most this many tiles are alive (memory and build time)
+    static constexpr float kViewDistanceMin = 500.0f, kViewDistanceMax = 8000.0f;
+    static constexpr int kMaxTiles = 256;   // however far you look, at most this many tiles are alive (far tiles are cheap: 1/4, 1/16, 1/64 of the cells)
     void Clamp();
 };
 
@@ -35,6 +35,7 @@ public:
     const TerrainWorldSettings& GetSettings() const { return settings_; }
     void SetSettings(TerrainWorldSettings settings);   // clamps; every tile is rebuilt from the new settings
     int LoadedTileCount() const { return static_cast<int>(tiles_.size()); }
+    int LoadedTileCountAtLod(int lod) const { return lod >= 0 && lod <= WorldGridSettings::kTileLodMax ? lodCounts_[lod] : 0; }
 
     // Called by Scene::Update once a frame, after the objects have updated. Unloads tiles that are out of range and loads
     // the nearest missing one (one build per frame: a tile takes a few milliseconds and we do not want a hitch).
@@ -57,6 +58,7 @@ private:
     std::shared_ptr<const WorldHeightSource> source_;
     TerrainLayerSet layers_;                              // taken from the first tile built, lent to every later one
     std::unordered_map<std::uint64_t, SceneObjectId> tiles_;   // tile -> the scene object that shows it
+    int lodCounts_[WorldGridSettings::kTileLodMax + 1] = {};   // loaded tiles per level of detail (for the inspector)
     bool dirty_ = true;     // the settings changed: unload, then start again
     bool failed_ = false;   // a tile could not be built: stop trying until the settings change
 };
