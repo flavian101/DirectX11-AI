@@ -78,3 +78,14 @@ This is a design note, not a lesson. It answers three questions: how big worlds 
    - 7d. **Streaming** (done, lesson 49): the world is one `TerrainWorld` object that loads and unloads tiles around the camera, is saved with the scene, and has its own inspector. Distant levels of detail (lesson 50, below) make a long view cheap. Still open: building tiles off the main thread.
    - 7d-ii. **Distant tiles** (done, lesson 50): the level of detail of a whole tile, chosen by distance (full, then 1/4, 1/16, 1/64 of the cells), and a button that sets the fog to hide the edge of the loaded world.
    - 7e. Camera-relative rendering, and cascaded shadows.
+
+## Phasing out the single terrain (decided after lesson 51)
+
+A tile already IS a `Terrain`, so the world is not a second system next to the old one: it is the manager that builds, streams and edits many of them. The old single terrain is the special case "one tile, heights from a picture, edited by hand". The plan is to make the world cover that case, one capability at a time, and only then retire the single-terrain path:
+
+1. **Sources.** A height source that is a picture placed in the world (the heightmap terrain), beside the fractal one; and a world that is BOUNDED (a rectangle of tiles) instead of endless. A small terrain is then a small world: one tile as wide as the old terrain (for 240 m: 8 chunks of about 0.94 m).
+2. **Edits.** Sculpting and painting stored per tile in the world (sparse height deltas and paint weights, saved with the scene), applied on top of the source when a tile is built, so they survive streaming and cross tile borders. This is what the river carve already does for rivers.
+3. **Scatter** reads the ground of every tile.
+4. **Migration.** Loading an old scene with a `Terrain` turns it into a bounded heightmap world carrying its sculpting and paint. Then the single-terrain code (`GetTerrain()` callers, `Terrain::CarveRiver`, heightmap-only settings) can go.
+
+Until step 4 both paths work, and a scene may have either. The terrain can now be deleted (and the delete undone), so a scene with only a world is easy to make.

@@ -152,6 +152,9 @@ public:
 	// stop it matching its neighbours. Painting works.
 	bool IsTile() const { return tile_.source != nullptr; }
 	const TerrainTile& GetTile() const { return tile_; }
+	// The terrain can be deleted (and the delete undone): a scene without one is how a terrain world is tried on its own. The tiles of
+	// a world are not content: the world owns them.
+	bool CanDelete() const override { return !IsTile(); }
 	bool SupportsRotation() const override { return false; }   // moved and scaled only: see lesson 25
 
 	// Clamps the settings, then rebuilds the mesh only if the shape changed

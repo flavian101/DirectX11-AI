@@ -156,6 +156,8 @@ private:
     GpuTimings gpuTimings_;    // a copy of the renderer's per-pass GPU times, refreshed every frame (shown in the Performance panels)
     SceneObjectId selectedId_ = 0;   // 0 = nothing; an id (not an index) survives adds and deletes
     TerrainSettings pendingTerrainSettings_;
+    TerrainWorldSettings pendingWorldSettings_;   // the world inspector's own copy while a control is being edited (see DrawTerrainWorldInspector)
+    SceneObjectId pendingWorldId_ = 0;
     bool lastTerrainGenerationSucceeded_ = true;
     bool terrainKeepProportions_ = true;   // widening the terrain also raises its height scale, so it keeps its look (editor-only)
     bool showShadowMap_ = false;

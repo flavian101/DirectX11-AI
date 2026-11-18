@@ -2721,8 +2721,15 @@ void EditorLayer::DrawSculptSection(Terrain* terrain)
 void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
 {
     ImGui::SeparatorText("Terrain world");
-    TerrainWorldSettings s = world->GetSettings();
-    bool commit = false;   // applied when a control is released: dragging a slider must not rebuild every tile on every frame
+    // Changing the world rebuilds every tile, so a value is applied when you RELEASE its control, not on every frame of a drag.
+    // While a control is being edited we keep our own copy (re-reading the world every frame would throw the edit away before it is
+    // applied); otherwise we follow the world, so changes made elsewhere (undo, a loaded scene) show up. Same as the terrain's inspector.
+    if (!ImGui::IsAnyItemActive() || pendingWorldId_ != world->GetId()) {
+        pendingWorldSettings_ = world->GetSettings();
+        pendingWorldId_ = world->GetId();
+    }
+    TerrainWorldSettings& s = pendingWorldSettings_;
+    bool commit = false;
     auto commitOnRelease = [&commit] { if (ImGui::IsItemDeactivatedAfterEdit()) commit = true; };
 
     ImGui::InputInt("Seed", &s.fractal.seed);
