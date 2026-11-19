@@ -62,6 +62,18 @@ option(BUILD_EDITOR "Build the editor executable (needs extern/imgui on its dock
 # Shipping a game = building D3D11Example only. There is no editor code to strip out because
 # it was never linked into it.
 # ---------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------
+# Windows headers (d3d11.h pulls in windows.h) define min and max as MACROS unless NOMINMAX is set. A macro
+# named max() rewrites every std::max(a, b) into garbage: "error C2589: '(': illegal token on right side of '::'".
+# This is set for EVERY target from here down, not just Engine: the unit tests under tests/ do not link Engine,
+# yet several include engine headers that reach d3d11.h (e.g. WaterPresetTests via SceneJson.h), so a flag that
+# only Engine carried never reached them. It sits after the FetchContent calls on purpose, so Assimp and
+# meshoptimizer keep their own settings. WIN32_LEAN_AND_MEAN (keeps windows.h small) moved here with it, so
+# one line owns both.
+# ---------------------------------------------------------------------------------------------
+add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+
 add_library(Engine STATIC
 	src/Window.cpp
 	src/Direct3D11Renderer.cpp
@@ -121,8 +133,6 @@ add_library(Engine STATIC
 
 # PUBLIC: everything that links Engine can write #include "Scene.h".
 target_include_directories(Engine PUBLIC ${CMAKE_SOURCE_DIR}/src)
-
-target_compile_definitions(Engine PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 
 # Link against the Windows SDK libraries for DirectX 11
 # The d3d11 and dxgi libraries are part of the SDK and are available on Windows
