@@ -2,6 +2,8 @@
 #include "Scene.h"
 #include "Logger.h"
 #include <algorithm>
+#include <cfloat>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,6 +18,9 @@ void TerrainWorldSettings::Clamp()
     pictureOffsetX = std::clamp(pictureOffsetX, -kPictureOffsetMax, kPictureOffsetMax);
     pictureOffsetZ = std::clamp(pictureOffsetZ, -kPictureOffsetMax, kPictureOffsetMax);
     bounds.Normalize();
+    shape.Clamp();
+    material.Clamp();
+    if (static_cast<int>(layerPaths.size()) != kTerrainLayerCount * 3) layerPaths.clear();
     heightScale = std::clamp(heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax);
     viewDistance = std::clamp(viewDistance, kViewDistanceMin, kViewDistanceMax);
     if (static_cast<int>(rivers.size()) > kMaxRivers) rivers.resize(kMaxRivers);
@@ -27,6 +32,12 @@ void TerrainWorldSettings::Clamp()
 
 TerrainSettings MakeWorldMaterial(const TerrainWorldSettings& world)
 {
+    if (world.customMaterial) {   // the look of a migrated terrain; its shape fields do not matter (a tile forces its own), the height does
+        TerrainSettings carried = world.material;
+        carried.heightScale = world.heightScale;
+        carried.Clamp();
+        return carried;
+    }
     TerrainSettings material;
     material.heightScale = world.heightScale;
     // The layer rules talk in world metres. The defaults suit a 45 m tall terrain, so they are scaled to this world's height
@@ -45,6 +56,11 @@ TerrainSettings MakeWorldMaterial(const TerrainWorldSettings& world)
 void TerrainWorld::SetSettings(TerrainWorldSettings settings)
 {
     settings.Clamp();
+    // The edits sit on a lattice of the grid's cells: while there are edits the grid stays as it is (the inspector says why).
+    if (edits_ && !edits_->IsEmpty() && editsMetresPerCell_ > 0.0 &&
+        (settings.grid.TileCells() != edits_->CellsPerTile() || static_cast<double>(settings.grid.metresPerCell) != editsMetresPerCell_)) {
+        settings.grid = settings_.grid;
+    }
     settings_ = settings;
     RefreshRivers();
     dirty_ = true;
@@ -89,32 +105,60 @@ bool TerrainWorld::RemoveRiver(int id)
     return true;
 }
 
-// Makes the ground (source_) and the edge of the world (activeBounds_) from the settings. If the picture cannot be read the world
-// has no land: failed_ stops the streaming until the settings change, and status_ says why.
+// Makes the ground (ground_, then source_ with the edits over it) and the edge of the world (activeBounds_) from the settings. If the picture
+// cannot be read the world has no land: failed_ stops the streaming until the settings change, and status_ says why.
 void TerrainWorld::BuildSource()
 {
     status_.clear();
     activeBounds_ = settings_.bounds;
+    pictureRaw_.reset();
+    hasPictureStats_ = false;
+    pictureMetresPerPixel_ = 0.0f;
+    pictureWidthPixels_ = 0;
+    std::shared_ptr<const WorldHeightSource> raw;
     if (settings_.source != WorldSourceKind::Picture) {
-        source_ = std::make_shared<const FractalHeightSource>(settings_.fractal);
-        return;
+        raw = std::make_shared<const FractalHeightSource>(settings_.fractal);
+    } else {
+        const std::string path = settings_.picturePath.empty() ? std::string(Terrain::DefaultHeightmapPath()) : settings_.picturePath;
+        auto image = std::make_shared<HeightImage>();
+        std::string error;
+        if (!LoadHeightImage(path, *image, error)) {
+            status_ = "Terrain world: " + error;
+            LOG_ERROR(status_);
+            source_ = nullptr;
+            ground_ = nullptr;
+            activeBounds_ = WorldBounds{};
+            failed_ = true;   // no ground, no tiles; changing a setting (another picture) tries again
+            return;
+        }
+        const double width = settings_.pictureWidth;
+        const double depth = PictureDepth(width, image->width, image->height);
+        const double offsetX = settings_.pictureOffsetX, offsetZ = settings_.pictureOffsetZ;
+        pictureRaw_ = image;
+        pictureStats_ = ComputeHeightImageStats(*image);
+        hasPictureStats_ = true;
+        pictureMetresPerPixel_ = static_cast<float>(width / static_cast<double>(image->width));
+        pictureWidthPixels_ = image->width;
+        std::shared_ptr<const HeightImage> used = image;   // smoothing blurs a copy: the stats and auto levels read the picture as it is
+        if (settings_.shape.smoothing >= 0.5f) used = std::make_shared<const HeightImage>(SmoothHeightImage(*image, static_cast<int>(std::lround(settings_.shape.smoothing))));
+        raw = std::make_shared<const PictureHeightSource>(used, offsetX, offsetZ, width, depth, settings_.shape.bicubic);
+        activeBounds_ = WorldBounds::Covering(settings_.grid, offsetX, offsetZ, offsetX + width, offsetZ + depth);
     }
-    const std::string path = settings_.picturePath.empty() ? std::string(Terrain::DefaultHeightmapPath()) : settings_.picturePath;
-    auto image = std::make_shared<HeightImage>();
-    std::string error;
-    if (!LoadHeightImage(path, *image, error)) {
-        status_ = "Terrain world: " + error;
-        LOG_ERROR(status_);
-        source_ = nullptr;
-        activeBounds_ = WorldBounds{};
-        failed_ = true;   // no ground, no tiles; changing a setting (another picture) tries again
-        return;
+    ground_ = std::make_shared<const ShapedHeightSource>(raw, settings_.shape, settings_.heightScale);
+
+    // The edits' lattice is the grid's cells. SetSettings keeps the grid while there are edits, so a mismatch here means the edits were
+    // loaded from a file made with another grid: they cannot be used and are dropped.
+    const int cells = settings_.grid.TileCells();
+    const double metresPerCell = static_cast<double>(settings_.grid.metresPerCell);
+    if (edits_->CellsPerTile() != cells || (!edits_->IsEmpty() && editsMetresPerCell_ != metresPerCell && editsMetresPerCell_ > 0.0)) {
+        if (!edits_->IsEmpty()) {
+            status_ = "Terrain world: the saved edits were made on another grid and were dropped.";
+            LOG_WARNING(status_);
+        }
+        edits_->Reset(cells);
     }
-    const double width = settings_.pictureWidth;
-    const double depth = PictureDepth(width, image->width, image->height);
-    const double offsetX = settings_.pictureOffsetX, offsetZ = settings_.pictureOffsetZ;
-    source_ = std::make_shared<const PictureHeightSource>(image, offsetX, offsetZ, width, depth);
-    activeBounds_ = WorldBounds::Covering(settings_.grid, offsetX, offsetZ, offsetX + width, offsetZ + depth);
+    editsMetresPerCell_ = metresPerCell;
+    source_ = std::make_shared<const EditedHeightSource>(ground_, edits_, metresPerCell);
 }
 
 void TerrainWorld::UnloadAll(Scene& scene)
@@ -195,7 +239,26 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
             break;
         }
         terrain->SetName("Terrain tile (" + std::to_string(request.coord.x) + ", " + std::to_string(request.coord.z) + ") level " + std::to_string(request.lod));
-        if (!layers_.IsValid()) layers_ = terrain->GetLayerSet();   // the first tile's textures are lent to the rest
+        if (!layers_.IsValid()) {
+            // The first tile's textures are lent to the rest. A migrated terrain's own layer images are put on it first.
+            if (settings_.customMaterial && static_cast<int>(settings_.layerPaths.size()) == kTerrainLayerCount * 3) {
+                for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
+                    for (int kind = 0; kind < 3; ++kind) {
+                        const std::string& wanted = settings_.layerPaths[static_cast<size_t>(layer * 3 + kind)];
+                        const auto map = static_cast<TerrainLayerMap>(kind);
+                        if (!wanted.empty() && wanted != terrain->GetLayerMapPath(layer, map) && !terrain->SetLayerMap(layer, map, wanted)) {
+                            LOG_WARNING("Terrain world: a layer image could not be loaded: " + wanted);
+                        }
+                    }
+                }
+            }
+            layers_ = terrain->GetLayerSet();
+        }
+        // Painting: the world keeps it, the tile only shows it (at this level of detail: each coarse texel averages the cells it covers).
+        if (edits_->TileHasPaint(request.coord)) {
+            PaintMap painted = edits_->PaintForTile(request.coord, tile.grid.TileCells());
+            if (!painted.IsEmpty()) terrain->ReplacePaint(std::move(painted.weights), true);
+        }
         // A rebuild at another level: the new tile is in place before the old one goes, in the same call, so no frame sees a hole
         // or two tiles on top of each other.
         const auto old = tiles_.find(Key(request.coord));
@@ -208,6 +271,168 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
     for (const auto& entry : tiles_) {
         if (const auto* terrain = dynamic_cast<const Terrain*>(scene.Find(entry.second))) ++lodCounts_[std::clamp(terrain->GetTile().lod, 0, WorldGridSettings::kTileLodMax)];
     }
+}
+
+void TerrainWorld::MarkEditedTiles(const LatticeRect& rect, bool heights)
+{
+    for (const TileCoord& coord : edits_->TilesAffectedBy(rect, heights)) {
+        if (tiles_.count(Key(coord))) staleTiles_.insert(Key(coord));
+    }
+}
+
+void TerrainWorld::MarkAllTilesStale()
+{
+    for (const auto& entry : tiles_) staleTiles_.insert(entry.first);
+}
+
+void TerrainWorld::BeginStroke() { recorder_.Clear(); }
+
+bool TerrainWorld::SculptStep(const BrushSettings& brush, double worldX, double worldZ, float seconds)
+{
+    if (!ground_) return false;
+    const LatticeRect rect = ApplyWorldHeightBrush(*edits_, *ground_, editsMetresPerCell_, brush, worldX, worldZ, seconds, &recorder_);
+    MarkEditedTiles(rect, true);
+    return !rect.IsEmpty();
+}
+
+bool TerrainWorld::PaintStep(const PaintBrush& brush, double worldX, double worldZ, float seconds)
+{
+    if (!ground_) return false;
+    const LatticeRect rect = ApplyWorldPaintBrush(*edits_, editsMetresPerCell_, brush, worldX, worldZ, seconds, &recorder_);
+    MarkEditedTiles(rect, false);
+    return !rect.IsEmpty();
+}
+
+WorldEditPatch TerrainWorld::EndStroke()
+{
+    WorldEditPatch patch = recorder_.Finish(*edits_);
+    recorder_.Clear();
+    return patch;
+}
+
+void TerrainWorld::ApplyEditPatch(const WorldEditPatch& patch, bool useAfter)
+{
+    const WorldPatchExtent extent = ApplyWorldEditPatch(*edits_, patch, useAfter);
+    MarkEditedTiles(extent.heights, true);
+    MarkEditedTiles(extent.paint, false);
+}
+
+void TerrainWorld::ReplaceEdits(const WorldEdits& edits)
+{
+    *edits_ = edits;
+    MarkAllTilesStale();
+}
+
+void TerrainWorld::ClearEdits(bool heights, bool paint)
+{
+    WorldEdits kept(edits_->CellsPerTile());
+    edits_->ForEachBlock([&](TileCoord tile, const WorldEdits::Block& block) {
+        WorldEdits::Block copy;
+        if (!heights) copy.height = block.height;
+        if (!paint) copy.paint = block.paint;
+        kept.SetBlock(tile, std::move(copy));
+    });
+    *edits_ = std::move(kept);
+    MarkAllTilesStale();
+}
+
+float TerrainWorld::GroundHeight01(double worldX, double worldZ) const
+{
+    return source_ ? source_->Height01(worldX, worldZ) : 0.0f;
+}
+
+const Terrain* TerrainWorld::TileAt(Scene& scene, double worldX, double worldZ) const
+{
+    const auto found = tiles_.find(Key(TileContaining(settings_.grid, worldX, worldZ)));
+    return found == tiles_.end() ? nullptr : dynamic_cast<const Terrain*>(scene.Find(found->second));
+}
+
+bool TerrainWorld::Raycast(Scene& scene, const Ray& ray, float& distance, DirectX::XMFLOAT3* point) const
+{
+    bool hit = false;
+    float best = FLT_MAX;
+    for (const auto& entry : tiles_) {
+        const auto* tile = dynamic_cast<const Terrain*>(scene.Find(entry.second));
+        if (!tile) continue;
+        float d = 0.0f;
+        DirectX::XMFLOAT3 p;
+        if (tile->Raycast(ray, d, &p) && d < best) { best = d; hit = true; if (point) *point = p; }
+    }
+    if (hit) distance = best;
+    return hit;
+}
+
+bool TerrainWorld::LoadEdits(const std::string& path, std::string& error)
+{
+    WorldEdits loaded;
+    if (!LoadWorldEdits(path, loaded, error)) return false;
+    if (loaded.CellsPerTile() != settings_.grid.TileCells()) {
+        error = "the edits were made with tiles of " + std::to_string(loaded.CellsPerTile()) + " cells but this world has " + std::to_string(settings_.grid.TileCells());
+        return false;
+    }
+    *edits_ = std::move(loaded);
+    editsMetresPerCell_ = static_cast<double>(settings_.grid.metresPerCell);   // the settings (saved with the scene) are the lattice's other half
+    dirty_ = true;   // every tile is rebuilt with the edits
+    return true;
+}
+
+bool TerrainWorld::AutoLevels(float lowPercent, float highPercent)
+{
+    if (!pictureRaw_) return false;
+    TerrainWorldSettings next = settings_;
+    if (!ComputeAutoLevels(*pictureRaw_, lowPercent, highPercent, next.shape.blackPoint, next.shape.whitePoint)) return false;
+    SetSettings(next);
+    return true;
+}
+
+bool TerrainWorld::AdoptFrom(const Terrain& old, MigrationStats* stats)
+{
+    BuildSource();   // the ground the terrain is compared with (Stream builds it again when it starts: harmless)
+    if (!ground_ || old.GetHeightfield().IsEmpty()) return false;
+    DirectX::XMFLOAT3 position{ 0, 0, 0 }, rotation{ 0, 0, 0 }, scale{ 1, 1, 1 };
+    old.GetEditorTransform(position, rotation, scale);
+    const HeightfieldLayout& layout = old.GetHeightfield().GetLayout();
+    OldTerrainPlacement place;
+    place.cellsX = layout.cellsX;
+    place.cellsZ = layout.cellsZ;
+    place.sizeX = static_cast<double>(layout.sizeX) * scale.x;
+    place.sizeZ = static_cast<double>(layout.sizeZ) * scale.z;
+    // The picture's corner is where the terrain's corner is (WorldSettingsFromTerrain snapped it to the grid), so the centre follows from it.
+    place.centerX = static_cast<double>(settings_.pictureOffsetX) + 0.5 * place.sizeX;
+    place.centerZ = static_cast<double>(settings_.pictureOffsetZ) + 0.5 * place.sizeZ;
+    MigrationStats total;
+    const MigrationStats heights = MigrateHeightsIntoEdits(old.GetHeightfield().Samples(), place, *ground_, editsMetresPerCell_, *edits_);
+    total.heightSamples = heights.heightSamples;
+    if (old.IsPainted()) total.paintCells = MigratePaintIntoEdits(old.GetPaintMap(), place, editsMetresPerCell_, *edits_).paintCells;
+    if (stats) *stats = total;
+    dirty_ = true;
+    return true;
+}
+
+TerrainWorldSettings WorldSettingsFromTerrain(const Terrain& old)
+{
+    DirectX::XMFLOAT3 position{ 0, 0, 0 }, rotation{ 0, 0, 0 }, scale{ 1, 1, 1 };
+    old.GetEditorTransform(position, rotation, scale);
+    const HeightfieldLayout& layout = old.GetHeightfield().GetLayout();
+    const float width = layout.sizeX * scale.x, depth = layout.sizeZ * scale.z;
+    TerrainWorldSettings s;
+    s.source = WorldSourceKind::Picture;
+    s.picturePath = old.GetHeightmapPath();
+    s.pictureWidth = width;
+    s.grid = WorldGridForTerrain(width, old.GetSettings().maxCells);
+    // The old terrain is centred on its position. The world's picture is placed by its corner, snapped to the cell grid so that the old
+    // samples land exactly on the world's lattice (a move of at most half a cell, a few decimetres).
+    const double cell = static_cast<double>(s.grid.metresPerCell);
+    s.pictureOffsetX = static_cast<float>(std::round((static_cast<double>(position.x) - 0.5 * width) / cell) * cell);
+    s.pictureOffsetZ = static_cast<float>(std::round((static_cast<double>(position.z) - 0.5 * depth) / cell) * cell);
+    s.heightScale = old.GetSettings().heightScale * scale.y;
+    s.customMaterial = true;
+    s.material = old.GetSettings();
+    s.layerPaths.resize(static_cast<size_t>(kTerrainLayerCount) * 3);
+    for (int layer = 0; layer < kTerrainLayerCount; ++layer)
+        for (int kind = 0; kind < 3; ++kind) s.layerPaths[static_cast<size_t>(layer * 3 + kind)] = old.GetLayerMapPath(layer, static_cast<TerrainLayerMap>(kind));
+    s.Clamp();
+    return s;
 }
 
 void RemoveOrphanTiles(Scene& scene)

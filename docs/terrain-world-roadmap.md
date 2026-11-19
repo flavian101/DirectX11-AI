@@ -19,16 +19,19 @@ Verify each row against the current `Terrain` code before ticking it.
 | Old terrain feature                          | World equivalent                              | Done |
 |----------------------------------------------|-----------------------------------------------|------|
 | Heightmap from a picture                      | Picture as a world *source*                   | [~]  |
+| Noise on the heightmap (strength, scale, octaves, seed) | Detail noise in the ground shape, in metres | [~] |
+| Material and layer images of the terrain      | Carried by a migrated world (`customMaterial`) | [~] |
+| Migration of an old scene's terrain           | *Add > Terrain world from this terrain (migrate)* | [~] |
 | Height scale in real units (km / metres)      | World size in metres, metres-per-texel, max height in metres | [~] |
-| Chunking / LOD                                | Per-tile chunks, LOD across tile borders      | [ ] |
-| Automatic texturing (height / slope rules)    | Same rules, evaluated per tile                | [ ] |
-| Splat-map painting (RGBA, 4 layers)           | Per-tile splat maps, seamless across borders  | [ ] |
-| Sculpt brushes (raise, lower, smooth, flatten)| Brushes that can span several tiles           | [ ] |
-| Undo / redo                                   | Before/after tile snapshots                   | [ ] |
+| Chunking / LOD                                | Per-tile chunks, LOD across tile borders      | [x] (`world_grid_test`) |
+| Automatic texturing (height / slope rules)    | Same rules, evaluated per tile                | [x] (`world_grid_test`: world noise, no seams) |
+| Splat-map painting (RGBA, 4 layers)           | Per-tile paint on the world lattice, seamless | [~] |
+| Sculpt brushes (raise, lower, smooth, flatten)| Brushes on the world lattice, across tiles    | [~] |
+| Undo / redo                                   | Before/after of the touched lattice points    | [~] |
 | Collision / height queries                    | `World::HeightAt(x, z)` across tiles          | [ ] |
 | Water level interaction                       | Water reads world height, not terrain         | [ ] |
-| Scatter (vegetation, rocks)                   | Scatter over every tile                       | [ ] |
-| Save / load in scenes                         | Tile files + migration of old scenes          | [ ] |
+| Scatter (vegetation, rocks)                   | Scatter over every tile                       | [ ] (a one-tile world works; several tiles: not yet) |
+| Save / load in scenes                         | Settings in the scene, edits in a `.worldedits` file | [~] |
 
 ## Phases
 
@@ -51,12 +54,37 @@ Verify each row against the current `Terrain` code before ticking it.
 - `TerrainWorldSettings`: `source` (fractal or picture), `picturePath`, `pictureWidth`, `pictureOffsetX/Z`, `bounds`.
   Saved with the scene; a scene saved before this loads as the endless fractal world it was.
 - Editor: Ground combo, picture browse/width/corner, bounded fractal worlds, and
-  *Add > Terrain world from this terrain's heightmap* (one tile as wide as the terrain, same cell size, same place).
+  *Add > Terrain world from this terrain* (Phase 1 made the empty shell; the migrate version below carries the edits too).
 - Tests: `tests/world_picture_test.cpp` (sampling, placement, shared tile edges at every level of detail, bounds, bounded
   streaming, "one tile equals the old terrain sample for sample", 16-bit PNG round trip).
 - Not done in this phase: the heightmap loader still exists twice (`LoadHeightmapFile` in `Terrain.cpp` and `LoadHeightImage`);
   the copy in `Terrain.cpp` goes with the old terrain. A picture whose shape is not a whole number of tiles shows the repeated
   edge pixel in the unused part of its last tile.
+
+**Heightmap customisation** (why a picture can look flat, and the controls for it; `src/WorldShape.*`, tests `tests/world_shape_test.cpp`):
+
+- Levels (black / white point) with *Auto levels*, which reads the picture's real span. A picture that uses 10% of its grey range
+  spans 10% of the height scale: the inspector says so and shows the typical slope in degrees.
+- Curve (exponent), invert, smoothing (blur radius in pixels, removes 8-bit steps), bicubic interpolation (less faceted when a small
+  picture is stretched), and detail noise in METRES (round or ridged, kept smooth in low ground). Four presets.
+- All of it is a function of the world position, so tiles still meet. With the defaults the picture's own heights come out bit for bit.
+
+**Phase 3 and 4 status** (edits, migration; `src/WorldEdits.*`, tests `tests/world_edits_test.cpp`; `[~]` = unit-tested, not yet run in the editor):
+
+- Edits are a height delta per lattice sample and four paint weights per lattice cell, stored per tile; a sample belongs to one tile, so
+  shared borders cannot disagree. The visible ground is source -> shape -> edits -> rivers, so a river is dug through sculpted ground.
+- The brushes are the old terrain's maths on the lattice (tested against the old brushes sample for sample) and a stroke over a tile
+  border equals the same stroke on one big tile. Strokes are one undo step; "Discard sculpting" and "Clear painting" are undoable.
+- Touched tiles are rebuilt by `TerrainWorld::Stream`, nearest first (one tile's worth of work per frame). That is simple and correct but
+  not as light as the old terrain's partial chunk refresh: a first optimisation target.
+- Edits are saved in a `.worldedits` file beside the scene. While a world carries edits, *Metres per cell* is locked (the edits sit on it).
+- MIGRATION: `WorldSettingsFromTerrain` + `TerrainWorld::AdoptFrom`. One tile as wide as the terrain (several if the terrain is wider than
+  the finest cell allows), same heightmap, height scale, cell size, material, layer images and position. Sculpting, noise and painting
+  become edits; rivers carved into the old heights come along as heights. The old terrain stays in the scene until the user deletes it.
+  The picture's corner is snapped to the cell grid (at most half a cell, a few decimetres, from where the terrain stood).
+- Not done yet: scatter over several tiles (`ScatterObject` still feeds on one terrain), a world-level `HeightAt(x, z)` for collision,
+  the old terrain's material sliders on the world itself (a tile's inspector changes that tile only), the removal of the old `Terrain`
+  class (after the parity table is all ticked), and the partial rebuild of tiles during a stroke.
 
 ### Phase 2 - Waterfalls on the world (roadmap 20d)
 - The river carve is already part of the world, so this phase builds on it.

@@ -5,6 +5,8 @@
 #include "Terrain.h"
 #include "WorldGrid.h"
 #include "WorldPicture.h"
+#include "WorldShape.h"
+#include "WorldEdits.h"
 #include <d3d11.h>
 #include <cstdint>
 #include <memory>
@@ -34,6 +36,13 @@ struct TerrainWorldSettings {
     // The edge of the world for the Fractal source: unbounded (endless) unless bounded is set. A bounded fractal world is a
     // rectangle of tiles, which is also how a small test world is made.
     WorldBounds bounds;
+    // How the picture (or the hills) become terrain: levels, curve, smoothing, detail noise (src/WorldShape.h).
+    HeightShapeSettings shape;
+    // The look. false: the automatic rules scaled to the world's height (MakeWorldMaterial). true: `material` and `layerPaths`, as carried over
+    // from a migrated terrain, so its slope/height rules, tints and tilings survive the move.
+    bool customMaterial = false;
+    TerrainSettings material;
+    std::vector<std::string> layerPaths;   // kTerrainLayerCount x 3 image paths (albedo, normal, orm) for customMaterial; empty = the default textures
     float heightScale = 240.0f;     // metres for a ground height of 1.0
     float viewDistance = 5000.0f;   // tiles closer than this to the camera are loaded (far ones at a lower level of detail)
     std::vector<WorldRiver> rivers; // the rivers dug into the ground (lesson 51): part of the world, so they survive streaming
@@ -63,6 +72,38 @@ public:
     // id to put a removed one back under the same name (redo).
     int AddRiver(WorldRiver river);
     bool RemoveRiver(int id);
+    // --- EDITS (roadmap phases 3 and 4): sculpting and painting stored per tile on the world's lattice, see src/WorldEdits.h ---
+    const WorldEdits& Edits() const { return *edits_; }
+    bool HasEdits() const { return !edits_->IsEmpty(); }
+    // A stroke: BeginStroke, any number of SculptStep / PaintStep (world metres), then EndStroke gives the patch for ONE undo step. A step
+    // marks the tiles it changed; they are rebuilt by Stream (nearest first).
+    void BeginStroke();
+    bool SculptStep(const BrushSettings& brush, double worldX, double worldZ, float seconds);
+    bool PaintStep(const PaintBrush& brush, double worldX, double worldZ, float seconds);
+    WorldEditPatch EndStroke();
+    void ApplyEditPatch(const WorldEditPatch& patch, bool useAfter);   // undo (false) and redo (true)
+    std::shared_ptr<WorldEdits> CopyEdits() const { return std::make_shared<WorldEdits>(*edits_); }
+    void ReplaceEdits(const WorldEdits& edits);                        // undo of a clear
+    void ClearEdits(bool heights, bool paint);
+    // How high the ground is where a stroke begins (0..1, without rivers): the level Flatten works towards.
+    float GroundHeight01(double worldX, double worldZ) const;
+    // The tile under a point, and the nearest ground hit along a ray across all loaded tiles.
+    const Terrain* TileAt(Scene& scene, double worldX, double worldZ) const;
+    bool Raycast(Scene& scene, const Ray& ray, float& distance, DirectX::XMFLOAT3* point) const;
+    // The edits live in a small file beside the scene file (the settings go in the scene itself).
+    bool SaveEdits(const std::string& path, std::string& error) const { return SaveWorldEdits(path, *edits_, error); }
+    bool LoadEdits(const std::string& path, std::string& error);
+    // MIGRATION: turns an old single terrain into this world. Call after SetSettings(WorldSettingsFromTerrain(old)). Copies the terrain's
+    // sculpting (and noise) as height edits and its painting as paint edits. False if the world has no ground (the picture could not be read).
+    bool AdoptFrom(const Terrain& old, MigrationStats* stats = nullptr);
+
+    // --- the picture, for the inspector ---
+    const HeightImageStats* PictureStats() const { return hasPictureStats_ ? &pictureStats_ : nullptr; }
+    float PictureMetresPerPixel() const { return pictureMetresPerPixel_; }
+    int PictureWidthPixels() const { return pictureWidthPixels_; }
+    // Sets the levels from the picture's real span (see ComputeAutoLevels). False if there is no picture to look at.
+    bool AutoLevels(float lowPercent = 0.5f, float highPercent = 99.5f);
+
     // The edge the world has right now: the settings' bounds for the fractal source, the tiles that cover the picture for the
     // picture source (known once the picture is read). `bounded` is false for an endless world.
     const WorldBounds& ActiveBounds() const { return activeBounds_; }
@@ -89,7 +130,16 @@ private:
 
     ID3D11Device* device_ = nullptr;   // non-owning
     TerrainWorldSettings settings_;
-    std::shared_ptr<const WorldHeightSource> source_;
+    std::shared_ptr<const WorldHeightSource> source_;   // what tiles read: ground_ with the edits laid over it
+    std::shared_ptr<const WorldHeightSource> ground_;   // the picture or hills, shaped; no edits, no rivers (what the brushes work from)
+    std::shared_ptr<WorldEdits> edits_ = std::make_shared<WorldEdits>();
+    double editsMetresPerCell_ = 0.0;                   // the lattice the edits were made on (with edits_->CellsPerTile())
+    WorldStrokeRecorder recorder_;
+    std::shared_ptr<const HeightImage> pictureRaw_;     // the picture as read (not smoothed): for the stats and auto levels
+    HeightImageStats pictureStats_;
+    bool hasPictureStats_ = false;
+    float pictureMetresPerPixel_ = 0.0f;
+    int pictureWidthPixels_ = 0;
     TerrainLayerSet layers_;                              // taken from the first tile built, lent to every later one
     std::unordered_map<std::uint64_t, SceneObjectId> tiles_;   // tile -> the scene object that shows it
     std::shared_ptr<const std::vector<WorldRiver>> riversSnapshot_;   // what new tiles are built with: replaced whenever the rivers change
@@ -99,12 +149,19 @@ private:
     std::string status_;
     static TileCoord CoordOfKey(std::uint64_t key) { return { static_cast<int>(static_cast<std::uint32_t>(key >> 32)), static_cast<int>(static_cast<std::uint32_t>(key)) }; }
     void BuildSource();                           // the ground and the edge of the world, from the settings (see TerrainWorld.cpp)
+    void MarkEditedTiles(const LatticeRect& rect, bool heights);   // loaded tiles whose ground an edit changed: rebuilt first
+    void MarkAllTilesStale();
     void RefreshRivers();                         // new snapshot, and ids for rivers that have none
     void MarkTilesTouchedBy(const WorldRiver& river);
     int lodCounts_[WorldGridSettings::kTileLodMax + 1] = {};   // loaded tiles per level of detail (for the inspector)
     bool dirty_ = true;     // the settings changed: unload, then start again
     bool failed_ = false;   // a tile could not be built: stop trying until the settings change
 };
+
+// The world that replaces an old single terrain: one tile as wide as the terrain, the same heightmap, height, cell size, material and
+// layer textures, standing where the terrain stands (the corner is snapped to the cell grid, at most half a cell away). Apply it with
+// SetSettings, then call TerrainWorld::AdoptFrom to carry the sculpting and painting across.
+TerrainWorldSettings WorldSettingsFromTerrain(const Terrain& old);
 
 // Scene::Update calls this when the scene has NO world: any tile left over (the world was deleted) goes too.
 void RemoveOrphanTiles(Scene& scene);

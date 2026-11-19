@@ -313,6 +313,12 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
         scatter->SetSettings(loaded);
     } else if (auto* world = dynamic_cast<TerrainWorld*>(&object)) {
         world->SetSettings(entry.value("settings", TerrainWorldSettings{}));
+        // The world's sculpting and painting (a file beside the scene). Applied after the settings, which give the grid its final size.
+        if (entry.contains("edits") && entry["edits"].is_object() && entry["edits"].contains("file") && entry["edits"]["file"].is_string()) {
+            const std::string editsFile = resolve(entry["edits"]["file"].get<std::string>());
+            std::string loadError;
+            if (!world->LoadEdits(editsFile, loadError)) warnings.push_back("The terrain world's edits could not be loaded (" + loadError + "): " + editsFile);
+        }
     }
 
     // Transform LAST: setting the transform of some objects (the cube, the water) changes other state.
@@ -365,8 +371,8 @@ void ApplyGlobals(Scene& scene, const json& root, std::vector<std::string>& warn
 
 // The file a terrain's hand-made data is saved in, next to the scene file. `kind` says which data:
 // "castle.scene.json" -> "castle.terrain.png" (sculpted heights) or "castle.paint.png" (painted layers). A second terrain
-// would get "castle.terrain2.png".
-static std::string SidecarFileName(const fs::path& sceneFile, const char* kind, int index)
+// would get "castle.terrain2.png". A terrain world's sculpting and painting go in "castle.worldedits.worldedits" (kind "worldedits", see below).
+static std::string SidecarFileName(const fs::path& sceneFile, const char* kind, int index, const char* extension = ".png")
 {
     std::string stem = sceneFile.filename().string();
     for (const char* suffixText : { ".scene.json", ".json" }) {
@@ -376,7 +382,7 @@ static std::string SidecarFileName(const fs::path& sceneFile, const char* kind, 
             break;
         }
     }
-    return stem + "." + kind + (index > 0 ? std::to_string(index + 1) : std::string()) + ".png";
+    return stem + "." + kind + (index > 0 ? std::to_string(index + 1) : std::string()) + extension;
 }
 
 bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::string>& warnings, std::string& error,
@@ -386,6 +392,7 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
     const fs::path folder = file.parent_path();
     int sculptedTerrains = 0;   // how many sculpted terrains have been written so far (names their PNG files)
     int paintedTerrains = 0;    // the same for painted ones
+    int worldsWithEdits = 0;    // and for terrain worlds that carry edits
 
     json root;
     root["format"] = kFormatName;
@@ -429,6 +436,17 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
                 return false;
             }
             entry["paint"] = { { "weights", paintName } };
+        }
+        // A terrain world's sculpting and painting (roadmap phases 3 and 4): one small binary file beside the scene, the entry points at it.
+        // Same rule as the PNGs: if it cannot be written the save fails.
+        if (const auto* world = dynamic_cast<const TerrainWorld*>(owned.get()); world && world->HasEdits()) {
+            const std::string editsName = SidecarFileName(file, "world", worldsWithEdits++, ".worldedits");
+            std::string editsError;
+            if (!world->SaveEdits((folder / editsName).string(), editsError)) {
+                error = "Could not save the terrain world's edits: " + editsError;
+                return false;
+            }
+            entry["edits"] = { { "file", editsName } };
         }
         objects.push_back(std::move(entry));
     }

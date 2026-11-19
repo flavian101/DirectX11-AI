@@ -37,6 +37,14 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 using namespace DirectX;
 
 namespace {
+// An old-style terrain (not a tile of a terrain world), if the scene has one: the brush works on it unless the world is selected.
+Terrain* FindSingleTerrain(Scene& scene)
+{
+    for (const auto& object : scene.GetObjects()) {
+        if (auto* terrain = dynamic_cast<Terrain*>(object.get()); terrain && !terrain->IsTile()) return terrain;
+    }
+    return nullptr;
+}
 // An undoable action made of two small functions. Everything an editor action needs (an id, a snapshot, the object
 // itself) is captured by the lambdas, so one class covers every kind of command.
 class LambdaCommand final : public UndoCommand {
@@ -515,12 +523,12 @@ void EditorLayer::DrawMenuBar()
         }
         if (ImGui::MenuItem("Model from file...")) importRequested_ = true;
         if (ImGui::MenuItem("Terrain world (streaming tiles)", nullptr, false, scene_ && !scene_->FindFirst<TerrainWorld>())) addTerrainWorldRequested_ = true;
-        ImGui::SetItemTooltip("A world of 1 km terrain tiles whose heights come from one world function, so the tiles meet without seams.\nTiles load and unload around the camera. Select the world in the Hierarchy to change its seed, hills,\nheight and view distance. Tiles cannot be sculpted or moved yet.");
+        ImGui::SetItemTooltip("A world of 1 km terrain tiles whose heights come from one world function, so the tiles meet without seams.\nTiles load and unload around the camera. Select the world in the Hierarchy to change its seed, hills,\nheight and view distance. Sculpt and paint with the brush (4): strokes are stored in the world and cross tile borders.");
         {
             const Terrain* single = scene_ ? scene_->GetTerrain() : nullptr;
             const bool canRebuild = scene_ && single && !single->IsTile() && !scene_->FindFirst<TerrainWorld>();
-            if (ImGui::MenuItem("Terrain world from this terrain's heightmap", nullptr, false, canRebuild)) addWorldFromTerrainRequested_ = true;
-            ImGui::SetItemTooltip("Rebuilds the terrain as a small BOUNDED world: one tile as wide as the terrain, with the same heightmap, height\nand cell size, standing where the terrain stands. The terrain itself stays until you delete it. Sculpting, painting and\nrivers are not carried over yet (they come with the world's edits).");
+            if (ImGui::MenuItem("Terrain world from this terrain (migrate)", nullptr, false, canRebuild)) addWorldFromTerrainRequested_ = true;
+            ImGui::SetItemTooltip("Replaces the terrain with a small BOUNDED world standing where it stands: one tile as wide as the terrain, with the same\nheightmap, height, cell size, look and layer textures. Sculpting, noise and painting are carried over as the world's edits.\nThe old terrain stays in the scene until you delete it; rivers carved into it are part of its heights and come along.");
         }
         if (ImGui::MenuItem("Scatter on terrain (trees, rocks)", nullptr, false, scene_ && scene_->GetTerrain())) addScatterRequested_ = true;
         ImGui::SetItemTooltip("Grows trees and rocks over the terrain by rules (which layer, how steep, how high),\ndrawn with instancing, frustum culling and levels of detail. Needs a terrain.");
@@ -714,9 +722,25 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
     const XMFLOAT4X4 projection = camera.GetProjectionMatrix();
 
     // Sculpt mode needs the terrain: if it is gone (deleted, or a scene without one was opened) the mode simply ends.
-    Terrain* sculptTerrain = sculptMode_ ? ctx.scene.GetTerrain() : nullptr;
-    if (sculptMode_ && !sculptTerrain) sculptMode_ = false;
-    if (sculptStroking_ && !sculptTerrain) FinishSculptStroke(ctx.scene.GetTerrain());   // mode left in mid-stroke
+    // The brush works on a terrain WORLD when the world (or one of its tiles) is selected or when it is the only terrain; strokes are then stored in
+    // the world and carry on across tile borders. Otherwise it works on the old single terrain.
+    TerrainWorld* sculptWorld = nullptr;
+    Terrain* sculptTerrain = nullptr;
+    if (sculptMode_) {
+        TerrainWorld* anyWorld = ctx.scene.FindFirst<TerrainWorld>();
+        Terrain* single = FindSingleTerrain(ctx.scene);
+        const SceneObject* chosen = SelectedObject();
+        const auto* chosenTerrain = dynamic_cast<const Terrain*>(chosen);
+        const bool worldChosen = dynamic_cast<const TerrainWorld*>(chosen) != nullptr || (chosenTerrain && chosenTerrain->IsTile());
+        if (anyWorld && (!single || worldChosen)) sculptWorld = anyWorld;
+        else sculptTerrain = single;
+    }
+    const bool sculpting = sculptTerrain != nullptr || sculptWorld != nullptr;
+    if (sculptMode_ && !sculpting) sculptMode_ = false;
+    if (sculptStroking_ && !sculpting) {   // mode left in mid-stroke
+        if (TerrainWorld* anyWorld = ctx.scene.FindFirst<TerrainWorld>(); anyWorld && strokeOnWorld_) FinishWorldStroke(anyWorld);
+        else FinishSculptStroke(FindSingleTerrain(ctx.scene));
+    }
 
     ImGuizmo::SetOrthographic(false);
     ImGuizmo::SetDrawlist();                       // draw into the Viewport window, on top of the image
@@ -729,7 +753,7 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
     Water* riverWater = nullptr;
     if (riverEditMode_) {
         riverWater = dynamic_cast<Water*>(selected);
-        if (sculptTerrain || !riverWater || !riverWater->GetSettings().HasCurrent()) { riverEditMode_ = false; riverSpringMode_ = false; riverDragIndex_ = -1; riverWater = nullptr; }
+        if (sculpting || !riverWater || !riverWater->GetSettings().HasCurrent()) { riverEditMode_ = false; riverSpringMode_ = false; riverDragIndex_ = -1; riverWater = nullptr; }
     }
     if (selected) {
         XMFLOAT4X4 boundsWorld;
@@ -747,7 +771,7 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
 
         XMFLOAT3 position, rotation, scale;
         Water* selectedWater = dynamic_cast<Water*>(selected);
-        if (!sculptTerrain && !riverWater && selected->GetEditorTransform(position, rotation, scale) &&   // no gizmo while sculpting or drawing a river
+        if (!sculpting && !riverWater && selected->GetEditorTransform(position, rotation, scale) &&   // no gizmo while sculpting or drawing a river
             (gizmoTool_ != GizmoTool::Rotate || selected->SupportsRotation()) &&
             (gizmoTool_ != GizmoTool::Scale || selected->SupportsScale() || selectedWater)) {
             // Water is sized by its Width and Length, so for it the Scale tool edits THOSE: the gizmo is composed at the plane's
@@ -787,7 +811,7 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
 
     // Click = pick. Only when the click is not on the gizmo's handles, or grabbing an arrow would also select
     // whatever object is behind it.
-    if (!sculptTerrain && !riverWater && viewportHovered_ && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
+    if (!sculpting && !riverWater && viewportHovered_ && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
         const ImVec2 mouse = ImGui::GetMousePos();
         const float ndcX = ((mouse.x - x) / width) * 2.0f - 1.0f;
         const float ndcY = 1.0f - ((mouse.y - y) / height) * 2.0f;   // screen y grows downward, ndc y grows upward
@@ -825,6 +849,7 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
 
         if (viewportHovered_ && onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             strokeIsPaint_ = (brushTarget_ == 1);   // fixed for the whole stroke, even if the target is changed meanwhile
+            strokeOnWorld_ = false;
             if (strokeIsPaint_) {
                 sculptTerrain->BeginPaintStroke();
             } else {
@@ -864,6 +889,58 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
             DrawBrushRing(ImGui::GetWindowDrawList(), *sculptTerrain, point.x, point.z, brush_.radius, view, projection,
                           x, y, width, height, paintBrush ? IM_COL32(90, 200, 255, 255) : IM_COL32(255, 220, 80, 255));
             ImGui::GetWindowDrawList()->PopClipRect();
+        }
+    }
+
+    // ---- Sculpting and painting a terrain WORLD: the same press / hold / release, but the brush works on the world's lattice, so a stroke
+    // over a tile border is one stroke, and what it changes is stored per tile (src/WorldEdits.h). The touched tiles are rebuilt by the world. ----
+    if (sculptWorld) {
+        const ImGuiIO& io = ImGui::GetIO();
+        const float ndcX = ((io.MousePos.x - x) / width) * 2.0f - 1.0f;
+        const float ndcY = 1.0f - ((io.MousePos.y - y) / height) * 2.0f;
+        float distance = 0.0f;
+        XMFLOAT3 point(0.0f, 0.0f, 0.0f);
+        const bool onGround = (viewportHovered_ || sculptStroking_) &&
+                              sculptWorld->Raycast(ctx.scene, MakePickRay(view, projection, ndcX, ndcY), distance, &point);
+        if (viewportHovered_ && onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            strokeIsPaint_ = (brushTarget_ == 1);
+            strokeOnWorld_ = true;
+            sculptWorld->BeginStroke();
+            if (!strokeIsPaint_) brush_.targetHeight = sculptWorld->GroundHeight01(point.x, point.z);   // Flatten works towards where the stroke began
+            sculptStroking_ = true;
+        }
+        if (sculptStroking_ && strokeOnWorld_) {
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                if (onGround) {
+                    const float seconds = (std::min)(io.DeltaTime, 0.05f);   // a long frame must not make the ground lurch
+                    if (strokeIsPaint_) {
+                        PaintBrush paint;
+                        paint.layer = brushLayer_;
+                        paint.erase = (brushErase_ != io.KeyShift);
+                        paint.radius = brush_.radius;
+                        paint.strength = brush_.strength;
+                        paint.falloff = brush_.falloff;
+                        sculptWorld->PaintStep(paint, point.x, point.z, seconds);
+                    } else {
+                        BrushSettings step = brush_;
+                        if (io.KeyShift && step.mode == BrushMode::Raise) step.mode = BrushMode::Lower;
+                        else if (io.KeyShift && step.mode == BrushMode::Lower) step.mode = BrushMode::Raise;
+                        sculptWorld->SculptStep(step, point.x, point.z, seconds);
+                    }
+                }
+            } else {
+                FinishWorldStroke(sculptWorld);
+            }
+        }
+        if (onGround) {
+            // The ring is draped over the tile under the middle of the brush (the part of it over a neighbour is not drawn).
+            if (const Terrain* ringTile = sculptWorld->TileAt(ctx.scene, point.x, point.z)) {
+                ImGui::GetWindowDrawList()->PushClipRect(ImVec2(x, y), ImVec2(x + width, y + height), true);
+                const bool paintBrush = sculptStroking_ ? strokeIsPaint_ : (brushTarget_ == 1);
+                DrawBrushRing(ImGui::GetWindowDrawList(), *ringTile, point.x, point.z, brush_.radius, view, projection,
+                              x, y, width, height, paintBrush ? IM_COL32(90, 200, 255, 255) : IM_COL32(255, 220, 80, 255));
+                ImGui::GetWindowDrawList()->PopClipRect();
+            }
         }
     }
 
@@ -976,29 +1053,23 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
     }
     if (addWorldFromTerrainRequested_) {
         addWorldFromTerrainRequested_ = false;
-        const Terrain* single = ctx.scene.GetTerrain();
-        if (single && !single->IsTile() && !ctx.scene.FindFirst<TerrainWorld>()) {
-            // The old terrain is centred on its position and its width, depth and height are scaled by its transform. The world's picture
-            // is placed by its corner, so the corner is the position minus half the size. The world's tiles start at ground level 0.
-            DirectX::XMFLOAT3 position, rotation, scale;
-            if (!single->GetEditorTransform(position, rotation, scale)) { position = { 0.0f, 0.0f, 0.0f }; scale = { 1.0f, 1.0f, 1.0f }; }
-            const HeightfieldLayout& layout = single->GetHeightfield().GetLayout();
-            const float width = layout.sizeX * scale.x, depth = layout.sizeZ * scale.z;
-
-            TerrainWorldSettings settings;
-            settings.source = WorldSourceKind::Picture;
-            settings.picturePath = single->GetHeightmapPath();
-            settings.pictureWidth = width;
-            settings.pictureOffsetX = position.x - 0.5f * width;
-            settings.pictureOffsetZ = position.z - 0.5f * depth;
-            settings.heightScale = single->GetSettings().heightScale * scale.y;
-            settings.grid = WorldGridForTerrain(width, single->GetSettings().maxCells);
+        Terrain* single = FindSingleTerrain(ctx.scene);
+        if (single && !ctx.scene.FindFirst<TerrainWorld>()) {
             TerrainWorld* world = ctx.scene.Add<TerrainWorld>(ctx.renderer.GetDevice());
             if (world) {
-                world->SetSettings(settings);
+                world->SetSettings(WorldSettingsFromTerrain(*single));
+                MigrationStats stats;
+                const bool carried = world->AdoptFrom(*single, &stats);
                 world->SetName("Terrain world (from terrain)");
-                RecordAdded(world, "Add terrain world from terrain");
+                RecordAdded(world, "Migrate terrain to world");
                 Select(world);
+                if (carried) {
+                    ShowMessage("Terrain migrated",
+                                "The world stands where the terrain stood. " + std::to_string(stats.heightSamples) + " height samples and " + std::to_string(stats.paintCells) +
+                                " painted cells were carried over as edits.\n\nThe old terrain is still in the scene: when the world looks right, select the old terrain and delete it (Delete key).\nUntil then both are drawn.");
+                } else {
+                    ShowMessage("Terrain migrated, with a warning", "The world was made, but its ground could not be built (see the Terrain world's status in the inspector), so the sculpting was not carried over.");
+                }
             }
         }
     }
@@ -2636,10 +2707,17 @@ void EditorLayer::DrawShadowInspector()
 
 void EditorLayer::ToggleSculptMode()
 {
-    Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;
-    if (!terrain) { sculptMode_ = false; return; }
+    TerrainWorld* world = scene_ ? scene_->FindFirst<TerrainWorld>() : nullptr;
+    Terrain* single = scene_ ? FindSingleTerrain(*scene_) : nullptr;
+    if (!world && !single) { sculptMode_ = false; return; }
     sculptMode_ = !sculptMode_;
-    if (sculptMode_) Select(terrain);   // the brush settings live in the terrain's inspector
+    if (!sculptMode_) return;
+    // The brush settings live in the inspector of what is sculpted: the world's, or the old terrain's. If something of the world is already
+    // selected, or there is no old terrain, it is the world.
+    const SceneObject* chosen = SelectedObject();
+    const auto* chosenTerrain = dynamic_cast<const Terrain*>(chosen);
+    const bool worldChosen = dynamic_cast<const TerrainWorld*>(chosen) != nullptr || (chosenTerrain && chosenTerrain->IsTile());
+    if (world && (!single || worldChosen)) Select(world); else Select(single);
 }
 
 // The mouse button came up (or the mode ended): what the stroke changed becomes ONE undo step.
@@ -2665,6 +2743,40 @@ void EditorLayer::RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch p
         if (auto* terrain = dynamic_cast<Terrain*>(scene_->Find(terrainId))) terrain->ApplyPatch(*shared, redo);
     };
     history_.Push(std::make_unique<LambdaCommand>(name, [run]() { run(false); }, [run]() { run(true); }));
+}
+
+void EditorLayer::FinishWorldStroke(TerrainWorld* world)
+{
+    sculptStroking_ = false;
+    strokeOnWorld_ = false;
+    if (!world) return;
+    WorldEditPatch patch = world->EndStroke();
+    if (!patch.IsEmpty()) RecordWorldStroke(std::move(patch), strokeIsPaint_);
+}
+
+void EditorLayer::RecordWorldStroke(WorldEditPatch patch, bool paint)
+{
+    // The command holds the patch (not the world, which may be reloaded) and looks the world up when it runs.
+    const auto shared = std::make_shared<WorldEditPatch>(std::move(patch));
+    auto run = [this, shared](bool redo) {
+        if (!scene_) return;
+        if (auto* world = scene_->FindFirst<TerrainWorld>()) world->ApplyEditPatch(*shared, redo);
+    };
+    history_.Push(std::make_unique<LambdaCommand>(paint ? "Paint terrain world" : "Sculpt terrain world", [run]() { run(false); }, [run]() { run(true); }));
+}
+
+void EditorLayer::ClearWorldEdits(TerrainWorld* world, bool heights, bool paint)
+{
+    if (!world) return;
+    const std::shared_ptr<WorldEdits> before = world->CopyEdits();
+    world->ClearEdits(heights, paint);
+    const std::shared_ptr<WorldEdits> after = world->CopyEdits();
+    auto replace = [this](const std::shared_ptr<WorldEdits>& edits) {
+        if (!scene_) return;
+        if (auto* target = scene_->FindFirst<TerrainWorld>()) target->ReplaceEdits(*edits);
+    };
+    history_.Push(std::make_unique<LambdaCommand>(heights ? "Discard world sculpting" : "Clear world painting",
+                                                  [replace, before]() { replace(before); }, [replace, after]() { replace(after); }));
 }
 
 void EditorLayer::DiscardSculpt(Terrain* terrain)
@@ -2711,7 +2823,7 @@ void EditorLayer::ClearPaint(Terrain* terrain)
                                                   [replace, after]() { replace(after, false); }));
 }
 
-void EditorLayer::DrawSculptSection(Terrain* terrain)
+void EditorLayer::DrawSculptSection(Terrain* terrain, TerrainWorld* world)
 {
     // ImGui tells widgets apart by their label, and the noise section below also has a "Strength" slider. Without
     // its own ID scope the two would be ONE widget: dragging either would move both.
@@ -2755,13 +2867,29 @@ void EditorLayer::DrawSculptSection(Terrain* terrain)
     ImGui::SliderFloat("Falloff", &brush_.falloff, 0.0f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("0 = full strength right to the edge of the brush, 1 = fades out from the centre.");
 
-    if (terrain->IsSculpted()) {
+    if (world) {
+        // A terrain world keeps what the brush did PER TILE (src/WorldEdits.h) in one file beside the scene.
+        if (world->HasEdits()) {
+            ImGui::TextDisabled("%d tiles carry hand-made edits. Saved next to the scene file (.worldedits).", static_cast<int>(world->Edits().BlockCount()));
+            ImGui::TextDisabled("Metres per cell is locked while the world carries edits.");
+        }
+        if (world->Edits().HasHeightEdits()) {
+            if (ImGui::Button("Discard sculpting")) ClearWorldEdits(world, true, false);
+            ImGui::SetItemTooltip("Back to the picture or hills everywhere. Undo brings the sculpting back.");
+        }
+        if (world->Edits().HasPaint()) {
+            if (world->Edits().HasHeightEdits()) ImGui::SameLine();
+            if (ImGui::Button("Clear painting")) ClearWorldEdits(world, false, true);
+            ImGui::SetItemTooltip("Back to the automatic rules everywhere. Undo brings the painting back.");
+        }
+    }
+    if (terrain && terrain->IsSculpted()) {
         ImGui::TextDisabled("Shaped by hand. Saved next to the scene file as a 16-bit PNG.");
         ImGui::TextDisabled("Mesh resolution, noise and the heightmap are locked until you discard.");
         if (ImGui::Button("Discard sculpting")) DiscardSculpt(terrain);
         ImGui::SetItemTooltip("Go back to the heightmap and noise. Undo brings the sculpting back.");
     }
-    if (terrain->IsPainted()) {
+    if (terrain && terrain->IsPainted()) {
         ImGui::TextDisabled("Painted by hand. Saved next to the scene file as a PNG.");
         ImGui::TextDisabled("Mesh resolution and the heightmap are locked until you clear the painting.");
         if (ImGui::Button("Clear painting")) ClearPaint(terrain);
@@ -2772,6 +2900,7 @@ void EditorLayer::DrawSculptSection(Terrain* terrain)
 
 void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
 {
+    DrawSculptSection(nullptr, world);
     ImGui::SeparatorText("Terrain world");
     // Changing the world rebuilds every tile, so a value is applied when you RELEASE its control, not on every frame of a drag.
     // While a control is being edited we keep our own copy (re-reading the world every frame would throw the edit away before it is
@@ -2849,8 +2978,10 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
     ImGui::SliderFloat("View distance (m)", &s.viewDistance, TerrainWorldSettings::kViewDistanceMin, TerrainWorldSettings::kViewDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
     commitOnRelease();
     ImGui::SetItemTooltip("Tiles nearer than this to the camera are loaded. Far tiles are built with fewer cells (every level has a quarter of\nthe cells of the one before), so a long view is cheap. At most %d tiles are kept.", TerrainWorldSettings::kMaxTiles);
+    ImGui::BeginDisabled(world->HasEdits());   // the edits sit on the grid's cells: a new grid would lose them
     ImGui::SliderFloat("Metres per cell", &s.grid.metresPerCell, 1.0f, 16.0f, "%.1f");
     commitOnRelease();
+    ImGui::EndDisabled();
     ImGui::SetItemTooltip("The resolution of the whole world. A tile always has 256 cells (8 chunks), so this sets its size too.");
     ImGui::TextDisabled("Tile: %d cells of %.1f m = %.0f m.   %d tiles loaded.", s.grid.TileCells(), s.grid.metresPerCell, s.grid.TileSize(), world->LoadedTileCount());
     if (world->ActiveBounds().bounded) {
@@ -2861,6 +2992,69 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
     }
     ImGui::TextDisabled("By detail (full, 1/4, 1/16, 1/64 of the cells): %d, %d, %d, %d", world->LoadedTileCountAtLod(0), world->LoadedTileCountAtLod(1),
                         world->LoadedTileCountAtLod(2), world->LoadedTileCountAtLod(3));
+    // ---- GROUND SHAPE (roadmap, heightmap customisation): the controls that turn a picture into good-looking terrain ----
+    ImGui::SeparatorText("Ground shape");
+    if (const HeightImageStats* stats = world->PictureStats()) {
+        const float slope = SlopeDegrees(stats->meanGradient, s.heightScale, world->PictureMetresPerPixel());
+        ImGui::TextDisabled("Picture %d px wide, %.2f m per pixel. It uses %.0f%% of its grey range (%.2f to %.2f); typical slope %.1f degrees.",
+                            world->PictureWidthPixels(), world->PictureMetresPerPixel(), stats->UsedRange() * 100.0f, stats->low, stats->high, slope);
+        if (stats->UsedRange() < 0.6f && s.shape.blackPoint == 0.0f && s.shape.whitePoint == 1.0f) {
+            ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f), "This picture only uses part of its grey range, so the terrain spans only part of the height scale. Auto levels stretches it.");
+        }
+        if (ImGui::Button("Auto levels")) world->AutoLevels();
+        ImGui::SetItemTooltip("Sets black and white point from what the picture really spans (ignoring the darkest and brightest half percent),\nso the lowest ground is at the bottom of the height scale and the highest at the top.");
+        ImGui::SameLine();
+    }
+    if (ImGui::BeginCombo("Preset", "Choose...")) {
+        for (int preset = 0; preset < kHeightShapePresetCount; ++preset) {
+            if (ImGui::Selectable(HeightShapePresetName(preset))) {
+                const float black = s.shape.blackPoint, white = s.shape.whitePoint;   // a preset sets the character, not the levels
+                s.shape = HeightShapePreset(preset);
+                s.shape.blackPoint = black;
+                s.shape.whitePoint = white;
+                commit = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SliderFloat("Black point", &s.shape.blackPoint, 0.0f, 0.99f, "%.3f");
+    commitOnRelease();
+    ImGui::SetItemTooltip("Picture values at or below this become the lowest ground.");
+    ImGui::SliderFloat("White point", &s.shape.whitePoint, 0.01f, 1.0f, "%.3f");
+    commitOnRelease();
+    ImGui::SetItemTooltip("Picture values at or above this become the highest ground.");
+    ImGui::SliderFloat("Curve", &s.shape.curve, HeightShapeSettings::kCurveMin, HeightShapeSettings::kCurveMax, "%.2f", ImGuiSliderFlags_Logarithmic);
+    commitOnRelease();
+    ImGui::SetItemTooltip("Above 1: flat lowlands and sharper peaks (mountains). Below 1: broad highlands. 1: as the picture is.");
+    if (ImGui::Checkbox("Invert", &s.shape.invert)) commit = true;
+    if (s.source == WorldSourceKind::Picture) {
+        ImGui::SliderFloat("Smoothing (px)", &s.shape.smoothing, 0.0f, HeightShapeSettings::kSmoothingMax, "%.0f");
+        commitOnRelease();
+        ImGui::SetItemTooltip("Blurs the picture. Removes the steps of an 8-bit image and the faceting of a small picture stretched over a big world.");
+        if (ImGui::Checkbox("Smooth interpolation (bicubic)", &s.shape.bicubic)) commit = true;
+        ImGui::SetItemTooltip("A smooth curve through the pixels instead of straight lines between them. Off matches the old terrain exactly.");
+    }
+    ImGui::SliderFloat("Detail strength (m)", &s.shape.detailStrength, 0.0f, 60.0f, "%.1f");
+    commitOnRelease();
+    ImGui::SetItemTooltip("Fine bumps added on top, in METRES (they do not change with the height scale). A picture cannot hold detail finer than its pixels.");
+    if (s.shape.detailStrength > 0.0f) {
+        ImGui::SliderFloat("Detail size (m)", &s.shape.detailWavelength, HeightShapeSettings::kDetailWavelengthMin, HeightShapeSettings::kDetailWavelengthMax, "%.0f", ImGuiSliderFlags_Logarithmic);
+        commitOnRelease();
+        ImGui::SliderInt("Detail layers##shape", &s.shape.detailOctaves, 1, 8);
+        commitOnRelease();
+        if (ImGui::Checkbox("Ridged (sharp creases)", &s.shape.detailRidged)) commit = true;
+        ImGui::SliderFloat("Keep low ground smooth", &s.shape.detailValleyMask, 0.0f, 1.0f, "%.2f");
+        commitOnRelease();
+        ImGui::SetItemTooltip("0: detail everywhere. 1: none in the lowest ground, so shores and riverbeds stay clean.");
+        ImGui::InputInt("Detail seed", &s.shape.detailSeed);
+        commitOnRelease();
+    }
+    if (s.customMaterial) {
+        ImGui::SeparatorText("Look");
+        ImGui::TextDisabled("The slope and height rules, tints and layer images carried over from the terrain this world came from.");
+        if (ImGui::Button("Use the automatic look")) { s.customMaterial = false; commit = true; }
+        ImGui::SetItemTooltip("The automatic rules, scaled to this world's height. Layer textures are the default ones.");
+    }
     if (commit) world->SetSettings(s);   // every tile is rebuilt from the new settings
 
     // Beyond the view distance there is no land at all. Fog is what makes that look like distance instead of an edge.
@@ -2886,7 +3080,7 @@ void EditorLayer::DrawTerrainInspector(Terrain* terrain)
 
     if (terrain->IsTile()) {
         ImGui::SeparatorText("Terrain world");
-        ImGui::TextWrapped("Tile (%d, %d) of a terrain world. Its heights, size and resolution come from the world (select the Terrain world in the Hierarchy to change them), so it cannot be sculpted, carved or moved yet: an edit would open a seam with its neighbours. Layers and painting work as usual, but a painted tile is dropped when it is unloaded.",
+        ImGui::TextWrapped("Tile (%d, %d) of a terrain world. Its heights, size and resolution come from the world (select the Terrain world in the Hierarchy to change them). Sculpt and paint it with the brush (4): strokes are stored in the world, carry on across tile borders and survive the tile being unloaded. The layer settings below change this tile only.",
                            terrain->GetTile().coord.x, terrain->GetTile().coord.z);
     } else {
         DrawSculptSection(terrain);

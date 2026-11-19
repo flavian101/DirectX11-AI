@@ -76,9 +76,7 @@ inline void from_json(const json& j, WorldRiver& river)
         river.path.push_back(s);
     }
 }
-// source is stored as a number (0 fractal hills, 1 picture). A scene saved before the picture source existed has none of the
-// new keys and loads as the endless fractal world it always was.
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainWorldSettings, grid, source, fractal, picturePath, pictureWidth, pictureOffsetX, pictureOffsetZ, bounds, heightScale, viewDistance, rivers)
+
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PostSettings, srgbEncode, exposureEV, toneMapper)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ShadowSettings, enabled, resolution, depthBias, slopeBias, normalOffset, strength)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WindSettings, direction, strength)
@@ -121,4 +119,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainSettings, width, heightSc
                                                 roughnessScale, groundTint, rockTint, slopeStart, slopeFade, shoreHeight, shoreWidth,
                                                 snowHeight, snowFade, breakupScale, breakupAmount, shoreColor, snowColor, frustumCulling,
                                                 lodEnabled, lodDistance0, lodDistance1)
+// The shape of a world's ground (levels, curve, smoothing, detail noise): src/WorldShape.h.
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HeightShapeSettings, blackPoint, whitePoint, curve, invert, smoothing, bicubic, detailStrength,
+                                                detailWavelength, detailOctaves, detailSeed, detailRidged, detailValleyMask)
+// Defined AFTER TerrainSettings: a world can carry the material of the terrain it was migrated from. `source` is stored as a number (0 fractal
+// hills, 1 picture). A scene saved before the picture source, the shape or the material existed has none of the new keys and loads as the
+// endless fractal world it always was. (The world's EDITS are not here: they are a file beside the scene, see SceneSerializer.cpp.)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainWorldSettings, grid, source, fractal, picturePath, pictureWidth, pictureOffsetX, pictureOffsetZ, bounds,
+                                                shape, customMaterial, material, layerPaths, heightScale, viewDistance, rivers)
 

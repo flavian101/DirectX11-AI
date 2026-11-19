@@ -1,4 +1,5 @@
 #pragma once
+#include "WorldEdits.h"
 #include "AssetBrowserPanel.h"
 #include "ConsolePanel.h"
 #include "GpuTimer.h"
@@ -71,7 +72,7 @@ private:
     void DrawEnvironmentInspector();
     void DrawTerrainInspector(Terrain* terrain);
     void DrawTerrainWorldInspector(TerrainWorld* world);
-    void DrawSculptSection(Terrain* terrain);
+    void DrawSculptSection(Terrain* terrain, TerrainWorld* world = nullptr);   // the brush; `world`: the same brush on a terrain world
     void DrawWaterInspector(Water* water);
     void DrawAddWaterItems();
     void DrawAddLightItems();                                               // Sun / Moon / Point light: the items of the "Light" menus
@@ -119,6 +120,9 @@ private:
     // --- terrain sculpting (lesson 27) ---
     void ToggleSculptMode();                                      // on: selects the terrain; off: lets go of it
     void FinishSculptStroke(Terrain* terrain);                    // the mouse button came up: one undo step
+    void FinishWorldStroke(TerrainWorld* world);                  // the same for a stroke on a terrain world
+    void RecordWorldStroke(WorldEditPatch patch, bool paint);
+    void ClearWorldEdits(TerrainWorld* world, bool heights, bool paint);   // "Discard sculpting" / "Clear painting" of a world (undoable)
     void RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch patch, const char* name = "Sculpt terrain");
     // --- rivers as curves (lesson 38) ---
     void DrawRiverPathInspector(Water* water, WaterSettings& settings, bool& changed);   // the "River curve" part of the Current section
@@ -206,6 +210,7 @@ private:
     bool addScatterRequested_ = false;   // add a scatter (trees and rocks on the terrain) at the start of the next frame
     bool addTerrainWorldRequested_ = false;   // add a 3 x 3 terrain world (lesson 48) at the start of the next frame
     bool addWorldFromTerrainRequested_ = false;   // rebuild the scene's terrain as a bounded terrain world (roadmap phase 1) at the start of the next frame
+    bool strokeOnWorld_ = false;                  // the stroke in progress is on a terrain world (not on the old single terrain)
     bool worldPictureRequested_ = false;          // open the image dialog for the terrain world's picture next frame
     int addWaterType_ = -1;           // >= 0: add a water body of this WaterBodyType at the start of the next frame
     bool duplicateRequested_ = false;

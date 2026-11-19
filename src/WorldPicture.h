@@ -31,10 +31,15 @@ bool LoadHeightImage(const std::string& path, HeightImage& image, std::string& e
 // Bilinear lookup at (u, v) in 0..1 across the picture (clamped). Identical to the old terrain's SampleHeightmap.
 float SampleHeightImage(const HeightImage& image, float u, float v);
 
+// The same lookup with a smooth (Catmull-Rom) curve through the pixels instead of straight lines between them: less faceted when a
+// small picture is stretched over a large world. It can overshoot a little at sharp edges, so the result is clamped to 0..1.
+float SampleHeightImageBicubic(const HeightImage& image, float u, float v);
+
 class PictureHeightSource final : public WorldHeightSource {
 public:
     // `image` is shared, never copied: every tile of the world reads the same one. Sizes are metres and must be > 0.
-    PictureHeightSource(std::shared_ptr<const HeightImage> image, double offsetX, double offsetZ, double sizeX, double sizeZ);
+    // `bicubic` false is the old terrain's straight-line blend (what a migrated terrain needs to match sample for sample).
+    PictureHeightSource(std::shared_ptr<const HeightImage> image, double offsetX, double offsetZ, double sizeX, double sizeZ, bool bicubic = false);
     float Height01(double worldX, double worldZ) const override;
 
     double SizeX() const { return sizeX_; }
@@ -45,6 +50,7 @@ public:
 private:
     std::shared_ptr<const HeightImage> image_;
     double offsetX_, offsetZ_, sizeX_, sizeZ_;
+    bool bicubic_ = false;
 };
 
 // How deep a picture of this shape is when it is `width` metres wide.

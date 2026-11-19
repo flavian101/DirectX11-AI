@@ -100,6 +100,8 @@ add_library(Engine STATIC
 	src/Terrain.cpp
 	src/WorldGrid.cpp
 	src/WorldPicture.cpp
+	src/WorldShape.cpp
+	src/WorldEdits.cpp
 	src/WorldRivers.cpp
 	src/TerrainWorld.cpp
 	src/Heightfield.cpp
@@ -249,6 +251,15 @@ if(BUILD_TESTS)
     add_executable(WorldPictureTests tests/world_picture_test.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/Heightfield.cpp src/Png16.cpp src/libs/stb_image.cpp)
     target_include_directories(WorldPictureTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME WorldPicture COMMAND WorldPictureTests)
+    # Heightmap customisation (levels, curve, smoothing, bicubic, detail noise) and auto levels.
+    add_executable(WorldShapeTests tests/world_shape_test.cpp src/WorldShape.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
+    target_include_directories(WorldShapeTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME WorldShape COMMAND WorldShapeTests)
+    # Sculpting and painting stored per tile, brush parity with the old terrain, and the migration of an old terrain.
+    add_executable(WorldEditsTests tests/world_edits_test.cpp src/WorldEdits.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/HeightfieldEdit.cpp src/TerrainPaint.cpp src/TerrainSplat.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
+    target_include_directories(WorldEditsTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(WorldEditsTests PRIVATE Threads::Threads)   # TerrainSplat.cpp bakes on several threads
+    add_test(NAME WorldEdits COMMAND WorldEditsTests)
     add_executable(ImageDownscaleTests tests/image_downscale_test.cpp)
     target_include_directories(ImageDownscaleTests PRIVATE ${CMAKE_SOURCE_DIR}/editor)
     add_test(NAME ImageDownscale COMMAND ImageDownscaleTests)
