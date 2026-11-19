@@ -1,4 +1,4 @@
-// Tests for src/WorldPicture.{h,cpp} and the bounded part of src/WorldGrid.{h,cpp} (phase 1 of docs/terrain-world-roadmap.md).
+// Tests for src/WorldPicture.{h,cpp} and the bounded part of src/WorldGrid.{h,cpp} (phase 1 of docs/ROADMAP.md).
 // No Direct3D, no framework.
 //   1. Sampling a picture: corners, bilinear middle, values outside the picture repeat the edge.
 //   2. A picture placed in the world: the corner, an offset, the far side, and a position 500 km from the origin.

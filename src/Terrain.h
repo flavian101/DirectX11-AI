@@ -40,7 +40,7 @@ struct TerrainViewStats {
 
 struct TerrainSettings {
 	// --- shape: changing any of these rebuilds the mesh ---
-	// UNITS: one world unit is one metre (docs/terrain-world-design.md). Width and height are independent and both ABSOLUTE:
+	// UNITS: one world unit is one metre (docs/ROADMAP.md). Width and height are independent and both ABSOLUTE:
 	// the heightmap picture is stretched over `width` metres and its white is `heightScale` metres tall, so making the terrain
 	// wider WITHOUT raising heightScale makes it flatter (slopes = height / distance). The editor can keep the proportions for you.
 	float width = 240.0f;       // metres along X; depth follows the heightmap's aspect ratio

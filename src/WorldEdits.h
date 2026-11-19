@@ -1,5 +1,5 @@
 #pragma once
-// EDITS OF A WORLD (phases 3 and 4 of docs/terrain-world-roadmap.md): sculpting and painting stored PER TILE, and the migration of an old
+// EDITS OF A WORLD (phases 3 and 4 of docs/ROADMAP.md): sculpting and painting stored PER TILE, and the migration of an old
 // single terrain into them. Plain maths and a small file format: no Direct3D. Tests: tests/world_edits_test.cpp.
 //
 // THE IDEA. The ground of a world is a function of the world position (source -> shape -> EDITS -> rivers). An edit is therefore not

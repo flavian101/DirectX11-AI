@@ -40,7 +40,7 @@
 
 ## What this patch does not do
 
-**The river is still a rectangle.** The speed profile uses the depth map, so it follows banks that exist in the terrain, but the plane itself is straight. That needs a river that is a CURVE: carve the terrain along it, build a ribbon mesh that follows it, and store the flow direction per point. It is patch 15 in `docs/water-roadmap.md`.
+**The river is still a rectangle.** The speed profile uses the depth map, so it follows banks that exist in the terrain, but the plane itself is straight. That needs a river that is a CURVE: carve the terrain along it, build a ribbon mesh that follows it, and store the flow direction per point. It is patch 15 in `docs/ROADMAP.md`.
 
 **The foam trail is an approximation.** Exact foam needs memory: a texture the foam is written into and that decays. That is patch 16.
 

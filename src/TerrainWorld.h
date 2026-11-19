@@ -16,7 +16,7 @@
 
 class Scene;
 
-// Where the ground of a world comes from (phase 1 of docs/terrain-world-roadmap.md). Both are functions of the WORLD position, so
+// Where the ground of a world comes from (phase 1 of docs/ROADMAP.md). Both are functions of the WORLD position, so
 // tiles meet without seams either way.
 enum class WorldSourceKind : int {
     Fractal = 0,   // endless hills from layered noise (the default)

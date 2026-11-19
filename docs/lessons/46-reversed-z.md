@@ -2,7 +2,7 @@
 
 ## Understand
 
-**Why now.** The terrain's width stops at 1 km because the camera's far plane was 1000 m, and the next step toward big worlds (tiles, see `docs/terrain-world-design.md`) needs the camera to see much farther. Pushing the far plane out is one number, but it makes the depth buffer lose its ability to tell two far surfaces apart.
+**Why now.** The terrain's width stops at 1 km because the camera's far plane was 1000 m, and the next step toward big worlds (tiles, see `docs/ROADMAP.md`) needs the camera to see much farther. Pushing the far plane out is one number, but it makes the depth buffer lose its ability to tell two far surfaces apart.
 
 **The depth buffer, in one paragraph.** For every pixel the GPU stores one number, the *depth*, and a new surface is drawn only if its depth says it is in front of what is stored. A perspective projection does not store the distance itself: it stores something shaped like 1/distance, scaled so the near plane is 0 and the far plane is 1. That is a good idea (nearby things need fine detail) but two things go wrong far away:
 

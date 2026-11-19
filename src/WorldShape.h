@@ -1,6 +1,6 @@
 #pragma once
 // SHAPING THE GROUND of a world: the controls that turn "a picture" into "good-looking terrain". Plain maths: no Direct3D.
-// Tests: tests/world_shape_test.cpp.   Roadmap: docs/terrain-world-roadmap.md, "Heightmap customisation".
+// Tests: tests/world_shape_test.cpp.   Roadmap: docs/ROADMAP.md, "Heightmap customisation".
 //
 // WHY A PICTURE LOOKS FLAT. Three usual reasons, and each gets a control:
 //   1. The picture uses a narrow band of grey (say 0.35 .. 0.45): the whole terrain then spans 10% of the height scale.

@@ -48,7 +48,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, {
 // listed: they are not part of what a scene IS.
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WorldGridSettings, chunksPerTile, metresPerCell)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FractalWorldSettings, seed, octaves, baseWavelength)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WorldBounds, bounded, minX, minZ, maxX, maxZ)   // (phase 1 of docs/terrain-world-roadmap.md)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WorldBounds, bounded, minX, minZ, maxX, maxZ)   // (phase 1 of docs/ROADMAP.md)
 // A river of the world: its settings, and the path as [x, z, halfWidth, level] per sample (the carve needs no more than that).
 inline void to_json(json& j, const WorldRiver& river)
 {

@@ -1,6 +1,6 @@
 #pragma once
 // The world as a grid of terrain tiles, as plain maths (no Direct3D, no DirectXMath): tests/world_grid_test.cpp.
-// Design note: docs/terrain-world-design.md (roadmap 7b). Nothing in the engine uses this yet; the next patches build on it.
+// Design note: docs/ROADMAP.md (roadmap 7b). Nothing in the engine uses this yet; the next patches build on it.
 //
 // THE IDEAS, in the order they depend on each other (lesson 47):
 //
@@ -54,7 +54,7 @@ struct WorldGridSettings {
     WorldGridSettings ForLod(int level) const;    // the grid of a tile at that level (clamped to MaxTileLod)
 };
 
-// THE EDGE OF THE WORLD (phase 1 of docs/terrain-world-roadmap.md). A world is endless unless it is BOUNDED: a rectangle of
+// THE EDGE OF THE WORLD (phase 1 of docs/ROADMAP.md). A world is endless unless it is BOUNDED: a rectangle of
 // tiles, given by its first and last tile (both inclusive, negative numbers allowed). No tile outside it is ever wanted, and a
 // loaded one outside it is dropped. A small terrain is then a small world: the old single terrain is "one tile, heights from a
 // picture" (roadmap, "Phasing out the single terrain").

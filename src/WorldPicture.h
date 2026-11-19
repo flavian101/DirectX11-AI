@@ -1,5 +1,5 @@
 #pragma once
-// A PICTURE as the ground of a world (phase 1 of docs/terrain-world-roadmap.md). Plain maths plus one image decoder: no Direct3D.
+// A PICTURE as the ground of a world (phase 1 of docs/ROADMAP.md). Plain maths plus one image decoder: no Direct3D.
 // Tests: tests/world_picture_test.cpp.
 //
 // WHY. The old single terrain stretches a heightmap over `width` metres. A world cannot do that per tile (two tiles would each

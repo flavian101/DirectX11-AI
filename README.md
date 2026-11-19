@@ -16,3 +16,7 @@ To build using the checked-out Assimp source instead of downloading it with Fetc
 cmake -S . -B out/build -G Ninja `
   -DFETCHCONTENT_SOURCE_DIR_ASSIMP="$PWD/extern/assimp"
 ```
+## Docs
+
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) is the single source of truth for the terrain, world, water and scatter plan: current state, known bugs, milestones and the rules the code must keep.
+- [`docs/lessons/`](docs/lessons/) explains how each piece was built. Lessons are history and are not updated when the plan changes.

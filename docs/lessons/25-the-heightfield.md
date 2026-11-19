@@ -44,7 +44,7 @@
 
 **"From above" only.** If the ray starts under the ground, `Raycast` returns false. Clicking from below the terrain has no useful meaning for placement.
 
-**Position and scale are allowed, rotation is not.** With only a move and a scale, world to local is "subtract the position, divide by the scale". With a rotation, a straight-down query becomes a slanted line through the field, and every query needs an inverse matrix. Normal engines avoid it: terrain is an axis-aligned grid (see `docs/terrain-world-design.md`). So `Terrain::SetEditorTransform` now ignores rotation.
+**Position and scale are allowed, rotation is not.** With only a move and a scale, world to local is "subtract the position, divide by the scale". With a rotation, a straight-down query becomes a slanted line through the field, and every query needs an inverse matrix. Normal engines avoid it: terrain is an axis-aligned grid (see `docs/ROADMAP.md`). So `Terrain::SetEditorTransform` now ignores rotation.
 
 **Far chunks and level of detail.** The queries answer for the full-detail mesh. A far chunk drawn at a coarse level skips vertices, so its visible surface differs slightly. Game logic must not depend on where the camera is, so objects are placed against the full-detail ground. At that distance nobody sees the small mismatch.
 
