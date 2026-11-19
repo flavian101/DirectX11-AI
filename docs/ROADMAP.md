@@ -1,4 +1,4 @@
-# Terrain, World and Water: roadmap and source of truth
+# Terrain, World, Water and Scatter: roadmap and source of truth
 
 This is the **only** planning document for the terrain, the world, the water and the scatter system. It replaces
 `terrain-world-design.md`, `terrain-world-roadmap.md`, `water-roadmap.md` and `scatter-ecosystem-design.md` (still readable in git
@@ -10,7 +10,8 @@ things were built and is never updated to match the plan.
 2. Every item has an ID (`T2`, `W1`...). Code comments and commit messages refer to IDs, never to phase numbers.
 3. An item is done only when its **acceptance** line holds and its tests exist in `tests/`.
 4. Status: `[x]` done, `[~]` written and unit-tested but not yet checked in the editor, `[ ]` open, `[!]` known bug.
-5. Facts in section 1 were read from the code at commit `f9e0401`. Nothing here was measured on a running build unless it says so.
+5. Facts about terrain and water were read from the code at commit `f9e0401`; facts about scatter and biomes (section 1 and M5) at commit `848a23f`.
+   Nothing here was measured on a running build unless it says so.
 
 ---
 
@@ -25,7 +26,7 @@ position: **source -> shape -> edits -> rivers**.
 | **Chunk** | 32 x 32 cells of mesh (`kTerrainChunkCells`). The unit of drawing: one draw, one bounding box, one LOD choice. |
 | **Tile** | `chunksPerTile` x chunk = 8 x 32 = 256 cells; at the default 4 m per cell, 1024 m. The unit of data and streaming. Neighbours share an edge row. |
 | **World** | A grid of tiles (`TerrainWorld`), endless (fractal) or bounded (picture). Only tiles near the camera are alive (max 256). |
-| **Biome** | A label on the ground (what is here). Data, not geometry. Recipes drive ground layers, scatter and mood. |
+| **Biome** | Overlapping weights on the ground (what lives here). Data, not geometry. Recipes drive scatter first, then ground layers and mood. **Not in the code yet**: today the four texture layers stand in for it (S4). |
 
 Three layers sit on top of each other: **shape** (the heightfield), **surface** (layers, biome id), **things** (scatter, buildings).
 Chunks and tiles cut across all three; ecosystems are never chunks.
@@ -46,7 +47,6 @@ Chunks and tiles cut across all three; ecosystems are never chunks.
 | Reversed-Z, 10 km far plane; sun shadow box follows the camera (400 m) in a world | `[x]` | lessons 46, 49 |
 | Sculpting on a world | `[~]` works, but **slow** (see T2) | `TerrainWorld::SculptStep` |
 | `World::HeightAt(x, z)` for collision | `[ ]` | |
-| Scatter over several tiles | `[ ]` (feeds on the first terrain) | `ScatterObject` |
 | Camera-relative rendering, cascaded shadows, tile building off the main thread | `[ ]` | |
 
 Defaults worth knowing: world `heightScale` 240 m, `metresPerCell` 4 (allowed 0.25 to 32), `pictureWidth` 1024 m, `viewDistance`
@@ -65,6 +65,20 @@ path: it is deleted at **M2** once the world covers every row of the table above
 | Body limits: size 2 to 2000 m, depth map capped near 131,072 texels (about 360 x 360), "no ground here" = 100 m deep | fact | `WaterSettings.h`, `WaterShore.h` |
 | Water measures the highest ground of every **loaded** tile | `[x]` | `Water::RefreshShoreDepth` |
 
+### Scatter and biomes
+
+| Area | State | Where |
+|---|---|---|
+| Placement: a lattice of squares, one hashed candidate each, a vote of the ground, Matern thinning. A pure function of (rules, ground, square index) | `[x]` tested | `ScatterPlacement.*`, `scatter_placement_test.cpp` |
+| Cells (32 m): regenerated when dirty, nearest first, within a time budget; per-cell frustum cull and 3 levels of detail; merged runs, one draw per variant and level; 32-byte GPU instance | `[x]` single terrain | `ScatterObject.cpp` |
+| Variants (up to 8 per species): weight, layer bias, slope band, material overrides | `[x]` | lesson 36 |
+| Shadows (distance cut, one level coarser) and a cheaper pass for the water mirror | `[x]` | `ScatterObject::Draw` |
+| Ground: the **first `Terrain` only**. Nothing grows on a world's tiles | `[!]` **S12** | `Scene::Update` calls `Refresh(GetTerrain(), ...)` |
+| Biomes | `[ ]` **S4**: `grep -ri biome src editor` finds nothing. `layerDensity[4]` and `layerBias[4]` (grass, rock, sand, snow) stand in | |
+| Knows about water | `[ ]` **S13**: `ScatterGround` holds a heightfield, a splat map and a transform, nothing else | |
+
+Sizes, for the clean-up: `ScatterObject.cpp` is 775 lines; the scatter inspector is about 310 lines inside `editor/EditorLayer.cpp` (4805 lines).
+
 ---
 
 ## 2. Known problems (the work queue starts here)
@@ -78,6 +92,10 @@ path: it is deleted at **M2** once the world covers every row of the table above
 | W2 `[ ]` | The sea is one plane, at most 2000 m, with a coarse CPU depth map, and it has no idea about tiles that are not loaded | `Water`, `WaterShore::Bake` | W2 below |
 | W3 `[ ]` | Rivers are one plane up to 2000 m (a found river is capped at 1500 m); no confluences or lake outlets | lesson 45 | W4 below |
 | X1 `[ ]` | The bounded world is a floating slab: raw edges, dark void | no backdrop | X1 below |
+| S12 `[!]` | Nothing grows on a world's tiles | Scatter has one grid over one `Terrain`'s extent, takes a `const Terrain*`, and tracks changes with that terrain's revision log | S12 below |
+| S4 `[ ]` | No biomes: a texture layer is the only way to say "where" | `layerDensity[4]` and `layerBias[4]` are tied to the 4 splat channels; a forest and a swamp on the same grass cannot differ; more than 4 layers (L2) would break the rules | S4 below |
+| S11 `[ ]` | Dead and duplicate code in scatter | see S11 for the list, each item read in the code | S11 below |
+| S13 `[ ]` | Scatter does not know about water | `ScatterGround` has no water input | S13 below |
 
 ---
 
@@ -154,11 +172,11 @@ The old terrain is deleted only when every row is `[x]`. Check each row against 
 | Undo and redo | touched lattice points | `[~]` |
 | **Collision and height queries** | `World::HeightAt(x, z)` across tiles | `[ ]` **C1** |
 | **Water reads world ground** | via the ground function (W1) | `[~]` |
-| **Scatter over every tile** | deterministic per tile, seed from the tile id | `[ ]` **C2** |
+| **Scatter over every tile** | deterministic per tile, seed from the tile id | `[ ]` **C2 = S12** |
 | Save and load | settings in the scene, edits in `.worldedits` | `[~]` |
 
 - **C1** `World::HeightAt` (ground function, plus an exact tile raycast for picking). Acceptance: matches `Terrain::GetHeightAt` on a one-tile world.
-- **C2** Scatter reads the ground of every tile; placement stays a pure function of (rules, ground, square index).
+- **C2** Scatter over every tile. The plan lives in **S12** only; this line is a pointer.
 - **C3** Run every demo scene through migration, then delete `Scene::GetTerrain()` callers, `Terrain::CarveRiver`, and heightmap-only settings.
 - **C4** Build tiles off the main thread; upload on the main thread with a per-frame budget.
 - **C5** Camera-relative rendering (tile index + offset, subtract the camera before the GPU); cascaded shadow maps.
@@ -174,7 +192,7 @@ The old terrain is deleted only when every row is `[x]`. Check each row against 
 
 **L1. Cliffs with bulging rock** `[ ]`
 A heightmap holds one height per position, so rock that bulges is geometry, not height.
-- Rock and cliff meshes scattered on steep slopes (a slope rule on a species; `ScatterObject` already exists), blended into the terrain material.
+- Rock and cliff meshes scattered on steep slopes (a slope rule on a species; `ScatterObject` already exists, so a cliff species is data, not a new system; needs **S12** to work on a world), blended into the terrain material.
 - Displacement (parallax or tessellation) on the near rock layer, using the height channel already packed in `diffHeight`.
 - Break the slope threshold with noise so cliff edges are not straight lines.
 - Acceptance: a slope above the rock threshold shows scattered rock meshes and relief on the rock layer in the editor.
@@ -200,8 +218,8 @@ A heightmap holds one height per position, so rock that bulges is geometry, not 
 
 **W3. Lakes and swamps** `[ ]`
 - Lakes: find basins in the ground function (flood fill from a seed below a level), fit a body to the basin; never one big plane at one level.
-- Swamps: a biome rule (low altitude within a small height of the water level, low slope, high flow accumulation) plus a **shallow-water**
-  body type: water 0.1 to 0.5 m over the ground, calm waves, dark mud layer, reeds and dead trees from scatter, ground fog.
+- Swamps: the **swamp biome** is defined in **S4** (the rule lives there only). The water side is a **shallow-water** body type: water 0.1 to 0.5 m
+  over the ground, calm waves, dark mud layer, ground fog. Reeds and dead trees are species of the swamp biome (S4), placed in shallow water by **S13**.
 - Acceptance: a swamp biome painted or ruled on flat low ground shows standing water in many shallow patches, not a lake.
 
 **W4. Rivers at world scale** `[ ]`
@@ -221,28 +239,105 @@ A heightmap holds one height per position, so rock that bulges is geometry, not 
 6. **Reflection**: mip chain by roughness, edge and distance fade, mean-level mirror on a river that falls.
 - Later: FFT ocean, bloom on the sun highlight, hover outline, ice and frozen rivers.
 
-### M5. Scatter and ecosystems
+### M5. Scatter and ecosystems: revamp
 
-Placement is a pure function of (rules, ground, square index): no state, so cells can be made alone, in any order, on any thread. Keep that.
-The GPU instance stays 32 bytes. Settings are plain JSON, undone by snapshot.
+**What stays** (read in the code, and tested): placement is a pure function of (rules, ground, square index), with random numbers from a hash of
+the square, so any cell can be made alone, in any order, on any thread, and cells never show seams. The cell grid with per-cell culling and
+levels of detail, the variant-major instance buffer with merged runs, and the 32-byte GPU instance also stay. Every item below changes what
+feeds these parts or what wraps them, not how they work.
+
+**What is wrong** (read at commit `848a23f`, none of it measured):
+1. **One ground.** `Scene::Update` calls `ScatterObject::Refresh(const Terrain*, ...)` with the first terrain. The grid, the dirty tracking
+   (`Terrain::GetSurfaceChangesSince`) and the one instance buffer per species all assume one terrain of a fixed size. A streaming world has none of that (**S12**).
+2. **No biome.** The word is in the docs and not in the code. "Where may a pine grow" is answered by the four texture layers, so a forest and a
+   swamp cannot differ on the same grass, and the rules are sized by `kSplatChannels` (**S4**).
+3. **One rule, six files.** A rule such as `clusterScale` is declared in `ScatterSpeciesSettings` and again in `ScatterRules`, copied in
+   `MakeBaseRules`, clamped by borrowing in `ScatterSpeciesSettings::Clamp`, saved in `SceneJson.h` and drawn in `EditorLayer.cpp`. Adding a rule is a hunt (**S11**).
+4. **Dead or duplicate.** `ScatterObject::GenerateAllNow` has no caller (not the editor, not a test). `ScatterRules::modelHeight` (the species-level one)
+   is never filled from the settings, so it is always 1.0. `ScatterSpeciesSettings::model` plus `variants` exist twice only so that lesson-31 scene
+   files load (`EffectiveVariants`). (**S11**)
+5. **Fragile.** A change in the rules is detected with `memcmp` over `ScatterRules`. It works only because every member is 4 bytes; one `bool` added
+   later makes it wrong without any warning (**S11**).
+6. **Too much in two files.** `ScatterObject.cpp` does five jobs (model cache, material loading, cell scheduling, upload, culling and drawing) and the
+   inspector sits inside the 4805-line `EditorLayer.cpp` (**S12** and **S11**).
+7. **Blind to water.** Nothing stops a species that likes the ground from growing under the sea or in a river bed (**S13**).
+
+**Order:** S11, S12, S4, S13, S6, S5, S7. S9, S10 and S14 only when a profiler or a screenshot asks for them.
 
 | ID | Item | Risk | State |
 |---|---|---|---|
 | S1 | Variants per species (mesh, materials, weight, layer bias, slope band) | low | `[x]` lesson 36 |
 | S2 | Built-in rocks and a starter scatter | very low | `[x]` |
-| S3 | Groups with inherited defaults (authoring only; compiles away) | low | `[ ]` |
-| S4 | Rule-based biomes: `ScatterSample.biome[]` from height, slope, layers, noise; `biomeDensity[]` per species | low-medium | `[ ]` |
-| S5 | Density-mask brush (paint and erase per species), reusing the paint tool, undo and dirty-cell regeneration | medium | `[ ]` |
-| S6 | Painted `BiomeMap` (a second texture beside the splat map, PNG next to it) | medium | `[ ]` |
+| S3 | ~~Groups with inherited defaults~~ | | dropped: a biome recipe (S4) lists its species, which is the same job. Revisit only if the species list gets long in practice |
+| S11 | Clean-up before anything new (no behaviour change) | low | `[ ]` |
+| S12 | One ground interface and cells per tile (this is C2) | medium-high | `[ ]` |
+| S4 | Biomes as data, rule-based | low-medium | `[ ]` |
+| S13 | Water depth and exclusion masks (roads, buildings) | medium | `[ ]` |
+| S6 | Painted `BiomeMap` (a second texture beside the splat map) | medium | `[ ]` |
+| S5 | Density-mask brush (paint and erase per species) | medium | `[ ]` |
 | S7 | Per-variant radius; share identical textures between variants | low-medium | `[ ]` |
-| S8 | Biome transitions and exclusion masks (roads, buildings) | medium | `[ ]` |
+| S8 | Biome transitions | none | free with S4 (overlapping weights); exclusion moved to S13 |
 | S9 | Direct instance painting (hero objects) | high | `[ ]` |
 | S10 | GPU-driven culling, texture-array variants | high | `[ ]` only if the profiler shows draw calls or CPU culling |
+| S14 | Far distance: density fade or billboards beyond the last mesh level | medium | `[ ]` proposal, only if a screenshot or the profiler asks (today a species has 3 levels, then it is culled by `cullScreen`) |
 
-A biome is a recipe: ground layers, scatter rules and mood (fog, ambient, water level). A forest is mostly scatter rules; a town is
-hand-placed objects on a flattened foundation and is a *place*, not a biome. Biome weights overlap, so blending between biomes is free
-(`density *= sum_b(sample.biome[b] * rules.biomeDensity[b])`). A species in no biome keeps today's behaviour. Known limits: one
-`minDistance` per species (S7); past `maxInstancesPerSpecies` the cut is by buffer order (minor); the instanced draw has no GPU test.
+**S11. Clean-up before anything new** `[ ]`
+- Delete `ScatterObject::GenerateAllNow`.
+- Delete the species-level `ScatterRules::modelHeight` and its `-1` fallback. A variant's height is then always the loaded mesh's.
+- Declare each rule once: `ScatterSpeciesSettings` holds a `ScatterRules` instead of copying about 20 fields into a second struct. `MakeBaseRules` and the
+  "borrow the rules to clamp" step in `ScatterSpeciesSettings::Clamp` go away. Same for variants.
+- Always store variants. The loader turns a lesson-31 file (a `"model"` and no `"variants"`) into a one-variant list once; then `model`, `EffectiveVariants()`
+  and the **Several looks...** path go. Old scene files must still load (`TestOldSceneFilesLoad` stays).
+- Replace the `memcmp` on `ScatterRules` with `operator==`.
+- Move the scatter inspector out of `EditorLayer.cpp` into `editor/ScatterInspector.cpp` (the split of `ScatterObject.cpp` is done inside S12, which rewrites the same code).
+- Acceptance: all existing scatter tests pass. A new golden test hashes the instances of `ScatterSettings::Starter()` over a fixed heightfield; the hash is
+  recorded **before** the first deletion and must not change. A new rule field touches the settings struct, the JSON and the inspector, not six files.
+
+**S12. One ground interface and cells per tile (C2)** `[ ]`
+- `SampleScatterGround` is already the only door through which placement reads the ground. Replace `ScatterGround` (a heightfield pointer, a splat pointer and a
+  transform) with a small interface: `Sample(x, z)` gives a `ScatterSample` (height, normal, layer weights; later biome weights and water depth).
+  Two implementations: one `Terrain` (legacy, until M2 deletes it) and the world's ground function (decision 12).
+- Cells belong to tiles. A tile that streams in makes its cells, a tile that unloads drops them, and a changed tile (sculpt, paint, river) marks only its own cells
+  dirty, by the tile's revision. This replaces the one grid over one terrain's extent.
+- Instance buffers per tile (or per small group of tiles) instead of one per species for everything. `maxInstancesPerSpecies` becomes a limit on the loaded
+  area, so the cut falls by distance, not by buffer order.
+- Split `ScatterObject.cpp` into model and material cache, cell scheduling and upload, and culling, level of detail and drawing.
+- Acceptance (`scatter_ground_test.cpp`): on a one-tile world the instances equal those of a single `Terrain` with the same heights and layers; the cells on both
+  sides of a tile border give the union (no seam, nothing doubled); streaming a tile out and in again gives the same instances. In the editor, a forest grows on
+  streamed tiles and leaves with them. Frame time on a 3 x 3 world is read from the timers: not measured.
+
+**S4. Biomes as data, rule-based** `[ ]`
+- Decision 11 (section 4): a biome is a set of overlapping weights on the ground, separate from the texture layers. A texture says how the ground looks; a biome
+  says what lives and happens there.
+- `ScatterSample.biome[kMaxBiomes]` (start with 8), made from height, slope, layer weights, a low-frequency noise and, later, flow and moisture (G1), by a
+  **biome recipe**: plain JSON, one entry per biome with ranges and a noise scale. A pure function, tested without Direct3D.
+- A species lists `biomeDensity[b]`, and `density *= sum_b(sample.biome[b] * biomeDensity[b])`. Blending between biomes is free.
+- `layerDensity` and the variants' `layerBias` are **removed** (decided by the author). A species uses `biomeDensity[b]`; a variant uses `biomeBias[b]`.
+  The recipe may read the splat weights as one input; a species never does.
+- Migration of old scenes: the built-in recipe has four ground biomes (Grass, Rock, Sand, Snow) whose weights equal the splat weights. The loader turns an
+  old `layerDensity[k]` into the `biomeDensity` of the matching ground biome, so an old scene generates the same instances.
+- Starter biomes: Forest, Meadow, Rocky, Swamp. The swamp rule (low altitude within a small height of the water level, low slope, high flow accumulation) is
+  defined here; W3 uses it.
+- A recipe may also name ground layers and mood (fog, ambient). Do the scatter part first; the rest when L2 and the Environment weather need it.
+- A town is hand-placed objects on a flattened foundation: a *place*, not a biome.
+- Acceptance (`biome_test.cpp`): weights are deterministic, equal across tile borders and sum to a stated total; a forest and a swamp on the same grass layer grow
+  different species; a scene saved before biomes loads, is migrated, and generates the same instances as before (the S11 golden hash).
+
+**S13. Water depth and exclusion** `[ ]`
+- `ScatterSample.waterDepth`: metres of water over the ground, from the world's ground function, the sea level (W2) and river corridors (W4).
+- A species gets `minWaterDepth` and `maxWaterDepth`. The default is dry ground only; reeds ask for 0 to 0.5 m.
+- Exclusion masks (roads, buildings, foundations): rectangles or polygons that remove candidates. Still a pure function of position.
+- Acceptance (`scatter_water_test.cpp`): with default rules nothing is placed where `waterDepth > 0`; contract 4 of section 5 holds with scatter on.
+
+**S6. Painted `BiomeMap`** `[ ]`: a second texture beside the splat map (a PNG beside the world edits), painted with the existing paint tool; where painted it
+overrides the recipe's weights. Undone by patch like paint. Acceptance: a stroke regenerates only the dirty cells; save and load round-trip.
+
+**S5. Density-mask brush** `[ ]`: paint and erase per species, reusing the S6 storage, the paint tool, undo and dirty-cell regeneration.
+
+**S7. Per-variant radius** `[ ]`: today there is one `minDistance` per species, so a huge boulder can stand closer to a neighbour than looks right. A per-variant
+radius feeds the thinning. Identical textures are shared between variants.
+
+Known limits left on purpose: the instanced draw has no GPU test; S10 and S14 wait for evidence.
 
 ---
 
@@ -258,6 +353,8 @@ hand-placed objects on a flattened foundation and is a *place*, not a biome. Bio
 8. **Heights are 16-bit or float everywhere**, never 8-bit.
 9. **Width and height scale are independent and absolute.** Make a terrain 4x wider at the same height scale and every slope is 4x gentler.
 10. **Placement stays a pure function; the instance stays 32 bytes** (scatter).
+11. **A biome is data on the ground, separate from the texture layers.** Texture layers say how the ground looks, biome weights say what lives there. Once S4 is done, plants never read the texture layers directly; only the biome recipe may.
+12. **Scatter reads the ground through one interface**, the world's ground function (decision 3), never a loaded mesh and never a `Terrain*` (S12).
 
 ---
 
@@ -303,5 +400,6 @@ as curves (38), drawing a river (39), only-the-river-is-water (40), a river that
 | water roadmap 15, 20a to 20c | `[x]` (section 1) |
 | water roadmap 20d | W4 |
 | water roadmap 16, 17, 18, 19; polish C, D, E | W5 (1 to 6) |
-| scatter design phases 1 to 10 | S1 to S10 |
+| scatter design phases 1 to 10 | S1 to S10, revised in M5 (S3 dropped, S8 split between S4 and S13) |
+| "scatter over every tile" (C2) | S12 |
 | "terrain generators: ridged noise, terracing, erosion" | G1 |
