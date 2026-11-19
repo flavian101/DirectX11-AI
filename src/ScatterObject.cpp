@@ -590,7 +590,7 @@ void ScatterObject::Refresh(const Terrain* terrain, const XMFLOAT3& cameraPositi
             if (usable[v]) heights[v] = sp.variants[v].asset->height;
         }
         const ScatterRules rules = MakeScatterRules(cfg, looks, heights, usable, static_cast<int>(i), settings_.seed);
-        if (!sp.rulesValid || std::memcmp(&rules, &sp.appliedRules, sizeof(ScatterRules)) != 0) {
+        if (!sp.rulesValid || !(rules == sp.appliedRules)) {
             sp.appliedRules = rules;
             sp.rulesValid = true;
             if (sp.cells.size() != static_cast<size_t>(grid_.CellCount())) sp.cells.assign(static_cast<size_t>(grid_.CellCount()), Species::Cell{});
@@ -615,15 +615,6 @@ void ScatterObject::Refresh(const Terrain* terrain, const XMFLOAT3& cameraPositi
         for (const Species::Cell& c : sp.cells) if (c.dirty) { pending = true; break; }
         if (!pending || MillisecondsSince(sp.lastUpload) > 100.0) UploadInstances(sp);
     }
-}
-
-void ScatterObject::GenerateAllNow(const Terrain* terrain)
-{
-    const float budget = settings_.generationBudgetMs;
-    settings_.generationBudgetMs = 1.0e9f;   // (not clamped: this is only a local override)
-    const XMFLOAT3 origin(0.0f, 0.0f, 0.0f);
-    Refresh(terrain, origin);
-    settings_.generationBudgetMs = budget;
 }
 
 void ScatterObject::Render(ID3D11DeviceContext* ctx, const RenderView& view) const { Draw(ctx, view, false); }

@@ -38,7 +38,7 @@ ScatterRules MakeScatterRules(const ScatterSpeciesSettings& s, const std::vector
         out.weight = ok ? look.weight : 0.0f;
         for (int k = 0; k < kSplatChannels; ++k) out.layerBias[k] = look.layerBias[k];
         out.minSlope = look.minSlope; out.maxSlope = look.maxSlope; out.scaleMul = look.scaleMul;
-        out.modelHeight = ok ? heights[static_cast<size_t>(v)] : -1.0f;
+        out.modelHeight = ok ? heights[static_cast<size_t>(v)] : 1.0f;   // a look that cannot be drawn has weight 0: its height is never used
     }
     ClampScatterRules(r);
     return r;

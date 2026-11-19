@@ -84,9 +84,9 @@ static void TestRulesFromSettings()
     CHECK(rules.variants[2].weight == 5.0f && rules.variants[2].modelHeight == 9.0f);
     CHECK(rules.spacing == 4.0f && rules.sink == 0.5f);
 
-    // Variant 2 is switched off or failed to load: weight 0 and "use the species' height", so nothing is ever placed as it.
+    // Variant 2 is switched off or failed to load: weight 0 (and a harmless height of 1), so nothing is ever placed as it.
     rules = MakeScatterRules(species, looks, heights, { 1, 1, 0 }, 0, 1);
-    CHECK(rules.variants[2].weight == 0.0f && rules.variants[2].modelHeight < 0.0f);
+    CHECK(rules.variants[2].weight == 0.0f && rules.variants[2].modelHeight == 1.0f);
     {
         const Heightfield field = [] { std::vector<float> samples(101 * 101, 0.1f); Heightfield f; f.Reset({ 100, 100, 200.0f, 200.0f, 10.0f }, samples); return f; }();
         SplatMap splat; splat.Resize(100, 100); for (size_t i = 0; i < splat.rgba.size(); i += 4) splat.rgba[i] = 255;   // all grass

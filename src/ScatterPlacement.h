@@ -46,7 +46,7 @@ struct ScatterVariantRules {
     float minSlope = 0.0f;                                 // degrees: this variant only grows on ground in this slope band
     float maxSlope = 90.0f;
     float scaleMul = 1.0f;                                 // multiplies the species' scale range ("large" granite = 2)
-    float modelHeight = -1.0f;                             // this variant's mesh height in metres; < 0 = use ScatterRules::modelHeight
+    float modelHeight = 1.0f;                              // this variant's mesh height in metres at scale 1 (only used by `sink`)
 };
 
 // What one species asks of the ground. Plain data, no model and no paths: the editor edits it, the placement reads it.
@@ -69,12 +69,33 @@ struct ScatterRules {
     float alignToNormal = 0.0f;  // 0 = upright, 1 = leans with the ground (rocks)
     float tilt = 3.0f;           // degrees of random lean
     float sink = 0.0f;           // fraction of the model's height buried in the ground (rocks sit IN the ground)
-    float modelHeight = 1.0f;    // the model's height at scale 1, in metres (only used by `sink`)
     std::uint32_t seed = 1;      // a different seed is a different forest
     // 4. which look each one gets. variantCount 1 with the default variant is exactly the species of lesson 31.
     int variantCount = 1;
     ScatterVariantRules variants[kMaxScatterVariants];
 };
+
+// Are two sets of rules the same? ScatterObject asks this to decide whether a species must be placed again. Written out field by
+// field (not memcmp, which also compares padding bytes and would be wrong the day a bool is added). The static_asserts are the
+// guard: add a field to ScatterRules or ScatterVariantRules and they stop the build until this comparison is updated too.
+static_assert(sizeof(ScatterVariantRules) == 9 * sizeof(float), "ScatterVariantRules changed: update operator== below");
+static_assert(sizeof(ScatterRules) == (3 + kSplatChannels + 4 + 2 + 5 + 1 + 1 + 9 * kMaxScatterVariants) * sizeof(float),
+              "ScatterRules changed: update operator== below");
+inline bool operator==(const ScatterVariantRules& a, const ScatterVariantRules& b)
+{
+    for (int k = 0; k < kSplatChannels; ++k) if (a.layerBias[k] != b.layerBias[k]) return false;
+    return a.weight == b.weight && a.minSlope == b.minSlope && a.maxSlope == b.maxSlope && a.scaleMul == b.scaleMul && a.modelHeight == b.modelHeight;
+}
+inline bool operator==(const ScatterRules& a, const ScatterRules& b)
+{
+    for (int k = 0; k < kSplatChannels; ++k) if (a.layerDensity[k] != b.layerDensity[k]) return false;
+    if (a.variantCount != b.variantCount) return false;
+    for (int v = 0; v < a.variantCount && v < kMaxScatterVariants; ++v) if (!(a.variants[v] == b.variants[v])) return false;
+    return a.spacing == b.spacing && a.minDistance == b.minDistance && a.density == b.density && a.minSlope == b.minSlope &&
+           a.maxSlope == b.maxSlope && a.minHeight == b.minHeight && a.maxHeight == b.maxHeight && a.clusterStrength == b.clusterStrength &&
+           a.clusterScale == b.clusterScale && a.scaleMin == b.scaleMin && a.scaleMax == b.scaleMax && a.alignToNormal == b.alignToNormal &&
+           a.tilt == b.tilt && a.sink == b.sink && a.seed == b.seed;
+}
 
 // Puts every value into a range the placement can work with (a spacing of 0 would mean infinitely many objects).
 void ClampScatterRules(ScatterRules& rules);

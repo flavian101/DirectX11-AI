@@ -148,8 +148,6 @@ public:
     // Called by Scene::Update every frame. Reads the ground, regenerates the cells that need it (within the time budget,
     // nearest to `cameraPosition` first) and refreshes the GPU buffers.
     void Refresh(const Terrain* terrain, const DirectX::XMFLOAT3& cameraPosition);
-    // Places every pending cell now, ignoring the budget (tools, tests, loading a scene for a screenshot).
-    void GenerateAllNow(const Terrain* terrain);
 
     // For the editor.
     size_t GetSpeciesCount() const;

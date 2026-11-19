@@ -68,6 +68,41 @@ static void Rotate(const ScatterInstance& i, const float v[3], float out[3])
     out[2] = v[2] + 2.0f * (qx * cy - qy * cx);
 }
 
+// operator== decides whether a species is placed again (ScatterObject::Refresh): it must see every change, and no non-change.
+static void TestRulesComparison()
+{
+    ScatterRules a;
+    a.variantCount = 2;
+    CHECK(a == ScatterRules(a));
+    auto differs = [&](void (*change)(ScatterRules&)) { ScatterRules c = a; change(c); return !(a == c); };
+    CHECK(differs([](ScatterRules& r) { r.spacing += 1.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.minDistance += 0.5f; }));
+    CHECK(differs([](ScatterRules& r) { r.density -= 0.1f; }));
+    CHECK(differs([](ScatterRules& r) { r.layerDensity[3] = 0.5f; }));
+    CHECK(differs([](ScatterRules& r) { r.minSlope = 5.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.maxSlope = 20.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.minHeight = 0.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.maxHeight = 100.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.clusterStrength = 0.5f; }));
+    CHECK(differs([](ScatterRules& r) { r.clusterScale = 10.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.scaleMin = 0.5f; }));
+    CHECK(differs([](ScatterRules& r) { r.scaleMax = 2.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.alignToNormal = 0.5f; }));
+    CHECK(differs([](ScatterRules& r) { r.tilt = 9.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.sink = 0.3f; }));
+    CHECK(differs([](ScatterRules& r) { r.seed = 99u; }));
+    CHECK(differs([](ScatterRules& r) { r.variantCount = 3; }));
+    CHECK(differs([](ScatterRules& r) { r.variants[1].weight = 7.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.variants[1].layerBias[2] = 3.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.variants[0].minSlope = 10.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.variants[0].maxSlope = 40.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.variants[0].scaleMul = 2.0f; }));
+    CHECK(differs([](ScatterRules& r) { r.variants[1].modelHeight = 5.0f; }));
+    // A variant beyond variantCount is not in use: changing it changes nothing about what grows.
+    ScatterRules unused = a; unused.variants[5].weight = 9.0f;
+    CHECK(a == unused);
+}
+
 static void TestDeterministicAndSeamFree()
 {
     const Heightfield field = MakeField(100, 200.0f, 60.0f, Hills);
@@ -294,7 +329,7 @@ static void TestRotationAndSink()
     CHECK(anyLean);
 
     // Sinking: y = ground - sink * modelHeight * scale.
-    rules.tilt = 0.0f; rules.sink = 0.5f; rules.modelHeight = 4.0f; rules.scaleMin = 1.0f; rules.scaleMax = 2.0f;
+    rules.tilt = 0.0f; rules.sink = 0.5f; rules.variants[0].modelHeight = 4.0f; rules.scaleMin = 1.0f; rules.scaleMax = 2.0f;
     std::vector<ScatterInstance> buried;
     GenerateScatter(ground, rules, extent, buried);
     bool sunk = !buried.empty(), scaled = true;
@@ -551,8 +586,8 @@ static void TestVariantScaleSinkAndClamp()
     SplatMap splat; FillSplat(splat, 100, 100, AllGrass);
     const ScatterGround ground = MakeGround(field, &splat);
     ScatterRules rules; rules.spacing = 4.0f; rules.minDistance = 2.0f; rules.scaleMin = 1.0f; rules.scaleMax = 1.0f;
-    rules.sink = 0.5f; rules.modelHeight = 2.0f; rules.variantCount = 2;
-    rules.variants[0].weight = 1.0f; rules.variants[0].scaleMul = 1.0f;                                     // inherits the model height (2 m)
+    rules.sink = 0.5f; rules.variantCount = 2;
+    rules.variants[0].weight = 1.0f; rules.variants[0].scaleMul = 1.0f; rules.variants[0].modelHeight = 2.0f;   // a 2 m tall mesh
     rules.variants[1].weight = 1.0f; rules.variants[1].scaleMul = 3.0f; rules.variants[1].modelHeight = 1.0f;   // 3x larger, 1 m tall mesh
     std::vector<ScatterInstance> out; std::vector<std::uint8_t> variant;
     GenerateScatter(ground, rules, ScatterGroundExtent(ground), out, &variant);
@@ -636,6 +671,7 @@ static void TestGroupingAndLayout()
 
 int main()
 {
+    TestRulesComparison();
     TestDeterministicAndSeamFree();
     TestSpacing();
     TestDensityAndClusters();

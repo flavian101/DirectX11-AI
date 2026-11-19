@@ -178,7 +178,6 @@ void ClampScatterRules(ScatterRules& r)
     r.alignToNormal = Saturate(r.alignToNormal);
     r.tilt = (std::min)((std::max)(r.tilt, 0.0f), 45.0f);
     r.sink = Saturate(r.sink);
-    r.modelHeight = (std::max)(r.modelHeight, 0.0f);
     r.variantCount = (std::min)((std::max)(r.variantCount, 1), kMaxScatterVariants);
     for (int v = 0; v < kMaxScatterVariants; ++v) {
         ScatterVariantRules& variant = r.variants[v];
@@ -187,8 +186,7 @@ void ClampScatterRules(ScatterRules& r)
         variant.minSlope = (std::min)((std::max)(variant.minSlope, 0.0f), 90.0f);
         variant.maxSlope = (std::min)((std::max)(variant.maxSlope, variant.minSlope), 90.0f);
         variant.scaleMul = (std::min)((std::max)(variant.scaleMul, 0.05f), 20.0f);
-        if (variant.modelHeight >= 0.0f) variant.modelHeight = (std::min)(variant.modelHeight, 10000.0f);
-        else variant.modelHeight = -1.0f;
+        variant.modelHeight = (std::min)((std::max)(variant.modelHeight, 0.0f), 10000.0f);
     }
 }
 
@@ -284,7 +282,7 @@ int GenerateScatter(const ScatterGround& ground, const ScatterRules& requested, 
             // Survivor: give it a size and a rotation (more hashes of the same square, so also repeatable).
             const int i = i0 - 1 + ti, j = j0 - 1 + tj;
             const ScatterVariantRules& variant = rules.variants[c.variant];
-            const float height = variant.modelHeight >= 0.0f ? variant.modelHeight : rules.modelHeight;
+            const float height = variant.modelHeight;
             const float scale = Lerp(rules.scaleMin, rules.scaleMax, Unit(Hash(i, j, rules.seed, 5u))) * variant.scaleMul;
             const float yaw = Unit(Hash(i, j, rules.seed, 6u)) * 2.0f * kPi;
 
