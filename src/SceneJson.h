@@ -154,7 +154,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainSettings, width, heightSc
                                                 snowHeight, snowFade, breakupScale, breakupAmount, shoreColor, snowColor, frustumCulling,
                                                 lodEnabled, lodDistance0, lodDistance1)
 // The shape of a world's ground (levels, curve, smoothing, detail noise): src/WorldShape.h.
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HeightShapeSettings, blackPoint, whitePoint, curve, invert, smoothing, bicubic, detailStrength,
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HeightShapeSettings, blackPoint, whitePoint, curve, invert, smoothing, bicubic, prefilter, detailStrength,
                                                 detailWavelength, detailOctaves, detailSeed, detailRidged, detailValleyMask)
 // Defined AFTER TerrainSettings: a world can carry the material of the terrain it was migrated from. `source` is stored as a number (0 fractal
 // hills, 1 picture). A scene saved before the picture source, the shape or the material existed has none of the new keys and loads as the

@@ -2653,9 +2653,11 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
         for (int preset = 0; preset < kHeightShapePresetCount; ++preset) {
             if (ImGui::Selectable(HeightShapePresetName(preset))) {
                 const float black = s.shape.blackPoint, white = s.shape.whitePoint;   // a preset sets the character, not the levels
+                const bool prefilter = s.shape.prefilter;                              // nor how the picture is read
                 s.shape = HeightShapePreset(preset);
                 s.shape.blackPoint = black;
                 s.shape.whitePoint = white;
+                s.shape.prefilter = prefilter;
                 commit = true;
             }
         }
@@ -2677,6 +2679,15 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
         ImGui::SetItemTooltip("Blurs the picture. Removes the steps of an 8-bit image and the faceting of a small picture stretched over a big world.");
         if (ImGui::Checkbox("Smooth interpolation (bicubic)", &s.shape.bicubic)) commit = true;
         ImGui::SetItemTooltip("A smooth curve through the pixels instead of straight lines between them. Off matches the old terrain exactly.");
+        if (ImGui::Checkbox("Prefilter the picture", &s.shape.prefilter)) commit = true;
+        ImGui::SetItemTooltip("When one cell covers several pixels, average the picture over the cell before sampling it. Removes the stairs and streaks on\nthin cliffs. Off matches the old terrain exactly.");
+        const float perCell = world->PictureCellPixels();
+        if (perCell > 0.0f) {
+            const bool aliasing = perCell > 2.0f && !world->PictureIsPrefiltered();
+            const ImVec4 color = aliasing ? ImVec4(1.0f, 0.75f, 0.3f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+            ImGui::TextColored(color, "%.1f picture pixels per cell%s", perCell,
+                               world->PictureIsPrefiltered() ? " (prefiltered)" : (aliasing ? ": thin cliffs will look like stairs. Turn the prefilter on." : ""));
+        }
     }
     ImGui::SliderFloat("Detail strength (m)", &s.shape.detailStrength, 0.0f, 60.0f, "%.1f");
     commitOnRelease();

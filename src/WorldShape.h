@@ -26,6 +26,7 @@ struct HeightShapeSettings {
     // --- picture quality (only the picture source uses these) ---
     float smoothing = 0.0f;    // blur radius in PIXELS of the picture (0 = none); removes the steps of an 8-bit image
     bool bicubic = false;      // smooth interpolation between pixels instead of straight lines; reads as less faceted when the picture is stretched
+    bool prefilter = true;     // average the picture over one cell before sampling it (mip pyramid), when a cell covers more than one pixel: no stairs on thin ridges (T1)
 
     // --- detail noise: fine bumps added on top, strength in METRES so it does not change when the height scale does ---
     float detailStrength = 0.0f;      // metres of up and down (0 = none)

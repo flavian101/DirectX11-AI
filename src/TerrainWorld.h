@@ -101,6 +101,10 @@ public:
     const HeightImageStats* PictureStats() const { return hasPictureStats_ ? &pictureStats_ : nullptr; }
     float PictureMetresPerPixel() const { return pictureMetresPerPixel_; }
     int PictureWidthPixels() const { return pictureWidthPixels_; }
+    // How many pixels of the picture one cell of the world covers (1 or less: the picture is no finer than the cells). With
+    // PictureIsPrefiltered() false and a value above 2, thin ridges alias into stairs.
+    float PictureCellPixels() const { return pictureCellPixels_; }
+    bool PictureIsPrefiltered() const { return pictureIsPrefiltered_; }
     // Sets the levels from the picture's real span (see ComputeAutoLevels). False if there is no picture to look at.
     bool AutoLevels(float lowPercent = 0.5f, float highPercent = 99.5f);
 
@@ -140,6 +144,8 @@ private:
     bool hasPictureStats_ = false;
     float pictureMetresPerPixel_ = 0.0f;
     int pictureWidthPixels_ = 0;
+    float pictureCellPixels_ = 0.0f;
+    bool pictureIsPrefiltered_ = false;
     TerrainLayerSet layers_;                              // taken from the first tile built, lent to every later one
     std::unordered_map<std::uint64_t, SceneObjectId> tiles_;   // tile -> the scene object that shows it
     std::shared_ptr<const std::vector<WorldRiver>> riversSnapshot_;   // what new tiles are built with: replaced whenever the rivers change

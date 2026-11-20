@@ -7,6 +7,8 @@
 //   5. A BOUNDED world streams only its own tiles; an unbounded one behaves as before.
 //   6. REBUILDING THE OLD TERRAIN: one tile as wide as the old terrain gives the old terrain's heights, sample for sample.
 //   7. Reading a 16-bit PNG back keeps its precision; a missing file is an error, not a crash.
+//   8. PREFILTERING (roadmap T1): a one-pixel ridge sampled at 8 pixels per cell no longer jumps from 0 to 1 when the sample point
+//      moves; a footprint of one pixel or less is exactly the unfiltered source; a step edge stays monotone (no ringing).
 #include "WorldPicture.h"
 #include "Png16.h"
 #include <algorithm>
@@ -227,6 +229,79 @@ static void TestLoadImage()
     CHECK(!error.empty());
 }
 
+// A 257 x 257 picture, 128 m wide: 0.5 m per pixel. `fill(x, z)` gives the pixel value.
+template <typename Fill>
+static std::shared_ptr<HeightImage> MakeFilled(int size, Fill fill)
+{
+    auto image = std::make_shared<HeightImage>();
+    image->width = image->height = size;
+    image->values.resize(static_cast<size_t>(size) * size);
+    for (int z = 0; z < size; ++z)
+        for (int x = 0; x < size; ++x) image->values[static_cast<size_t>(z) * size + x] = fill(x, z);
+    return image;
+}
+
+static void TestPrefilter()
+{
+    // --- the numbers a person reads in the inspector ---
+    CHECK(Near(PictureMetresPerPixel(1024.0, 2049), 0.5));
+    CHECK(Near(PicturePixelsPerCell(4.0, 1024.0, 2049), 8.0));
+    CHECK(PyramidLevelForFootprint(1.0) == 0.0f && PyramidLevelForFootprint(0.3) == 0.0f);
+    CHECK(Near(PyramidLevelForFootprint(8.0), 3.0) && Near(PyramidLevelForFootprint(2.0), 1.0));
+
+    // --- the pyramid itself ---
+    const auto flat = MakeFilled(257, [](int, int) { return 0.4f; });
+    const HeightPyramid flatPyramid = BuildHeightPyramid(flat);
+    CHECK(flatPyramid.LevelCount() > 4);
+    bool shrinking = true, constant = true;
+    for (int level = 1; level < flatPyramid.LevelCount(); ++level) {
+        shrinking = shrinking && flatPyramid.Level(level).width <= flatPyramid.Level(level - 1).width && flatPyramid.Level(level).width >= 2;
+        for (float value : flatPyramid.Level(level).values) constant = constant && Near(value, 0.4, 1e-5);
+    }
+    CHECK(shrinking);
+    CHECK(constant);   // a low-pass of a flat picture is flat
+
+    // --- a ridge one pixel wide, at pixel 128 (64 m): 8 pixels per cell at 4 m cells ---
+    const auto ridge = MakeFilled(257, [](int x, int) { return x == 128 ? 1.0f : 0.0f; });
+    const PictureHeightSource plain(ridge, 0.0, 0.0, 128.0, 128.0);
+    const auto pyramid = std::make_shared<const HeightPyramid>(BuildHeightPyramid(ridge));
+    const PictureHeightSource filtered(pyramid, 4.0, 0.0, 0.0, 128.0, 128.0);
+    double plainJump = 0.0, filteredJump = 0.0, filteredMax = 0.0;
+    for (double x = 20.0; x <= 100.0; x += 0.5) {
+        const double halfCell = 2.0;
+        plainJump = (std::max)(plainJump, static_cast<double>(std::fabs(plain.Height01(x + halfCell, 60.0) - plain.Height01(x, 60.0))));
+        filteredJump = (std::max)(filteredJump, static_cast<double>(std::fabs(filtered.Height01(x + halfCell, 60.0) - filtered.Height01(x, 60.0))));
+        filteredMax = (std::max)(filteredMax, static_cast<double>(filtered.Height01(x, 60.0)));
+    }
+    std::printf("ridge: biggest change over half a cell: unfiltered %.3f, prefiltered %.3f (peak %.3f)\n", plainJump, filteredJump, filteredMax);
+    CHECK(plainJump > 0.9);      // the old behaviour: hit or miss
+    CHECK(filteredJump < 0.25);  // smooth
+    CHECK(filteredMax > 0.02);   // the ridge is still there, just spread out
+
+    // --- a footprint of one pixel or less is exactly the unfiltered source ---
+    const PictureHeightSource oneToOne(pyramid, 0.5, 0.0, 0.0, 128.0, 128.0);   // 0.5 m = one pixel
+    bool identical = true;
+    for (double x = 3.0; x < 120.0; x += 7.37) identical = identical && oneToOne.Height01(x, 50.5) == plain.Height01(x, 50.5);
+    CHECK(identical);
+
+    // --- a step edge (an escarpment): no ringing, values stay in 0..1, and it only rises ---
+    const auto step = MakeFilled(257, [](int x, int) { return x < 128 ? 0.0f : 1.0f; });
+    const auto stepPyramid = std::make_shared<const HeightPyramid>(BuildHeightPyramid(step));
+    for (bool bicubic : { false, true }) {
+        const PictureHeightSource stepFiltered(stepPyramid, 4.0, 0.0, 0.0, 128.0, 128.0, bicubic);
+        double previous = 0.0;
+        bool monotone = true, inRange = true;
+        for (double x = 0.0; x <= 128.0; x += 0.25) {
+            const double h = stepFiltered.Height01(x, 30.0);
+            monotone = monotone && h >= previous - 1e-6;
+            inRange = inRange && h >= 0.0 && h <= 1.0;
+            previous = h;
+        }
+        CHECK(monotone || bicubic);   // the bicubic curve may overshoot a little by design; the bilinear one may not
+        CHECK(inRange);
+    }
+}
+
 int main()
 {
     TestSampling();
@@ -236,6 +311,7 @@ int main()
     TestBoundedStreaming();
     TestRebuildOldTerrain();
     TestLoadImage();
+    TestPrefilter();
     if (g_failures == 0) std::printf("All world picture tests passed.\n");
     return g_failures == 0 ? 0 : 1;
 }

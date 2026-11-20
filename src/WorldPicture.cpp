@@ -64,6 +64,91 @@ float SampleHeightImageBicubic(const HeightImage& image, float u, float v)
     return std::clamp(curve(rows[0], rows[1], rows[2], rows[3], tz), 0.0f, 1.0f);
 }
 
+double PictureMetresPerPixel(double widthMetres, int imageWidth)
+{
+    return imageWidth > 1 ? widthMetres / static_cast<double>(imageWidth - 1) : widthMetres;
+}
+
+double PicturePixelsPerCell(double metresPerCell, double widthMetres, int imageWidth)
+{
+    const double perPixel = PictureMetresPerPixel(widthMetres, imageWidth);
+    return perPixel > 0.0 ? metresPerCell / perPixel : 1.0;
+}
+
+const HeightImage& HeightPyramid::Level(int level) const
+{
+    if (level <= 0 || coarser.empty()) return *base;
+    return coarser[static_cast<size_t>((std::min)(level, static_cast<int>(coarser.size())) - 1)];
+}
+
+HeightPyramid BuildHeightPyramid(std::shared_ptr<const HeightImage> base)
+{
+    HeightPyramid pyramid;
+    pyramid.base = std::move(base);
+    if (!pyramid.base || pyramid.base->width < 2 || pyramid.base->height < 2) return pyramid;
+    // Each level is a low-pass of the one before. The corners stay on the corners (pixel 0 and the last pixel sit on the picture's two
+    // edges, like the picture itself), so a level has about half the pixels and covers exactly the same area. A pixel of the next level
+    // averages four bilinear reads of this level, half a pixel to each side: a window two pixels wide.
+    constexpr size_t kMaxLevels = 14;
+    while (pyramid.coarser.size() < kMaxLevels) {
+        const HeightImage& previous = pyramid.Level(static_cast<int>(pyramid.coarser.size()));
+        if (previous.width <= 4 || previous.height <= 4) break;
+        HeightImage next;
+        next.width = (std::max)(2, (previous.width + 1) / 2);
+        next.height = (std::max)(2, (previous.height + 1) / 2);
+        next.values.resize(static_cast<size_t>(next.width) * static_cast<size_t>(next.height));
+        const double stepX = static_cast<double>(previous.width - 1) / static_cast<double>(next.width - 1);
+        const double stepZ = static_cast<double>(previous.height - 1) / static_cast<double>(next.height - 1);
+        for (int z = 0; z < next.height; ++z) {
+            for (int x = 0; x < next.width; ++x) {
+                const double px = x * stepX, pz = z * stepZ;   // this pixel's place in the previous level, in its pixels
+                float sum = 0.0f;
+                for (int dz = -1; dz <= 1; dz += 2) {
+                    for (int dx = -1; dx <= 1; dx += 2) {
+                        const float u = static_cast<float>((px + 0.5 * dx) / static_cast<double>(previous.width - 1));
+                        const float v = static_cast<float>((pz + 0.5 * dz) / static_cast<double>(previous.height - 1));
+                        sum += SampleHeightImage(previous, u, v);   // clamps at the edges
+                    }
+                }
+                next.values[static_cast<size_t>(z) * next.width + x] = sum * 0.25f;
+            }
+        }
+        pyramid.coarser.push_back(std::move(next));
+    }
+    return pyramid;
+}
+
+float PyramidLevelForFootprint(double pixels)
+{
+    return pixels > 1.0 ? static_cast<float>(std::log2(pixels)) : 0.0f;
+}
+
+float SampleHeightPyramid(const HeightPyramid& pyramid, float u, float v, float level, bool bicubic)
+{
+    if (!pyramid.base) return 0.0f;
+    const float last = static_cast<float>(pyramid.LevelCount() - 1);
+    level = std::clamp(level, 0.0f, last);
+    const int lower = static_cast<int>(level);
+    const int upper = (std::min)(lower + 1, pyramid.LevelCount() - 1);
+    auto read = [&](int index) {
+        const HeightImage& image = pyramid.Level(index);
+        return bicubic ? SampleHeightImageBicubic(image, u, v) : SampleHeightImage(image, u, v);
+    };
+    const float a = read(lower);
+    const float blend = level - static_cast<float>(lower);
+    if (blend <= 0.0f || upper == lower) return a;
+    return a + (read(upper) - a) * blend;
+}
+
+PictureHeightSource::PictureHeightSource(std::shared_ptr<const HeightPyramid> pyramid, double filterMetres, double offsetX, double offsetZ, double sizeX, double sizeZ, bool bicubic)
+    : image_(pyramid ? pyramid->base : nullptr), pyramid_(std::move(pyramid)), offsetX_(offsetX), offsetZ_(offsetZ), sizeX_((std::max)(sizeX, 1e-6)), sizeZ_((std::max)(sizeZ, 1e-6)), bicubic_(bicubic)
+{
+    if (image_ && pyramid_) {
+        const double pixels = filterMetres / PictureMetresPerPixel(sizeX_, image_->width);
+        level_ = (std::min)(PyramidLevelForFootprint(pixels), static_cast<float>(pyramid_->LevelCount() - 1));
+    }
+}
+
 PictureHeightSource::PictureHeightSource(std::shared_ptr<const HeightImage> image, double offsetX, double offsetZ, double sizeX, double sizeZ, bool bicubic)
     : image_(std::move(image)), offsetX_(offsetX), offsetZ_(offsetZ), sizeX_((std::max)(sizeX, 1e-6)), sizeZ_((std::max)(sizeZ, 1e-6)), bicubic_(bicubic)
 {
@@ -76,6 +161,7 @@ float PictureHeightSource::Height01(double worldX, double worldZ) const
     // fraction across the picture, a number between 0 and 1, becomes a float.
     const float u = static_cast<float>(std::clamp((worldX - offsetX_) / sizeX_, 0.0, 1.0));
     const float v = static_cast<float>(std::clamp((worldZ - offsetZ_) / sizeZ_, 0.0, 1.0));
+    if (pyramid_ && level_ > 0.0f) return std::clamp(SampleHeightPyramid(*pyramid_, u, v, level_, bicubic_), 0.0f, 1.0f);
     return std::clamp(bicubic_ ? SampleHeightImageBicubic(*image_, u, v) : SampleHeightImage(*image_, u, v), 0.0f, 1.0f);
 }
 

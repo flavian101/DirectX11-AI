@@ -115,6 +115,8 @@ void TerrainWorld::BuildSource()
     hasPictureStats_ = false;
     pictureMetresPerPixel_ = 0.0f;
     pictureWidthPixels_ = 0;
+    pictureCellPixels_ = 0.0f;
+    pictureIsPrefiltered_ = false;
     std::shared_ptr<const WorldHeightSource> raw;
     if (settings_.source != WorldSourceKind::Picture) {
         raw = std::make_shared<const FractalHeightSource>(settings_.fractal);
@@ -141,7 +143,15 @@ void TerrainWorld::BuildSource()
         pictureWidthPixels_ = image->width;
         std::shared_ptr<const HeightImage> used = image;   // smoothing blurs a copy: the stats and auto levels read the picture as it is
         if (settings_.shape.smoothing >= 0.5f) used = std::make_shared<const HeightImage>(SmoothHeightImage(*image, static_cast<int>(std::lround(settings_.shape.smoothing))));
-        raw = std::make_shared<const PictureHeightSource>(used, offsetX, offsetZ, width, depth, settings_.shape.bicubic);
+        pictureCellPixels_ = static_cast<float>(PicturePixelsPerCell(settings_.grid.metresPerCell, width, image->width));
+        if (settings_.shape.prefilter && pictureCellPixels_ > 1.0f) {
+            // A cell covers more than one pixel: average the picture over a cell first (T1), or thin ridges alias into stairs.
+            auto pyramid = std::make_shared<const HeightPyramid>(BuildHeightPyramid(used));
+            raw = std::make_shared<const PictureHeightSource>(pyramid, static_cast<double>(settings_.grid.metresPerCell), offsetX, offsetZ, width, depth, settings_.shape.bicubic);
+            pictureIsPrefiltered_ = true;
+        } else {
+            raw = std::make_shared<const PictureHeightSource>(used, offsetX, offsetZ, width, depth, settings_.shape.bicubic);
+        }
         activeBounds_ = WorldBounds::Covering(settings_.grid, offsetX, offsetZ, offsetX + width, offsetZ + depth);
     }
     ground_ = std::make_shared<const ShapedHeightSource>(raw, settings_.shape, settings_.heightScale);
@@ -426,6 +436,7 @@ TerrainWorldSettings WorldSettingsFromTerrain(const Terrain& old)
     s.pictureOffsetX = static_cast<float>(std::round((static_cast<double>(position.x) - 0.5 * width) / cell) * cell);
     s.pictureOffsetZ = static_cast<float>(std::round((static_cast<double>(position.z) - 0.5 * depth) / cell) * cell);
     s.heightScale = old.GetSettings().heightScale * scale.y;
+    s.shape.prefilter = false;   // a migrated terrain gives the old terrain's heights sample for sample: no filter on top
     s.customMaterial = true;
     s.material = old.GetSettings();
     s.layerPaths.resize(static_cast<size_t>(kTerrainLayerCount) * 3);

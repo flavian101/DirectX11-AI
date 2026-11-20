@@ -85,7 +85,7 @@ Sizes: `ScatterObject.cpp` is about 750 lines (the split is in S12); the scatter
 
 | ID | Problem | Cause (read in the code) | Fix |
 |---|---|---|---|
-| T1 `[!]` | Cliffs look like stairs and vertical streaks; flat pads | A 2048 px picture over 1024 m is 0.5 m/px, sampled every 4 m: about 8 px per cell, **no prefilter**, so thin escarpments alias. `smoothing` defaults to 0. About 13% of the demo picture's pixels sit at the minimum value (flat floor). | T1 below |
+| T1 `[~]` | Cliffs look like stairs and vertical streaks; flat pads | A 2048 px picture over 1024 m is 0.5 m/px, sampled every 4 m: about 8 px per cell, **no prefilter**, so thin escarpments alias. `smoothing` defaults to 0. About 13% of the demo picture's pixels sit at the minimum value (flat floor). | T1 below |
 | T2 `[!]` | Sculpting a world is slow | `SculptStep` marks tiles stale; `Stream()` builds a **new `Terrain` per touched tile per step** (heights for 257² + apron through the whole source chain, 64 chunks of vertices and index buffers, splat bake). The single-terrain path already patches chunks in place, but `Terrain::Sculpt` returns false for tiles. | T2 below |
 | T3 `[ ]` | Every chunk builds its own identical index buffers (3 LODs plus skirts) | `BuildTerrainModel` | T3 below |
 | W1 `[!]` | **Ocean is drawn under / through terrain that is below the shore level** | Not yet reproduced here (I could not run the engine). Ranked suspects in W1 below. | W1 below |
@@ -94,7 +94,7 @@ Sizes: `ScatterObject.cpp` is about 750 lines (the split is in S12); the scatter
 | X1 `[ ]` | The bounded world is a floating slab: raw edges, dark void | no backdrop | X1 below |
 | S12 `[!]` | Nothing grows on a world's tiles | Scatter has one grid over one `Terrain`'s extent, takes a `const Terrain*`, and tracks changes with that terrain's revision log | S12 below |
 | S4 `[ ]` | No biomes: a texture layer is the only way to say "where" | `layerDensity[4]` and `layerBias[4]` are tied to the 4 splat channels; a forest and a swamp on the same grass cannot differ; more than 4 layers (L2) would break the rules | S4 below |
-| S11 `[~]` | Dead and duplicate code in scatter | see S11 for the list, each item read in the code | S11 below |
+| S11 `[x]` | Dead and duplicate code in scatter | see S11 for the list, each item read in the code | S11 below |
 | S13 `[ ]` | Scatter does not know about water | `ScatterGround` has no water input | S13 below |
 
 ---
@@ -105,13 +105,18 @@ Order is by what you see and what unblocks the rest. Items inside a milestone ca
 
 ### M1. Make what exists look and feel right
 
-**T1. Prefilter the picture; show pixels per cell** `[ ]`
-- Compute `pixelsPerCell = metresPerCell / PictureMetresPerPixel`. Show it in the world inspector; warn above 2.
-- Build a box-filtered mip chain of the `HeightImage` once per picture (derived data, so the height function stays a pure function of the
-  world position). `PictureHeightSource` picks the level from `pixelsPerCell` and blends two levels.
-- Interim: the existing `smoothing` setting, about half of `pixelsPerCell`.
-- Acceptance: a picture with a 1 px wide ridge, sampled at 8 px per cell, gives heights that change smoothly when the sample point moves by
-  half a cell (test in `world_picture_test.cpp`); the demo picture shows no stair terraces on its escarpments.
+**T1. Prefilter the picture; show pixels per cell** `[~]` (lesson 54: written and unit-tested; **to check in the editor**: the demo picture's escarpments)
+- `[x]` `PicturePixelsPerCell(metresPerCell, pictureWidth, imageWidth)`. The world inspector shows it under the picture controls and warns in orange above 2
+  when the prefilter is off. (A world's pixel spacing is `width / (pixels - 1)`: pixel 0 and the last pixel sit on the two edges.)
+- `[x]` A mip pyramid of the `HeightImage`, built once per picture (`BuildHeightPyramid`; each level is a low-pass of the one before, about half as wide, same area).
+  `PictureHeightSource` reads one fixed level, `log2(pixelsPerCell)`, blended between the two levels around it. The level is fixed per world, so the height stays
+  a pure function of the world position and tiles at every level of detail still agree.
+- `[x]` New setting `HeightShapeSettings::prefilter` (default **on**; checkbox "Prefilter the picture"). It does nothing when a cell covers one pixel or less.
+  A world migrated from an old terrain gets it **off**, so it still matches the old terrain sample for sample.
+- The older `smoothing` setting (a blur in pixels) is unchanged and still useful for the steps of an 8-bit picture; prefilter handles thin features.
+- Acceptance: `world_picture_test.cpp` `TestPrefilter`: a 1 px ridge at 8 px per cell changes by 0.062 over half a cell instead of 1.000; a footprint of one pixel
+  or less equals the unfiltered source exactly; a step edge stays in range and only rises. Still open: the demo picture shows no stair terraces on its
+  escarpments (editor). Opening an existing world, the shape changes a little because `prefilter` is on by default; saved edits are deltas and stay.
 
 **T2. Sculpt a world without rebuilding tiles** `[ ]`
 - Add `Terrain::PatchTile(rect, heightAt)`: write only the dirty rectangle with `Heightfield::SetSample`, then call the existing
@@ -269,7 +274,7 @@ feeds these parts or what wraps them, not how they work.
 | S1 | Variants per species (mesh, materials, weight, layer bias, slope band) | low | `[x]` lesson 36 |
 | S2 | Built-in rocks and a starter scatter | very low | `[x]` |
 | S3 | ~~Groups with inherited defaults~~ | | dropped: a biome recipe (S4) lists its species, which is the same job. Revisit only if the species list gets long in practice |
-| S11 | Clean-up before anything new (no behaviour change) | low | `[~]` every bullet written and unit-tested (lessons 52, 53); waits for a check in the editor (see S11) |
+| S11 | Clean-up before anything new (no behaviour change) | low | `[x]` lessons 52, 53; checked in the editor by the author |
 | S12 | One ground interface and cells per tile (this is C2) | medium-high | `[ ]` |
 | S4 | Biomes as data, rule-based | low-medium | `[ ]` |
 | S13 | Water depth and exclusion masks (roads, buildings) | medium | `[ ]` |
@@ -281,15 +286,15 @@ feeds these parts or what wraps them, not how they work.
 | S10 | GPU-driven culling, texture-array variants | high | `[ ]` only if the profiler shows draw calls or CPU culling |
 | S14 | Far distance: density fade or billboards beyond the last mesh level | medium | `[ ]` proposal, only if a screenshot or the profiler asks (today a species has 3 levels, then it is culled by `cullScreen`) |
 
-**S11. Clean-up before anything new** `[~]` (written and tested in lessons 52 and 53; **to check in the editor**: open a scene saved before lesson 36, add and remove looks on a species, save, reload, and see that nothing moved)
+**S11. Clean-up before anything new** `[x]` (lessons 52 and 53; the author applied it and reports that it works in the editor)
 - `[x]` Delete `ScatterObject::GenerateAllNow`.
 - `[x]` Delete the species-level `ScatterRules::modelHeight` and its `-1` fallback. A variant's height is then always the loaded mesh's (default 1.0 for a look that cannot be drawn).
 - `[x]` Declare each rule once (`ScatterSpeciesRules`, `ScatterVariantBase`, both inherited by the settings and the rules): `ScatterSpeciesSettings` holds a `ScatterRules` instead of copying about 20 fields into a second struct. `MakeBaseRules` and the
   "borrow the rules to clamp" step in `ScatterSpeciesSettings::Clamp` go away. Same for variants.
-- `[~]` Always store variants. The loader turns a lesson-31 file (a `"model"` and no `"variants"`) into a one-variant list once; then `model`, `EffectiveVariants()`
+- `[x]` Always store variants. The loader turns a lesson-31 file (a `"model"` and no `"variants"`) into a one-variant list once; then `model`, `EffectiveVariants()`
   and the **Several looks...** path go. Old scene files must still load (`TestOldSceneFilesLoad` stays).
 - `[x]` Replace the `memcmp` on `ScatterRules` with `operator==` (field by field, guarded by `static_assert`s on the struct sizes; `TestRulesComparison`).
-- `[~]` Move the scatter inspector out of `EditorLayer.cpp` into `editor/ScatterInspector.cpp` (the split of `ScatterObject.cpp` is done inside S12, which rewrites the same code).
+- `[x]` Move the scatter inspector out of `EditorLayer.cpp` into `editor/ScatterInspector.cpp` (the split of `ScatterObject.cpp` is done inside S12, which rewrites the same code).
 - Acceptance: all existing scatter tests pass. `scatter_golden_test.cpp` hashes the instances of `ScatterSettings::Starter()` over a fixed ground; the hash was
   recorded **before** the first deletion (commit `848a23f`, g++) and must not change. Hashes are per compiler: run it once on the unchanged code on your machine and use your numbers if they differ (lesson 52). Adding a rule now touches four files, not six: the struct and `operator==` (`ScatterPlacement.h`, where a forgotten `operator==` stops the build), the clamp (`ScatterPlacement.cpp`), the JSON list (`SceneJson.h`) and the inspector (`ScatterInspector.cpp`).
 
