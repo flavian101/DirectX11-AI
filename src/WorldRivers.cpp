@@ -94,6 +94,28 @@ bool RiverTouchesTile(const WorldGridSettings& grid, TileCoord tile, const World
     return !(maxX < tileMinX || minX > tileMaxX || maxZ < tileMinZ || minZ > tileMaxZ);
 }
 
+std::vector<float> GenerateTileBlock(const WorldHeightSource& source, const WorldGridSettings& grid, TileCoord tile, const std::vector<WorldRiver>* rivers, const TileSampleRect& rect)
+{
+    std::vector<float> block;
+    if (rect.IsEmpty()) return block;
+    const int width = rect.Width(), height = rect.Height();
+    block.resize(static_cast<size_t>(width) * height);
+    for (int j = 0; j < height; ++j) {
+        const double worldZ = WorldSamplePosition(grid, tile.z, rect.z0 + j);
+        for (int i = 0; i < width; ++i) block[static_cast<size_t>(j) * width + i] = source.Height01(WorldSamplePosition(grid, tile.x, rect.x0 + i), worldZ);
+    }
+    bool touched = false;
+    if (rivers) {
+        for (const WorldRiver& river : *rivers) touched = touched || RiverTouchesTile(grid, tile, river);
+    }
+    if (touched) {
+        const std::int64_t cells = grid.TileCells();
+        CarveRiversIntoBlock(block, width, height, static_cast<std::int64_t>(tile.x) * cells + rect.x0, static_cast<std::int64_t>(tile.z) * cells + rect.z0,
+                             static_cast<double>(grid.metresPerCell), *rivers);
+    }
+    return block;
+}
+
 TileHeights GenerateTileHeights(const WorldHeightSource& source, const WorldGridSettings& grid, TileCoord tile, const std::vector<WorldRiver>* rivers)
 {
     bool touched = false;

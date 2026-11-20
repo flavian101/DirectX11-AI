@@ -2,6 +2,7 @@
 #define NOMINMAX
 #endif
 #include "Terrain.h"
+#include <chrono>
 #include "Color.h"
 #include "Logger.h"
 #include "Mesh.h"
@@ -527,6 +528,14 @@ Terrain::Terrain(ID3D11Device* device, const TerrainTile& tile, const TerrainSet
 	if (!IsValid()) LOG_ERROR("Terrain tile initialization failed");
 }
 
+namespace {
+Terrain::BuildTimes g_buildTimes;
+using Clock = std::chrono::steady_clock;
+double MillisecondsSince(Clock::time_point start) { return std::chrono::duration<double, std::milli>(Clock::now() - start).count(); }
+}
+
+const Terrain::BuildTimes& Terrain::GetBuildTimes() { return g_buildTimes; }
+
 TileHeights Terrain::BuildTileHeights() const
 {
 	return GenerateTileHeights(*tile_.source, tile_.grid, tile_.coord, tile_.rivers.get());
@@ -688,7 +697,9 @@ bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 	const bool keep = keepSculpt && sculpted_ && !heightfield_.IsEmpty() &&
 		heightfield_.GetLayout().cellsX == shape.cellsX && heightfield_.GetLayout().cellsZ == shape.cellsZ;
 	TileHeights tileHeights;   // a tile's samples and apron are made together (the rivers are dug into both)
+	const auto heightsStart = Clock::now();
 	if (IsTile() && !keep) tileHeights = BuildTileHeights();
+	const double heightsMs = MillisecondsSince(heightsStart);
 	std::vector<float> samples = keep ? heightfield_.Samples()
 									  : IsTile() ? std::move(tileHeights.samples)
 												 : GenerateHeights(heightmap_.values, heightmap_.width, heightmap_.height, settings, shape);
@@ -699,13 +710,16 @@ bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 	const float depth = shape.depth;
 	std::vector<TerrainChunk> chunks;
 	int chunksX = 0, chunksZ = 0;
+	const auto meshStart = Clock::now();
 	Model* model = BuildTerrainModel(device_, field, chunks, chunksX, chunksZ);
+	const double meshMs = MillisecondsSince(meshStart);
 	if (!model) return false;
 	auto replacement = std::make_unique<Renderable>(device_, model, L"shaders/vs.hlsl", L"shaders/terrain_ps.hlsl");
 	if (!replacement->IsValid()) return false;
 
 	// The layer weights for the new grid (lesson 29), baked now so the very first frame has them. Made before anything is
 	// committed, like the mesh, so a failure leaves the old terrain on screen.
+	const auto splatStart = Clock::now();
 	SplatMap splat;
 	splat.Resize(shape.cellsX, shape.cellsZ);
 	BakeSplatAll(field, MakeSplatRules(settings), CurrentSplatPlacement(), splat);
@@ -716,6 +730,11 @@ bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 	ID3D11Texture2D* splatTexture = nullptr;
 	ID3D11ShaderResourceView* splatView = nullptr;
 	if (!CreateSplatTexture(device_, splat, splatTexture, splatView)) return false;
+	const double splatMs = MillisecondsSince(splatStart);
+	if (IsTile()) {
+		g_buildTimes.heightsMs = heightsMs; g_buildTimes.meshMs = meshMs; g_buildTimes.splatMs = splatMs;
+		++g_buildTimes.builds;
+	}
 
 	ReleaseSplatTexture();
 	splat_ = std::move(splat);
@@ -1010,6 +1029,55 @@ bool Terrain::ApplyPatch(const HeightfieldPatch& patch, bool useAfter)
 	RefreshChunks(changed);
 	RefreshSplat(SplatCellsForSamples(changed, heightfield_.GetLayout().cellsX, heightfield_.GetLayout().cellsZ));
 	NewRevision();
+	return true;
+}
+
+bool Terrain::PatchTile(const TileSampleRect& rect, bool groundIsFinal)
+{
+	if (!IsTile() || tile_.lod != 0 || rect.IsEmpty() || heightfield_.IsEmpty() || !renderable_) return false;
+	const int cells = heightfield_.GetLayout().cellsX;
+	if (heightfield_.GetLayout().cellsZ != cells || cells != tile_.grid.TileCells()) return false;
+	const auto start = Clock::now();
+
+	// The ground the world gives at exactly these samples (edits and rivers included): the same numbers a rebuild would read.
+	const std::vector<float> block = GenerateTileBlock(*tile_.source, tile_.grid, tile_.coord, tile_.rivers.get(), rect);
+	if (block.size() != static_cast<size_t>(rect.Width()) * rect.Height()) return false;
+
+	HeightfieldApron apron = heightfield_.Apron();
+	const bool hasApron = heightfield_.HasApron();
+	GridRect changed;   // the samples of the tile itself whose vertices must be rebuilt
+	for (int z = rect.z0; z <= rect.z1; ++z) {
+		for (int x = rect.x0; x <= rect.x1; ++x) {
+			const float value = block[static_cast<size_t>(z - rect.z0) * rect.Width() + (x - rect.x0)];
+			const bool insideX = x >= 0 && x <= cells, insideZ = z >= 0 && z <= cells;
+			if (insideX && insideZ) {
+				heightfield_.SetSample(heightfield_.IndexOf(x, z), value);
+				changed.Include(x, z);
+			} else if (!hasApron) {
+				continue;
+			} else if (x == -1 && insideZ) {         // a neighbour's change: only this edge vertex's normal moves
+				apron.west[static_cast<size_t>(z)] = value;
+				changed.Include(0, z);
+			} else if (x == cells + 1 && insideZ) {
+				apron.east[static_cast<size_t>(z)] = value;
+				changed.Include(cells, z);
+			} else if (z == -1 && insideX) {
+				apron.north[static_cast<size_t>(x)] = value;
+				changed.Include(x, 0);
+			} else if (z == cells + 1 && insideX) {
+				apron.south[static_cast<size_t>(x)] = value;
+				changed.Include(x, cells);
+			}   // the four corners of the apron are not stored: no normal reads them
+		}
+	}
+	if (hasApron) heightfield_.SetApron(std::move(apron));
+	if (changed.IsEmpty()) return true;
+
+	RefreshChunks(changed);
+	RefreshSplat(SplatCellsForSamples(changed, cells, cells));   // new slopes: new layer weights (painted layers go over them again)
+	if (groundIsFinal) NewRevision();
+	g_buildTimes.patchMs = MillisecondsSince(start);
+	++g_buildTimes.patches;
 	return true;
 }
 

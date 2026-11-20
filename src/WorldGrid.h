@@ -141,6 +141,21 @@ private:
 // integer arithmetic, then one multiplication in double: every tile that shares the sample gets the same number.
 double WorldSamplePosition(const WorldGridSettings& grid, int tile, int local);
 
+// A block of samples of ONE tile, in tile-local indices, inclusive on both ends. 0..cells are the tile's own samples; -1 and
+// cells + 1 are its apron. Empty when it ends before it starts.
+struct TileSampleRect {
+    int x0 = 0, z0 = 0, x1 = -1, z1 = -1;
+    bool IsEmpty() const { return x1 < x0 || z1 < z0; }
+    int Width() const { return IsEmpty() ? 0 : x1 - x0 + 1; }
+    int Height() const { return IsEmpty() ? 0 : z1 - z0 + 1; }
+};
+
+// Which samples of `tile` (at level 0) can have changed when the lattice points minX..maxX, minZ..maxZ changed. The lattice is
+// the grid's own at level 0: lattice point i is world position i * metresPerCell, so tile-local sample s is lattice point
+// tile * cells + s. The block is grown by one sample on every side (a bilinear read reaches one point further) and clipped to
+// -1..cells + 1, so a change just outside the tile still reaches its apron. Empty when the tile cannot see the change.
+TileSampleRect TileSamplesAffectedBy(const WorldGridSettings& grid, TileCoord tile, std::int64_t minX, std::int64_t minZ, std::int64_t maxX, std::int64_t maxZ);
+
 // --- making a tile --------------------------------------------------------------------------------------------------
 // The samples of one tile: (cells + 1) x (cells + 1), row by row (z-major, the same layout as Heightfield::Reset takes).
 std::vector<float> GenerateTileSamples(const WorldHeightSource& source, const WorldGridSettings& grid, TileCoord tile);

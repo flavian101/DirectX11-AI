@@ -274,6 +274,11 @@ if(BUILD_TESTS)
     target_include_directories(WorldEditsTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(WorldEditsTests PRIVATE Threads::Threads)   # TerrainSplat.cpp bakes on several threads
     add_test(NAME WorldEdits COMMAND WorldEditsTests)
+    # Patching a loaded tile in place (roadmap T2): which samples a stroke reaches, and that patched == rebuilt.
+    add_executable(TilePatchTests tests/tile_patch_test.cpp src/WorldEdits.cpp src/WorldRivers.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/TerrainPaint.cpp src/TerrainSplat.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
+    target_include_directories(TilePatchTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(TilePatchTests PRIVATE Threads::Threads)
+    add_test(NAME TilePatch COMMAND TilePatchTests)
     add_executable(ImageDownscaleTests tests/image_downscale_test.cpp)
     target_include_directories(ImageDownscaleTests PRIVATE ${CMAKE_SOURCE_DIR}/editor)
     add_test(NAME ImageDownscale COMMAND ImageDownscaleTests)

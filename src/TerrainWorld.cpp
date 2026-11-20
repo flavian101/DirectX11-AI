@@ -176,6 +176,8 @@ void TerrainWorld::UnloadAll(Scene& scene)
     for (const auto& entry : tiles_) scene.Remove(entry.second);
     tiles_.clear();
     staleTiles_.clear();
+    pendingEdits_.clear();
+    patchedDuringStroke_.clear();
 }
 
 void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
@@ -193,6 +195,32 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
         if (scene.Find(it->second)) ++it; else it = tiles_.erase(it);
     }
     if (failed_) return;
+
+    // Heights edited in loaded tiles (a sculpt step, an undo): rewrite only the edited samples in place instead of building a whole
+    // new Terrain per tile per step (roadmap T2). The patched tile equals the rebuilt one (tests/tile_patch_test.cpp).
+    for (auto it = pendingEdits_.begin(); it != pendingEdits_.end(); it = pendingEdits_.erase(it)) {
+        const std::uint64_t key = it->first;
+        const auto tileIt = tiles_.find(key);
+        if (tileIt == tiles_.end() || staleTiles_.count(key)) continue;   // not loaded, or a full rebuild is coming anyway
+        Terrain* terrain = dynamic_cast<Terrain*>(scene.Find(tileIt->second));
+        if (!terrain) continue;
+        if (terrain->GetTile().lod != 0) { staleTiles_.insert(key); continue; }   // far tiles are cheap (4^-level of the cells): rebuilt as before
+        const LatticeRect& edited = it->second.rect;
+        const TileSampleRect rect = TileSamplesAffectedBy(settings_.grid, CoordOfKey(key), edited.minX, edited.minZ, edited.maxX, edited.maxZ);
+        if (rect.IsEmpty()) continue;
+        if (!terrain->PatchTile(rect, it->second.final)) { staleTiles_.insert(key); continue; }   // could not patch: the safe way
+        if (!it->second.final) patchedDuringStroke_.insert(key);
+    }
+    if (strokeEnded_) {
+        // The stroke is over: the ground is final, so the water may measure its shore again (it does not at every step).
+        for (const std::uint64_t key : patchedDuringStroke_) {
+            const auto tileIt = tiles_.find(key);
+            if (tileIt == tiles_.end()) continue;
+            if (Terrain* terrain = dynamic_cast<Terrain*>(scene.Find(tileIt->second))) terrain->NotifyGroundChanged();
+        }
+        patchedDuringStroke_.clear();
+        strokeEnded_ = false;
+    }
 
     std::vector<LoadedTile> loaded;
     loaded.reserve(tiles_.size());
@@ -283,15 +311,23 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
     }
 }
 
-void TerrainWorld::MarkEditedTiles(const LatticeRect& rect, bool heights)
+void TerrainWorld::MarkEditedTiles(const LatticeRect& rect, bool heights, bool final)
 {
     for (const TileCoord& coord : edits_->TilesAffectedBy(rect, heights)) {
-        if (tiles_.count(Key(coord))) staleTiles_.insert(Key(coord));
+        const std::uint64_t key = Key(coord);
+        if (!tiles_.count(key)) continue;
+        if (!heights) { staleTiles_.insert(key); continue; }   // paint: rebuilt as before
+        // Heights: remember WHICH lattice points changed; Stream patches the loaded tile (or rebuilds it if it is not at full detail).
+        PendingEdit& pending = pendingEdits_[key];
+        pending.rect.Include(rect.minX, rect.minZ);
+        pending.rect.Include(rect.maxX, rect.maxZ);
+        pending.final = pending.final || final;
     }
 }
 
 void TerrainWorld::MarkAllTilesStale()
 {
+    pendingEdits_.clear();   // everything is rebuilt from the current edits anyway
     for (const auto& entry : tiles_) staleTiles_.insert(entry.first);
 }
 
@@ -317,13 +353,14 @@ WorldEditPatch TerrainWorld::EndStroke()
 {
     WorldEditPatch patch = recorder_.Finish(*edits_);
     recorder_.Clear();
+    strokeEnded_ = true;   // the next Stream tells the water (and anything else watching) that the patched ground is final
     return patch;
 }
 
 void TerrainWorld::ApplyEditPatch(const WorldEditPatch& patch, bool useAfter)
 {
     const WorldPatchExtent extent = ApplyWorldEditPatch(*edits_, patch, useAfter);
-    MarkEditedTiles(extent.heights, true);
+    MarkEditedTiles(extent.heights, true, true);   // an undo or redo is final at once: no stroke to wait for
     MarkEditedTiles(extent.paint, false);
 }
 

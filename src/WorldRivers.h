@@ -40,3 +40,9 @@ struct TileHeights {
     HeightfieldApron apron;
 };
 TileHeights GenerateTileHeights(const WorldHeightSource& source, const WorldGridSettings& grid, TileCoord tile, const std::vector<WorldRiver>* rivers);
+
+// Only a block of that tile (tile-local indices, apron included: see TileSampleRect), row by row, Width() x Height() values, with
+// the rivers dug in. Each value is EXACTLY the one GenerateTileHeights gives for that sample: a sample depends only on its world
+// position and the rivers, never on the block around it. This is what lets a sculpt stroke rewrite a few samples of a loaded
+// tile instead of building the whole tile again (roadmap T2).
+std::vector<float> GenerateTileBlock(const WorldHeightSource& source, const WorldGridSettings& grid, TileCoord tile, const std::vector<WorldRiver>* rivers, const TileSampleRect& rect);

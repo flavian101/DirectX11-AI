@@ -2636,6 +2636,12 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
     }
     ImGui::TextDisabled("By detail (full, 1/4, 1/16, 1/64 of the cells): %d, %d, %d, %d", world->LoadedTileCountAtLod(0), world->LoadedTileCountAtLod(1),
                         world->LoadedTileCountAtLod(2), world->LoadedTileCountAtLod(3));
+    {
+        // Where the time goes (roadmap T2): a rebuilt tile pays for all three; a sculpt step patches in place and pays only "patch".
+        const Terrain::BuildTimes& times = Terrain::GetBuildTimes();
+        ImGui::TextDisabled("Last tile build: heights %.1f ms, mesh %.1f ms, splat %.1f ms (%d built)", times.heightsMs, times.meshMs, times.splatMs, times.builds);
+        ImGui::TextDisabled("Last sculpt patch: %.2f ms (%d patched)", times.patchMs, times.patches);
+    }
     // ---- GROUND SHAPE (roadmap, heightmap customisation): the controls that turn a picture into good-looking terrain ----
     ImGui::SeparatorText("Ground shape");
     if (const HeightImageStats* stats = world->PictureStats()) {

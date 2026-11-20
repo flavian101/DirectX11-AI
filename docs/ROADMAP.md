@@ -85,8 +85,8 @@ Sizes: `ScatterObject.cpp` is about 750 lines (the split is in S12); the scatter
 
 | ID | Problem | Cause (read in the code) | Fix |
 |---|---|---|---|
-| T1 `[~]` | Cliffs look like stairs and vertical streaks; flat pads | A 2048 px picture over 1024 m is 0.5 m/px, sampled every 4 m: about 8 px per cell, **no prefilter**, so thin escarpments alias. `smoothing` defaults to 0. About 13% of the demo picture's pixels sit at the minimum value (flat floor). | T1 below |
-| T2 `[!]` | Sculpting a world is slow | `SculptStep` marks tiles stale; `Stream()` builds a **new `Terrain` per touched tile per step** (heights for 257² + apron through the whole source chain, 64 chunks of vertices and index buffers, splat bake). The single-terrain path already patches chunks in place, but `Terrain::Sculpt` returns false for tiles. | T2 below |
+| T1 `[x]` | Cliffs look like stairs and vertical streaks; flat pads | A 2048 px picture over 1024 m is 0.5 m/px, sampled every 4 m: about 8 px per cell, **no prefilter**, so thin escarpments alias. `smoothing` defaults to 0. About 13% of the demo picture's pixels sit at the minimum value (flat floor). | T1 below |
+| T2 `[~]` | Sculpting a world is slow | `SculptStep` marks tiles stale; `Stream()` builds a **new `Terrain` per touched tile per step** (heights for 257² + apron through the whole source chain, 64 chunks of vertices and index buffers, splat bake). The single-terrain path already patches chunks in place, but `Terrain::Sculpt` returns false for tiles. | T2 below |
 | T3 `[ ]` | Every chunk builds its own identical index buffers (3 LODs plus skirts) | `BuildTerrainModel` | T3 below |
 | W1 `[!]` | **Ocean is drawn under / through terrain that is below the shore level** | Not yet reproduced here (I could not run the engine). Ranked suspects in W1 below. | W1 below |
 | W2 `[ ]` | The sea is one plane, at most 2000 m, with a coarse CPU depth map, and it has no idea about tiles that are not loaded | `Water`, `WaterShore::Bake` | W2 below |
@@ -105,7 +105,7 @@ Order is by what you see and what unblocks the rest. Items inside a milestone ca
 
 ### M1. Make what exists look and feel right
 
-**T1. Prefilter the picture; show pixels per cell** `[~]` (lesson 54: written and unit-tested; **to check in the editor**: the demo picture's escarpments)
+**T1. Prefilter the picture; show pixels per cell** `[x]` (lesson 54; the author checked it in the editor and it works)
 - `[x]` `PicturePixelsPerCell(metresPerCell, pictureWidth, imageWidth)`. The world inspector shows it under the picture controls and warns in orange above 2
   when the prefilter is off. (A world's pixel spacing is `width / (pixels - 1)`: pixel 0 and the last pixel sit on the two edges.)
 - `[x]` A mip pyramid of the `HeightImage`, built once per picture (`BuildHeightPyramid`; each level is a low-pass of the one before, about half as wide, same area).
@@ -115,18 +115,25 @@ Order is by what you see and what unblocks the rest. Items inside a milestone ca
   A world migrated from an old terrain gets it **off**, so it still matches the old terrain sample for sample.
 - The older `smoothing` setting (a blur in pixels) is unchanged and still useful for the steps of an 8-bit picture; prefilter handles thin features.
 - Acceptance: `world_picture_test.cpp` `TestPrefilter`: a 1 px ridge at 8 px per cell changes by 0.062 over half a cell instead of 1.000; a footprint of one pixel
-  or less equals the unfiltered source exactly; a step edge stays in range and only rises. Still open: the demo picture shows no stair terraces on its
-  escarpments (editor). Opening an existing world, the shape changes a little because `prefilter` is on by default; saved edits are deltas and stay.
+  or less equals the unfiltered source exactly; a step edge stays in range and only rises. Checked in the editor: the stairs on the demo escarpments are gone. Opening an existing world, the shape changes a little because `prefilter` is on by default; saved edits are deltas and stay.
 
-**T2. Sculpt a world without rebuilding tiles** `[ ]`
-- Add `Terrain::PatchTile(rect, heightAt)`: write only the dirty rectangle with `Heightfield::SetSample`, then call the existing
-  `RefreshChunks(rect)` and `RefreshSplat(...)`. The tile keeps its `Terrain` object.
-- `TerrainWorld` keeps a dirty rectangle per tile. During a stroke tiles are patched, not rebuilt. A full rebuild happens when the stroke
-  ends, when the tile's LOD changes, or when the world's settings change.
-- Keep the apron correct when the rectangle touches a tile border (the neighbour's samples are read for normals).
-- Add `QueryPerformanceCounter` timers around `GenerateTileHeights`, `BuildTerrainModel` and the splat bake, shown in the world inspector.
-- Acceptance: no `scene.Add<Terrain>` during a stroke; a patched tile equals a freshly built tile sample for sample (same style as the
-  200-random-strokes test of lesson 27, in `world_edits_test.cpp`); frame time during a stroke is reported by the timers.
+**T2. Sculpt a world without rebuilding tiles** `[~]` (lesson 55: written and unit-tested; **to check in the editor**: sculpt on a world and watch the inspector timers)
+- `[x]` `Terrain::PatchTile(rect, groundIsFinal)`: rewrites only the samples of a loaded level-0 tile inside `rect` (tile-local, apron included) from the world's
+  ground, then calls the existing `RefreshChunks` and `RefreshSplat` for that rectangle. The tile keeps its `Terrain` object, its index buffers and its textures.
+- `[x]` The affected samples come from pure functions: `TileSamplesAffectedBy` (the changed lattice points grown by one sample, clipped to the apron) and
+  `GenerateTileBlock` (just that block of the tile's heights, rivers dug in; each value is bit for bit the one `GenerateTileHeights` gives).
+- `[x]` `TerrainWorld` keeps the union of the changed lattice points per loaded tile (`pendingEdits_`). `Stream` patches them once per frame, so a stroke of many steps
+  costs one patch per tile per frame. A tile that is not at full detail (cheap, far away) and paint edits are rebuilt as before. An undo or redo patches with the
+  ground marked final at once.
+- `[x]` The ground revision (the water re-measures its shore by it) moves when the stroke ends, not on every step.
+- `[x]` Timers in the world inspector: last tile build split into heights, mesh and splat, and the last patch (a steady clock; `std::chrono` is what
+  `QueryPerformanceCounter` is on this compiler).
+- Decision: no full rebuild at the end of a stroke. The first version of this item asked for one as a safety net; the test below shows a patched tile equals a
+  rebuilt one after every stroke, so the rebuild would only cost time.
+- Not done: paint strokes still rebuild the tile (same idea, `ReplacePaint` plus a splat refresh; later).
+- Acceptance: `tile_patch_test.cpp`: after each of 200 random brush strokes (all four brushes, strokes that only touch the apron included, with and without a river
+  crossing the tile) the patched tile equals a tile built from scratch, sample for sample, apron included. Still open (editor): while sculpting, the "built" counter
+  in the inspector does not move and "Last sculpt patch" stays in the low milliseconds.
 
 **T3. Shared index buffers** `[ ]`
 - Build one index set per (chunk size, LOD) and share it between all chunks of all tiles. Only vertex buffers differ per chunk.

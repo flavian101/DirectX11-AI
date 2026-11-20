@@ -181,6 +181,21 @@ double WorldSamplePosition(const WorldGridSettings& grid, int tile, int local)
     return static_cast<double>(globalIndex) * static_cast<double>(grid.metresPerCell);
 }
 
+TileSampleRect TileSamplesAffectedBy(const WorldGridSettings& grid, TileCoord tile, std::int64_t minX, std::int64_t minZ, std::int64_t maxX, std::int64_t maxZ)
+{
+    TileSampleRect none;
+    if (maxX < minX || maxZ < minZ) return none;
+    const std::int64_t cells = grid.TileCells();
+    const std::int64_t originX = static_cast<std::int64_t>(tile.x) * cells, originZ = static_cast<std::int64_t>(tile.z) * cells;
+    const std::int64_t x0 = (std::max)(minX - 1 - originX, static_cast<std::int64_t>(-1)), x1 = (std::min)(maxX + 1 - originX, cells + 1);
+    const std::int64_t z0 = (std::max)(minZ - 1 - originZ, static_cast<std::int64_t>(-1)), z1 = (std::min)(maxZ + 1 - originZ, cells + 1);
+    if (x1 < x0 || z1 < z0) return none;
+    TileSampleRect rect;
+    rect.x0 = static_cast<int>(x0); rect.x1 = static_cast<int>(x1);
+    rect.z0 = static_cast<int>(z0); rect.z1 = static_cast<int>(z1);
+    return rect;
+}
+
 namespace {
 double SampleWorldPosition(const WorldGridSettings& grid, int tile, int local) { return WorldSamplePosition(grid, tile, local); }
 }   // namespace

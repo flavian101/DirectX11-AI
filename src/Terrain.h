@@ -207,6 +207,25 @@ public:
 	// Digs a river's channel (lesson 38). `path` is the river's curve in WORLD space. The bed is `depth` below the water's surface
 	// (`waterLevelY`, world Y) in the middle, level with it at the water's edge; the banks climb `bankHeight` over `bankWidth`
 	// beyond that. Returns what changed as one patch, like a stroke, for undo (empty if the ground already had that shape).
+	// Rewrites the samples of THIS TILE (level of detail 0) inside `rect` (tile-local, apron included) from the world's ground, and
+	// refreshes only what they touch: the vertices of the chunks around them, the splat texels, nothing else. The result is exactly
+	// the tile a rebuild would give (tests/tile_patch_test.cpp), at a fraction of the cost: no new Terrain, no new index buffers, no
+	// heights for the other 99% of the tile (roadmap T2). `groundIsFinal` false while a stroke is going on: the revision the water
+	// measures its shore by moves when the stroke ends (NotifyGroundChanged), not on every step. False: nothing was done.
+	bool PatchTile(const TileSampleRect& rect, bool groundIsFinal);
+	void NotifyGroundChanged() { NewRevision(); }
+
+	// How long the last tile build took and where the time went, and the last patch (milliseconds, measured with a steady clock).
+	// Shared by every tile; shown in the world inspector so a slow stroke can be told from a slow build.
+	struct BuildTimes {
+		double heightsMs = 0.0;   // the tile's heights and apron through the whole source chain (edits and rivers included)
+		double meshMs = 0.0;      // the vertex and index buffers of all its chunks
+		double splatMs = 0.0;     // the layer weights and their texture
+		double patchMs = 0.0;     // the last PatchTile
+		int builds = 0, patches = 0;
+	};
+	static const BuildTimes& GetBuildTimes();
+
 	HeightfieldPatch CarveRiver(const std::vector<RiverPath::Sample>& path, float waterLevelY, float depth, float bankWidth, float bankHeight);
 	// Undo / redo of a stroke: writes the patch's "before" or "after" values and refreshes the chunks it touches.
 	bool ApplyPatch(const HeightfieldPatch& patch, bool useAfter);

@@ -62,6 +62,7 @@ public:
     bool SetApron(HeightfieldApron apron);
     void ClearApron() { apron_ = HeightfieldApron{}; }
     bool HasApron() const { return !apron_.west.empty(); }
+    const HeightfieldApron& Apron() const { return apron_; }
     // Like Sample, but a sample exactly one step outside the grid (in one axis) reads the apron. Anything else is clamped.
     float SampleBeyond(int gridX, int gridZ) const;
 

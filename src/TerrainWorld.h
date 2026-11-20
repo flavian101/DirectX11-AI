@@ -149,13 +149,19 @@ private:
     TerrainLayerSet layers_;                              // taken from the first tile built, lent to every later one
     std::unordered_map<std::uint64_t, SceneObjectId> tiles_;   // tile -> the scene object that shows it
     std::shared_ptr<const std::vector<WorldRiver>> riversSnapshot_;   // what new tiles are built with: replaced whenever the rivers change
+    // Heights edited in loaded tiles, waiting to be patched in place by the next Stream (roadmap T2): the union of the lattice points
+    // changed since then. A tile that is not level 0 (cheap, far away) or that is stale anyway is rebuilt as before.
+    struct PendingEdit { LatticeRect rect; bool final = false; };
+    std::unordered_map<std::uint64_t, PendingEdit> pendingEdits_;
+    std::unordered_set<std::uint64_t> patchedDuringStroke_;   // tiles a stroke patched: their ground revision moves when it ends
+    bool strokeEnded_ = false;
     std::unordered_set<std::uint64_t> staleTiles_;                    // loaded tiles that a river change touched: rebuilt first
     int nextRiverId_ = 1;
     WorldBounds activeBounds_;   // see ActiveBounds()
     std::string status_;
     static TileCoord CoordOfKey(std::uint64_t key) { return { static_cast<int>(static_cast<std::uint32_t>(key >> 32)), static_cast<int>(static_cast<std::uint32_t>(key)) }; }
     void BuildSource();                           // the ground and the edge of the world, from the settings (see TerrainWorld.cpp)
-    void MarkEditedTiles(const LatticeRect& rect, bool heights);   // loaded tiles whose ground an edit changed: rebuilt first
+    void MarkEditedTiles(const LatticeRect& rect, bool heights, bool final = false);   // loaded tiles whose ground an edit changed: patched in place (heights) or rebuilt (paint)
     void MarkAllTilesStale();
     void RefreshRivers();                         // new snapshot, and ids for rivers that have none
     void MarkTilesTouchedBy(const WorldRiver& river);
