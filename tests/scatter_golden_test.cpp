@@ -26,7 +26,7 @@ static int g_failures = 0;
 static ScatterRules RulesFor(const ScatterSettings& settings, size_t speciesIndex)
 {
     const ScatterSpeciesSettings& species = settings.species[speciesIndex];
-    const std::vector<ScatterVariantSettings> looks = species.EffectiveVariants();
+    const std::vector<ScatterVariantSettings>& looks = species.variants;
     std::vector<float> heights(looks.size());
     for (size_t v = 0; v < looks.size(); ++v) heights[v] = 2.0f + 0.5f * static_cast<float>(v);   // made-up mesh heights, fixed forever
     const std::vector<char> usable(looks.size(), 1);

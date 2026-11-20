@@ -104,12 +104,46 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FloatingSettings, enabled, draft
 // Variants of a scatter species (lesson 36). Scene files from before it have no "variants" key: the species' own "model" is then
 // its one look, exactly as before.
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterMaterialOverride, slot, albedo, normal, orm, emissive, baseColor, roughness, flipGreen)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterVariantSettings, name, model, enabled, weight, layerBias, minSlope, maxSlope,
-                                                scaleMul, materials)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterSpeciesSettings, name, model, enabled, spacing, minDistance, density, layerDensity,
-                                                minSlope, maxSlope, minHeight, maxHeight, clusterStrength, clusterScale, scaleMin,
-                                                scaleMax, alignToNormal, tilt, sink, seed, lodScreen, cullScreen, castShadows,
-                                                shadowDistance, variants)
+// The numbers shared with the placement are listed ONCE (here), for the base structs; the settings add only their own keys.
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterVariantBase, weight, layerBias, minSlope, maxSlope, scaleMul)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterSpeciesRules, spacing, minDistance, density, layerDensity, minSlope, maxSlope,
+                                                minHeight, maxHeight, clusterStrength, clusterScale, scaleMin, scaleMax,
+                                                alignToNormal, tilt, sink)
+inline void to_json(json& j, const ScatterVariantSettings& v)
+{
+    to_json(j, static_cast<const ScatterVariantBase&>(v));
+    j["name"] = v.name; j["model"] = v.model; j["enabled"] = v.enabled; j["materials"] = v.materials;
+}
+inline void from_json(const json& j, ScatterVariantSettings& v)
+{
+    const ScatterVariantSettings d;
+    from_json(j, static_cast<ScatterVariantBase&>(v));
+    v.name = j.value("name", d.name); v.model = j.value("model", d.model); v.enabled = j.value("enabled", d.enabled);
+    v.materials = j.value("materials", d.materials);
+}
+inline void to_json(json& j, const ScatterSpeciesSettings& s)
+{
+    to_json(j, static_cast<const ScatterSpeciesRules&>(s));
+    j["name"] = s.name; j["enabled"] = s.enabled; j["seed"] = s.seed; j["lodScreen"] = s.lodScreen;
+    j["cullScreen"] = s.cullScreen; j["castShadows"] = s.castShadows; j["shadowDistance"] = s.shadowDistance; j["variants"] = s.variants;
+}
+inline void from_json(const json& j, ScatterSpeciesSettings& s)
+{
+    const ScatterSpeciesSettings d;
+    from_json(j, static_cast<ScatterSpeciesRules&>(s));
+    s.name = j.value("name", d.name); s.enabled = j.value("enabled", d.enabled);
+    s.seed = j.value("seed", d.seed); s.lodScreen = j.value("lodScreen", d.lodScreen); s.cullScreen = j.value("cullScreen", d.cullScreen);
+    s.castShadows = j.value("castShadows", d.castShadows); s.shadowDistance = j.value("shadowDistance", d.shadowDistance);
+    if (j.contains("variants") && j["variants"].is_array() && !j["variants"].empty()) {
+        s.variants = j["variants"].get<std::vector<ScatterVariantSettings>>();
+    } else {
+        // A scene saved before lesson 36: a species had one "model" and no looks. The model becomes its one look, named like the species.
+        ScatterVariantSettings only;
+        only.name = s.name;
+        only.model = j.value("model", std::string("builtin:pine"));
+        s.variants = { only };
+    }
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterSettings, enabled, cellSize, seed, lodBias, frustumCulling, lodEnabled, shadows,
                                                 reflectionDetail, generationBudgetMs, maxInstancesPerSpecies, species)
 

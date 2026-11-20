@@ -77,7 +77,7 @@ path: it is deleted at **M2** once the world covers every row of the table above
 | Biomes | `[ ]` **S4**: `grep -ri biome src editor` finds nothing. `layerDensity[4]` and `layerBias[4]` (grass, rock, sand, snow) stand in | |
 | Knows about water | `[ ]` **S13**: `ScatterGround` holds a heightfield, a splat map and a transform, nothing else | |
 
-Sizes, for the clean-up: `ScatterObject.cpp` is 775 lines; the scatter inspector is about 310 lines inside `editor/EditorLayer.cpp` (4805 lines).
+Sizes: `ScatterObject.cpp` is about 750 lines (the split is in S12); the scatter inspector is `editor/ScatterInspector.cpp` (299 lines, moved out of `EditorLayer.cpp` in S11).
 
 ---
 
@@ -251,14 +251,14 @@ feeds these parts or what wraps them, not how they work.
    (`Terrain::GetSurfaceChangesSince`) and the one instance buffer per species all assume one terrain of a fixed size. A streaming world has none of that (**S12**).
 2. **No biome.** The word is in the docs and not in the code. "Where may a pine grow" is answered by the four texture layers, so a forest and a
    swamp cannot differ on the same grass, and the rules are sized by `kSplatChannels` (**S4**).
-3. **One rule, six files.** A rule such as `clusterScale` is declared in `ScatterSpeciesSettings` and again in `ScatterRules`, copied in
+3. **One rule, six files (fixed in S11).** A rule such as `clusterScale` is declared in `ScatterSpeciesSettings` and again in `ScatterRules`, copied in
    `MakeBaseRules`, clamped by borrowing in `ScatterSpeciesSettings::Clamp`, saved in `SceneJson.h` and drawn in `EditorLayer.cpp`. Adding a rule is a hunt (**S11**).
-4. **Dead or duplicate.** `ScatterObject::GenerateAllNow` has no caller (not the editor, not a test). `ScatterRules::modelHeight` (the species-level one)
+4. **Dead or duplicate (fixed in S11).** `ScatterObject::GenerateAllNow` has no caller (not the editor, not a test). `ScatterRules::modelHeight` (the species-level one)
    is never filled from the settings, so it is always 1.0. `ScatterSpeciesSettings::model` plus `variants` exist twice only so that lesson-31 scene
    files load (`EffectiveVariants`). (**S11**)
-5. **Fragile.** A change in the rules is detected with `memcmp` over `ScatterRules`. It works only because every member is 4 bytes; one `bool` added
+5. **Fragile (fixed in S11).** A change in the rules is detected with `memcmp` over `ScatterRules`. It works only because every member is 4 bytes; one `bool` added
    later makes it wrong without any warning (**S11**).
-6. **Too much in two files.** `ScatterObject.cpp` does five jobs (model cache, material loading, cell scheduling, upload, culling and drawing) and the
+6. **Too much in two files (inspector moved in S11; `ScatterObject.cpp` is split in S12).** `ScatterObject.cpp` does five jobs (model cache, material loading, cell scheduling, upload, culling and drawing) and the
    inspector sits inside the 4805-line `EditorLayer.cpp` (**S12** and **S11**).
 7. **Blind to water.** Nothing stops a species that likes the ground from growing under the sea or in a river bed (**S13**).
 
@@ -269,7 +269,7 @@ feeds these parts or what wraps them, not how they work.
 | S1 | Variants per species (mesh, materials, weight, layer bias, slope band) | low | `[x]` lesson 36 |
 | S2 | Built-in rocks and a starter scatter | very low | `[x]` |
 | S3 | ~~Groups with inherited defaults~~ | | dropped: a biome recipe (S4) lists its species, which is the same job. Revisit only if the species list gets long in practice |
-| S11 | Clean-up before anything new (no behaviour change) | low | `[~]` first half done (lesson 52): golden test, dead code, `operator==`. Rules declared once, always-variants and the inspector move are left |
+| S11 | Clean-up before anything new (no behaviour change) | low | `[~]` every bullet written and unit-tested (lessons 52, 53); waits for a check in the editor (see S11) |
 | S12 | One ground interface and cells per tile (this is C2) | medium-high | `[ ]` |
 | S4 | Biomes as data, rule-based | low-medium | `[ ]` |
 | S13 | Water depth and exclusion masks (roads, buildings) | medium | `[ ]` |
@@ -281,17 +281,17 @@ feeds these parts or what wraps them, not how they work.
 | S10 | GPU-driven culling, texture-array variants | high | `[ ]` only if the profiler shows draw calls or CPU culling |
 | S14 | Far distance: density fade or billboards beyond the last mesh level | medium | `[ ]` proposal, only if a screenshot or the profiler asks (today a species has 3 levels, then it is culled by `cullScreen`) |
 
-**S11. Clean-up before anything new** `[~]` (done: golden test, `GenerateAllNow`, species-level `modelHeight`, `operator==`; open: the last three bullets)
+**S11. Clean-up before anything new** `[~]` (written and tested in lessons 52 and 53; **to check in the editor**: open a scene saved before lesson 36, add and remove looks on a species, save, reload, and see that nothing moved)
 - `[x]` Delete `ScatterObject::GenerateAllNow`.
 - `[x]` Delete the species-level `ScatterRules::modelHeight` and its `-1` fallback. A variant's height is then always the loaded mesh's (default 1.0 for a look that cannot be drawn).
-- `[ ]` Declare each rule once: `ScatterSpeciesSettings` holds a `ScatterRules` instead of copying about 20 fields into a second struct. `MakeBaseRules` and the
+- `[x]` Declare each rule once (`ScatterSpeciesRules`, `ScatterVariantBase`, both inherited by the settings and the rules): `ScatterSpeciesSettings` holds a `ScatterRules` instead of copying about 20 fields into a second struct. `MakeBaseRules` and the
   "borrow the rules to clamp" step in `ScatterSpeciesSettings::Clamp` go away. Same for variants.
-- `[ ]` Always store variants. The loader turns a lesson-31 file (a `"model"` and no `"variants"`) into a one-variant list once; then `model`, `EffectiveVariants()`
+- `[~]` Always store variants. The loader turns a lesson-31 file (a `"model"` and no `"variants"`) into a one-variant list once; then `model`, `EffectiveVariants()`
   and the **Several looks...** path go. Old scene files must still load (`TestOldSceneFilesLoad` stays).
 - `[x]` Replace the `memcmp` on `ScatterRules` with `operator==` (field by field, guarded by `static_assert`s on the struct sizes; `TestRulesComparison`).
-- `[ ]` Move the scatter inspector out of `EditorLayer.cpp` into `editor/ScatterInspector.cpp` (the split of `ScatterObject.cpp` is done inside S12, which rewrites the same code).
+- `[~]` Move the scatter inspector out of `EditorLayer.cpp` into `editor/ScatterInspector.cpp` (the split of `ScatterObject.cpp` is done inside S12, which rewrites the same code).
 - Acceptance: all existing scatter tests pass. `scatter_golden_test.cpp` hashes the instances of `ScatterSettings::Starter()` over a fixed ground; the hash was
-  recorded **before** the first deletion (commit `848a23f`, g++) and must not change. Hashes are per compiler: run it once on the unchanged code on your machine and use your numbers if they differ (lesson 52). A new rule field touches the settings struct, the JSON and the inspector, not six files.
+  recorded **before** the first deletion (commit `848a23f`, g++) and must not change. Hashes are per compiler: run it once on the unchanged code on your machine and use your numbers if they differ (lesson 52). Adding a rule now touches four files, not six: the struct and `operator==` (`ScatterPlacement.h`, where a forgotten `operator==` stops the build), the clamp (`ScatterPlacement.cpp`), the JSON list (`SceneJson.h`) and the inspector (`ScatterInspector.cpp`).
 
 **S12. One ground interface and cells per tile (C2)** `[ ]`
 - `SampleScatterGround` is already the only door through which placement reads the ground. Replace `ScatterGround` (a heightfield pointer, a splat pointer and a

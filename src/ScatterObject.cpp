@@ -159,20 +159,12 @@ void ScatterObject::SetSettings(ScatterSettings settings)
     settings.Clamp();
     settings_ = std::move(settings);
     looks_.clear();
-    for (const ScatterSpeciesSettings& s : settings_.species) looks_.push_back(s.EffectiveVariants());
+    for (const ScatterSpeciesSettings& s : settings_.species) looks_.push_back(s.variants);
     // What actually changed is worked out in Refresh: a variant with a new model or new texture reloads, a species with new
     // rules places its cells again, and drawing options (levels of detail, shadows...) need nothing at all.
 }
 
 size_t ScatterObject::GetSpeciesCount() const { return species_.size(); }
-bool ScatterObject::IsSpeciesReady(size_t i) const { return i < species_.size() && species_[i]->loaded; }
-const std::string& ScatterObject::GetSpeciesError(size_t i) const
-{
-    static const std::string none;
-    if (i >= species_.size()) return none;
-    for (const Variant& v : species_[i]->variants) if (!v.error.empty()) return v.error;   // the first problem is the one to show
-    return none;
-}
 size_t ScatterObject::GetInstanceCount(size_t i) const { return i < species_.size() ? species_[i]->total : 0; }
 int ScatterObject::GetSpeciesLodLevels(size_t i) const
 {
@@ -335,7 +327,7 @@ void ScatterObject::SyncSpecies()
     if (species_.size() > settings_.species.size()) species_.resize(settings_.species.size());
     if (looks_.size() != settings_.species.size()) {   // (SetSettings keeps them in step: this only guards a missed call)
         looks_.clear();
-        for (const ScatterSpeciesSettings& s : settings_.species) looks_.push_back(s.EffectiveVariants());
+        for (const ScatterSpeciesSettings& s : settings_.species) looks_.push_back(s.variants);
     }
     bool changed = false;
     for (size_t i = 0; i < species_.size(); ++i) {

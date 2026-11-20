@@ -294,6 +294,8 @@ if(BUILD_EDITOR)
         add_executable(D3D11Editor
             editor/main_editor.cpp
             editor/EditorLayer.cpp
+            editor/ScatterInspector.cpp
+            editor/FileDialogs.cpp
             editor/EditorTheme.cpp
             editor/ConsolePanel.cpp
             editor/AssetBrowserPanel.cpp

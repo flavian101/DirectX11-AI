@@ -165,7 +165,6 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
                 }
             };
             for (ScatterSpeciesSettings& species : settings.species) {
-                store(species.model, species.name);
                 for (ScatterVariantSettings& variant : species.variants) {
                     const std::string owner = species.name + " / " + variant.name;
                     store(variant.model, owner);
@@ -304,7 +303,6 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
         ScatterSettings loaded = entry.value("settings", ScatterSettings{});
         auto resolveFile = [&](std::string& path) { if (!path.empty() && !IsBuiltinModel(path)) path = resolve(path); };
         for (ScatterSpeciesSettings& species : loaded.species) {
-            resolveFile(species.model);
             for (ScatterVariantSettings& variant : species.variants) {
                 resolveFile(variant.model);
                 for (ScatterMaterialOverride& o : variant.materials) { resolveFile(o.albedo); resolveFile(o.normal); resolveFile(o.orm); resolveFile(o.emissive); }

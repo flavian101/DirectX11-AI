@@ -37,47 +37,28 @@ struct ScatterMaterialOverride {
 };
 
 // One look of a species: its own mesh and materials, and how often and where it is chosen (lesson 36).
-struct ScatterVariantSettings {
+// The numbers it shares with the placement (weight, layerBias, slope band, scaleMul) come from ScatterVariantBase: declared once.
+struct ScatterVariantSettings : ScatterVariantBase {
     std::string name = "Variant";
     std::string model = "builtin:rock";   // a model file or a "builtin:..." name (ProceduralModels.h)
     bool enabled = true;
-    float weight = 1.0f;                  // relative chance among the variants the ground allows
-    std::array<float, 4> layerBias = { 1.0f, 1.0f, 1.0f, 1.0f };   // x the weight on grass / rock / sand / snow
-    float minSlope = 0.0f;                // degrees: only on ground in this band
-    float maxSlope = 90.0f;
-    float scaleMul = 1.0f;                // multiplies the species' scale range
     std::vector<ScatterMaterialOverride> materials;
     void Clamp();
 };
 
 // What one species (pine, birch, boulder...) needs. Plain data: the editor edits it, the scene file stores it.
-// A species with no `variants` is the one-look species of lesson 31: `model` is its only variant. As soon as `variants`
-// has an entry, those are the looks and `model` is ignored (the editor moves `model` into the list when you add a second).
-struct ScatterSpeciesSettings {
+// A species always has at least one look in `variants` (the constructor and Clamp see to it). Scene files from before lesson 36
+// had a single `model` and no `variants`: the scene loader (SceneJson.h) turns that model into the one look, once.
+// WHERE it grows and HOW each one looks (spacing, density, layerDensity, slope and height limits, clusters, scale, lean, sink) is
+// inherited from ScatterSpeciesRules in ScatterPlacement.h: those numbers are declared once and shared with the placement.
+struct ScatterSpeciesSettings : ScatterSpeciesRules {
     std::string name = "Species";
-    std::string model = "builtin:pine";   // a model file, or "builtin:pine" / "builtin:rock"
     bool enabled = true;
-    std::vector<ScatterVariantSettings> variants;   // up to kMaxScatterVariants
+    std::vector<ScatterVariantSettings> variants;   // 1 to kMaxScatterVariants looks; the model of each is in the look
 
-    // WHERE it grows (ScatterRules in ScatterPlacement.h)
-    float spacing = 6.0f;                 // metres: at most one plant per spacing x spacing square
-    float minDistance = 3.5f;             // metres: two plants are never closer than this
-    float density = 1.0f;                 // 0..1: the chance on perfect ground
-    std::array<float, 4> layerDensity = { 1.0f, 0.0f, 0.0f, 0.0f };   // how much grass, rock, sand and snow like it
-    float minSlope = 0.0f;                // degrees
-    float maxSlope = 35.0f;
-    float minHeight = -1000.0f;           // world Y
-    float maxHeight = 5000.0f;
-    float clusterStrength = 0.0f;
-    float clusterScale = 40.0f;
+    ScatterSpeciesSettings();             // one look: a pine
 
-    // HOW each one looks
-    float scaleMin = 0.8f;
-    float scaleMax = 1.3f;
-    float alignToNormal = 0.0f;
-    float tilt = 3.0f;
-    float sink = 0.0f;
-    int seed = 1;
+    int seed = 1;                         // this species' own random stream (the placement's seed is made from it)
 
     // HOW it is drawn
     std::array<float, 3> lodScreen = { 0.20f, 0.08f, 0.03f };   // level 1, 2, 3 start below these screen fractions
@@ -86,12 +67,10 @@ struct ScatterSpeciesSettings {
     float shadowDistance = 120.0f;        // metres from the camera; farther cells cast no shadow
 
     void Clamp();
-    // The looks the scatter actually uses: `variants`, or a single one made from `model` when there are none.
-    std::vector<ScatterVariantSettings> EffectiveVariants() const;
 };
 
 // The placement rules of one species, made from its settings (ScatterSettings.cpp: no Direct3D, tested).
-// `looks` are EffectiveVariants(); `modelHeights` and `usable` say, per look, how tall its loaded mesh is and whether it can be drawn at all.
+// `looks` are the species' variants; `modelHeights` and `usable` say, per look, how tall its loaded mesh is and whether it can be drawn at all.
 // A look that is switched off or whose model did not load gets weight 0: it is never chosen, so the others take its place.
 ScatterRules MakeScatterRules(const ScatterSpeciesSettings& species, const std::vector<ScatterVariantSettings>& looks,
                               const std::vector<float>& modelHeights, const std::vector<char>& usable, int speciesIndex, int globalSeed);
@@ -151,11 +130,9 @@ public:
 
     // For the editor.
     size_t GetSpeciesCount() const;
-    bool IsSpeciesReady(size_t index) const;
-    const std::string& GetSpeciesError(size_t index) const;
     size_t GetInstanceCount(size_t index) const;
     int GetSpeciesLodLevels(size_t index) const;
-    // Per variant (index = its place in ScatterSpeciesSettings::EffectiveVariants()).
+    // Per variant (index = its place in ScatterSpeciesSettings::variants).
     size_t GetVariantCount(size_t species) const;
     bool IsVariantReady(size_t species, size_t variant) const;
     const std::string& GetVariantError(size_t species, size_t variant) const;

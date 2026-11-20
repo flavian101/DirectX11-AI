@@ -8,6 +8,7 @@
 #include "SceneJson.h"
 #include "ScatterPlacement.h"
 #include <cstdio>
+#include <type_traits>
 #include <cmath>
 using nlohmann::json;
 
@@ -18,25 +19,47 @@ static void TestOldSceneFilesLoad()
 {
     const json old = json::parse(R"({"enabled":true,"cellSize":32,"species":[{"name":"Pines","model":"assets/pine.glb","spacing":7.0}]})");
     const ScatterSettings a = old.get<ScatterSettings>();
-    CHECK(a.species.size() == 1 && a.species[0].variants.empty() && a.species[0].model == "assets/pine.glb");
-    const std::vector<ScatterVariantSettings> looks = a.species[0].EffectiveVariants();
-    CHECK(looks.size() == 1 && looks[0].model == "assets/pine.glb" && looks[0].name == "Pines" && looks[0].weight == 1.0f && looks[0].enabled);
+    // The "model" of a lesson-31 species becomes its one look, named like the species: the loader does it once (S11).
+    CHECK(a.species.size() == 1 && a.species[0].variants.size() == 1 && a.species[0].spacing == 7.0f);
+    const std::vector<ScatterVariantSettings>& looks = a.species[0].variants;
+    CHECK(looks[0].model == "assets/pine.glb" && looks[0].name == "Pines" && looks[0].weight == 1.0f && looks[0].enabled);
     CHECK(looks[0].materials.empty() && looks[0].minSlope == 0.0f && looks[0].maxSlope == 90.0f && looks[0].scaleMul == 1.0f);
-    // A species that asks for nothing new writes an empty list.
+
+    // A species with neither "model" nor "variants" gets the default look (a pine), as it always did.
+    const ScatterSettings bare = json::parse(R"({"species":[{"name":"X"}]})").get<ScatterSettings>();
+    CHECK(bare.species[0].variants.size() == 1 && bare.species[0].variants[0].model == "builtin:pine");
+
+    // A lesson-36 file (variants, and no "model") keeps its looks exactly.
+    const ScatterSettings v36 = json::parse(R"({"species":[{"name":"R","variants":[{"name":"A","model":"builtin:rock"},{"name":"B","model":"assets/b.glb","weight":2}]}]})").get<ScatterSettings>();
+    CHECK(v36.species[0].variants.size() == 2 && v36.species[0].variants[1].model == "assets/b.glb" && v36.species[0].variants[1].weight == 2.0f);
+
+    // What is written now has the looks and no species-level "model".
     const json plain = ScatterSpeciesSettings{};
-    CHECK(plain["variants"].is_array() && plain["variants"].empty());
+    CHECK(plain["variants"].is_array() && plain["variants"].size() == 1 && !plain.contains("model"));
+}
+
+static void TestSpeciesAlwaysHasALook()
+{
+    ScatterSpeciesSettings empty;
+    empty.variants.clear();
+    empty.Clamp();
+    CHECK(empty.variants.size() == 1);
+    // The numbers the settings share with the placement are ONE struct, so the two can never drift apart.
+    static_assert(std::is_base_of<ScatterSpeciesRules, ScatterSpeciesSettings>::value, "settings and rules share the species numbers");
+    static_assert(std::is_base_of<ScatterVariantBase, ScatterVariantSettings>::value, "settings and rules share the variant numbers");
 }
 
 static void TestRoundTrip()
 {
     const ScatterSettings starter = ScatterSettings::Starter();
-    CHECK(starter.species.size() == 2 && starter.species[0].variants.empty() && starter.species[1].variants.size() == 4);
+    CHECK(starter.species.size() == 2 && starter.species[0].variants.size() == 1 && starter.species[1].variants.size() == 4);
     const json written = starter;
     const ScatterSettings back = written.get<ScatterSettings>();
     CHECK(back.species[1].variants.size() == 4 && back.species[1].variants[3].name == "Mossy boulder" && back.species[1].variants[3].layerBias[0] == 3.0f);
     CHECK(json(back) == written);
 
     ScatterSpeciesSettings species;
+    species.variants.clear();   // (a new species starts with one look: this test wants only the granite)
     ScatterVariantSettings granite; granite.name = "Granite"; granite.model = "assets/rock.glb";
     ScatterMaterialOverride o;
     o.slot = 1; o.albedo = "assets/g_albedo.png"; o.normal = "assets/g_n.png"; o.orm = "assets/g_orm.png"; o.emissive = "assets/g_e.png";
@@ -53,6 +76,7 @@ static void TestRoundTrip()
 static void TestClamp()
 {
     ScatterSpeciesSettings wild;
+    wild.variants.clear();
     for (int i = 0; i < 12; ++i) wild.variants.push_back(ScatterVariantSettings{});
     ScatterVariantSettings& v = wild.variants[0];
     v.weight = -3.0f; v.scaleMul = 0.0f; v.minSlope = 80.0f; v.maxSlope = 10.0f; v.layerBias[2] = 99.0f;
@@ -102,9 +126,10 @@ static void TestRulesFromSettings()
     rules = MakeScatterRules(species, looks, heights, { 0, 0, 0 }, 0, 1);
     CHECK(rules.variants[0].weight == 0.0f && rules.variants[1].weight == 0.0f && rules.variants[2].weight == 0.0f);
 
-    // A species without variants is the one-look species of lesson 31: one variant, weight 1, the mesh's height.
-    ScatterSpeciesSettings oldStyle; oldStyle.model = "builtin:pine";
-    rules = MakeScatterRules(oldStyle, oldStyle.EffectiveVariants(), { 10.95f }, { 1 }, 0, 1);
+    // A new species has one look (a pine): one variant, weight 1, the mesh's height.
+    const ScatterSpeciesSettings oneLook;
+    CHECK(oneLook.variants.size() == 1 && oneLook.variants[0].model == "builtin:pine");
+    rules = MakeScatterRules(oneLook, oneLook.variants, { 10.95f }, { 1 }, 0, 1);
     CHECK(rules.variantCount == 1 && rules.variants[0].weight == 1.0f && std::fabs(rules.variants[0].modelHeight - 10.95f) < 1e-4f);
 
     // Each species has its own random stream, and so has each global seed.
@@ -117,6 +142,7 @@ static void TestRulesFromSettings()
 int main()
 {
     TestOldSceneFilesLoad();
+    TestSpeciesAlwaysHasALook();
     TestRoundTrip();
     TestClamp();
     TestRulesFromSettings();

@@ -10,11 +10,7 @@ namespace {
 ScatterRules MakeBaseRules(const ScatterSpeciesSettings& s, int speciesIndex, int globalSeed)
 {
     ScatterRules r;
-    r.spacing = s.spacing; r.minDistance = s.minDistance; r.density = s.density;
-    for (int k = 0; k < kSplatChannels; ++k) r.layerDensity[k] = s.layerDensity[k];
-    r.minSlope = s.minSlope; r.maxSlope = s.maxSlope; r.minHeight = s.minHeight; r.maxHeight = s.maxHeight;
-    r.clusterStrength = s.clusterStrength; r.clusterScale = s.clusterScale;
-    r.scaleMin = s.scaleMin; r.scaleMax = s.scaleMax; r.alignToNormal = s.alignToNormal; r.tilt = s.tilt; r.sink = s.sink;
+    static_cast<ScatterSpeciesRules&>(r) = s;   // the species' numbers ARE the rules' numbers: one struct, copied whole
     // Every species gets its own random stream: the global seed, the species' own seed and its place in the list.
     r.seed = static_cast<std::uint32_t>(globalSeed) * 0x9e3779b1u ^ static_cast<std::uint32_t>(s.seed) * 0x85ebca6bu ^
              static_cast<std::uint32_t>(speciesIndex + 1) * 0xc2b2ae35u;
@@ -35,9 +31,8 @@ ScatterRules MakeScatterRules(const ScatterSpeciesSettings& s, const std::vector
         const ScatterVariantSettings& look = looks[static_cast<size_t>(v)];
         ScatterVariantRules& out = r.variants[v];
         const bool ok = usable[static_cast<size_t>(v)] != 0;
-        out.weight = ok ? look.weight : 0.0f;
-        for (int k = 0; k < kSplatChannels; ++k) out.layerBias[k] = look.layerBias[k];
-        out.minSlope = look.minSlope; out.maxSlope = look.maxSlope; out.scaleMul = look.scaleMul;
+        static_cast<ScatterVariantBase&>(out) = look;   // weight, layer bias, slope band, scale: copied whole
+        if (!ok) out.weight = 0.0f;
         out.modelHeight = ok ? heights[static_cast<size_t>(v)] : 1.0f;   // a look that cannot be drawn has weight 0: its height is never used
     }
     ClampScatterRules(r);
@@ -48,11 +43,7 @@ ScatterRules MakeScatterRules(const ScatterSpeciesSettings& s, const std::vector
 
 void ScatterVariantSettings::Clamp()
 {
-    weight = std::clamp(weight, 0.0f, 1000.0f);
-    for (float& bias : layerBias) bias = std::clamp(bias, 0.0f, 4.0f);
-    minSlope = std::clamp(minSlope, 0.0f, 90.0f);
-    maxSlope = std::clamp(maxSlope, minSlope, 90.0f);
-    scaleMul = std::clamp(scaleMul, 0.05f, 20.0f);
+    ClampScatterVariantBase(*this);   // the ranges live next to the placement: one clamp, not two copies of it
     if (materials.size() > 16) materials.resize(16);
     for (ScatterMaterialOverride& o : materials) {
         o.slot = std::clamp(o.slot, 0, 63);
@@ -61,28 +52,23 @@ void ScatterVariantSettings::Clamp()
     }
 }
 
-std::vector<ScatterVariantSettings> ScatterSpeciesSettings::EffectiveVariants() const
+ScatterSpeciesSettings::ScatterSpeciesSettings()
 {
-    if (!variants.empty()) return variants;
-    ScatterVariantSettings only;
-    only.name = name;
-    only.model = model;
-    return { only };
+    ScatterVariantSettings pine;
+    pine.name = "Pine";
+    pine.model = kBuiltinPine;
+    variants = { pine };
 }
 
 void ScatterSpeciesSettings::Clamp()
 {
-    ScatterRules rules = MakeBaseRules(*this, 0, 0);   // the placement rules know their own ranges: borrow them
-    spacing = rules.spacing; minDistance = rules.minDistance; density = rules.density;
-    for (int k = 0; k < kSplatChannels; ++k) layerDensity[k] = rules.layerDensity[k];
-    minSlope = rules.minSlope; maxSlope = rules.maxSlope; minHeight = rules.minHeight; maxHeight = rules.maxHeight;
-    clusterStrength = rules.clusterStrength; clusterScale = rules.clusterScale;
-    scaleMin = rules.scaleMin; scaleMax = rules.scaleMax; alignToNormal = rules.alignToNormal; tilt = rules.tilt; sink = rules.sink;
+    ClampScatterSpeciesRules(*this);   // the ranges live next to the placement: one clamp, not a copy of it
     lodScreen[0] = std::clamp(lodScreen[0], 0.003f, 1.0f);
     lodScreen[1] = std::clamp(lodScreen[1], 0.002f, lodScreen[0] * 0.95f);   // each level starts below the one before it
     lodScreen[2] = std::clamp(lodScreen[2], 0.001f, lodScreen[1] * 0.95f);
     cullScreen = std::clamp(cullScreen, 0.0f, lodScreen[2]);
     shadowDistance = std::clamp(shadowDistance, 0.0f, 2000.0f);
+    if (variants.empty()) variants.push_back(ScatterVariantSettings{});   // a species without a look would place nothing and have nothing to show
     if (variants.size() > static_cast<size_t>(kMaxScatterVariants)) variants.resize(static_cast<size_t>(kMaxScatterVariants));
     for (ScatterVariantSettings& v : variants) v.Clamp();
 }
@@ -102,7 +88,7 @@ ScatterSettings ScatterSettings::Starter()
     ScatterSettings settings;
     ScatterSpeciesSettings pines;
     pines.name = "Pines";
-    pines.model = kBuiltinPine;
+    pines.variants[0].name = "Pines"; pines.variants[0].model = kBuiltinPine;   // (the constructor already made one look: a pine)
     pines.spacing = 7.0f; pines.minDistance = 4.5f; pines.density = 0.9f;
     pines.layerDensity = { 1.0f, 0.0f, 0.0f, 0.0f };   // grass only: sand at the shore and rock on the cliffs stay clear
     pines.maxSlope = 32.0f;
@@ -114,7 +100,6 @@ ScatterSettings ScatterSettings::Starter()
     // one prefers the grass. A cliff-side rock would be a fifth with minSlope 50; here the slopes belong to all of them.
     ScatterSpeciesSettings rocks;
     rocks.name = "Boulders";
-    rocks.model = kBuiltinRock;
     rocks.spacing = 9.0f; rocks.minDistance = 4.0f; rocks.density = 0.5f;
     rocks.layerDensity = { 0.3f, 1.0f, 0.2f, 0.4f };   // mostly where the terrain is rock, a few lying in the grass
     rocks.maxSlope = 75.0f;

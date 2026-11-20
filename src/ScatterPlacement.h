@@ -39,24 +39,31 @@ static_assert(sizeof(ScatterInstance) == 32, "the GPU instance layout (INSTPOS +
 // The most looks one species can have. More than this is what a second species is for.
 constexpr int kMaxScatterVariants = 8;
 
-// What distinguishes one variant of a species FOR THE PLACEMENT (its mesh and textures are not the placement's business).
-struct ScatterVariantRules {
+// The numbers a variant shares between the scene file / editor (ScatterVariantSettings) and the placement (ScatterVariantRules).
+// Declared ONCE, here; both structs inherit it. Add a variant number here and it is in both, in the JSON, and in the clamp.
+struct ScatterVariantBase {
     float weight = 1.0f;                                   // relative chance among the variants the ground allows; 0 = never
-    float layerBias[kSplatChannels] = { 1.0f, 1.0f, 1.0f, 1.0f };   // multiplies the weight where the ground is grass / rock / sand / snow
+    std::array<float, kSplatChannels> layerBias = { 1.0f, 1.0f, 1.0f, 1.0f };   // multiplies the weight where the ground is grass / rock / sand / snow
     float minSlope = 0.0f;                                 // degrees: this variant only grows on ground in this slope band
     float maxSlope = 90.0f;
     float scaleMul = 1.0f;                                 // multiplies the species' scale range ("large" granite = 2)
+};
+
+// What distinguishes one variant of a species FOR THE PLACEMENT (its mesh and textures are not the placement's business).
+struct ScatterVariantRules : ScatterVariantBase {
     float modelHeight = 1.0f;                              // this variant's mesh height in metres at scale 1 (only used by `sink`)
 };
 
-// What one species asks of the ground. Plain data, no model and no paths: the editor edits it, the placement reads it.
-struct ScatterRules {
+// The numbers of a species that say WHERE it grows and HOW each one looks. Declared ONCE, here: ScatterSpeciesSettings (the
+// scene file and the editor) and ScatterRules (the placement) both inherit it, so a new rule is added in this struct and
+// nowhere else in the data. (The JSON list in SceneJson.h, the clamp and operator== below, and the inspector still name it.)
+struct ScatterSpeciesRules {
     // 1. the lattice
     float spacing = 6.0f;        // metres. One candidate per spacing x spacing square: at most 1 / spacing^2 objects per m^2
     float minDistance = 3.5f;    // metres. Two objects are never closer than this (clamped to spacing)
     // 2. what the ground says
     float density = 1.0f;        // 0..1: the chance a candidate on PERFECT ground is used
-    float layerDensity[kSplatChannels] = { 1.0f, 0.0f, 0.0f, 0.0f };   // how much each terrain layer (grass, rock, sand, snow) likes it
+    std::array<float, kSplatChannels> layerDensity = { 1.0f, 0.0f, 0.0f, 0.0f };   // how much each terrain layer (grass, rock, sand, snow) likes it
     float minSlope = 0.0f;       // degrees from flat; rocks like slopes, trees do not
     float maxSlope = 35.0f;
     float minHeight = -1000.0f;  // world Y limits
@@ -69,7 +76,11 @@ struct ScatterRules {
     float alignToNormal = 0.0f;  // 0 = upright, 1 = leans with the ground (rocks)
     float tilt = 3.0f;           // degrees of random lean
     float sink = 0.0f;           // fraction of the model's height buried in the ground (rocks sit IN the ground)
-    std::uint32_t seed = 1;      // a different seed is a different forest
+};
+
+// What one species asks of the ground. Plain data, no model and no paths: the editor edits it, the placement reads it.
+struct ScatterRules : ScatterSpeciesRules {
+    std::uint32_t seed = 1;      // a different seed is a different forest (made from the global seed, the species' seed and its place in the list)
     // 4. which look each one gets. variantCount 1 with the default variant is exactly the species of lesson 31.
     int variantCount = 1;
     ScatterVariantRules variants[kMaxScatterVariants];
@@ -77,25 +88,36 @@ struct ScatterRules {
 
 // Are two sets of rules the same? ScatterObject asks this to decide whether a species must be placed again. Written out field by
 // field (not memcmp, which also compares padding bytes and would be wrong the day a bool is added). The static_asserts are the
-// guard: add a field to ScatterRules or ScatterVariantRules and they stop the build until this comparison is updated too.
-static_assert(sizeof(ScatterVariantRules) == 9 * sizeof(float), "ScatterVariantRules changed: update operator== below");
-static_assert(sizeof(ScatterRules) == (3 + kSplatChannels + 4 + 2 + 5 + 1 + 1 + 9 * kMaxScatterVariants) * sizeof(float),
-              "ScatterRules changed: update operator== below");
+// guard: add a field to one of these structs and they stop the build until the comparison is updated too.
+static_assert(sizeof(ScatterVariantBase) == (1 + kSplatChannels + 3) * sizeof(float), "ScatterVariantBase changed: update operator== below");
+static_assert(sizeof(ScatterVariantRules) == sizeof(ScatterVariantBase) + sizeof(float), "ScatterVariantRules changed: update operator== below");
+static_assert(sizeof(ScatterSpeciesRules) == (3 + kSplatChannels + 4 + 2 + 5) * sizeof(float), "ScatterSpeciesRules changed: update operator== below");
+static_assert(sizeof(ScatterRules) == sizeof(ScatterSpeciesRules) + 2 * sizeof(float) + kMaxScatterVariants * sizeof(ScatterVariantRules), "ScatterRules changed: update operator== below");
+inline bool operator==(const ScatterVariantBase& a, const ScatterVariantBase& b)
+{
+    return a.weight == b.weight && a.layerBias == b.layerBias && a.minSlope == b.minSlope && a.maxSlope == b.maxSlope && a.scaleMul == b.scaleMul;
+}
 inline bool operator==(const ScatterVariantRules& a, const ScatterVariantRules& b)
 {
-    for (int k = 0; k < kSplatChannels; ++k) if (a.layerBias[k] != b.layerBias[k]) return false;
-    return a.weight == b.weight && a.minSlope == b.minSlope && a.maxSlope == b.maxSlope && a.scaleMul == b.scaleMul && a.modelHeight == b.modelHeight;
+    return static_cast<const ScatterVariantBase&>(a) == static_cast<const ScatterVariantBase&>(b) && a.modelHeight == b.modelHeight;
+}
+inline bool operator==(const ScatterSpeciesRules& a, const ScatterSpeciesRules& b)
+{
+    return a.spacing == b.spacing && a.minDistance == b.minDistance && a.density == b.density && a.layerDensity == b.layerDensity &&
+           a.minSlope == b.minSlope && a.maxSlope == b.maxSlope && a.minHeight == b.minHeight && a.maxHeight == b.maxHeight &&
+           a.clusterStrength == b.clusterStrength && a.clusterScale == b.clusterScale && a.scaleMin == b.scaleMin &&
+           a.scaleMax == b.scaleMax && a.alignToNormal == b.alignToNormal && a.tilt == b.tilt && a.sink == b.sink;
 }
 inline bool operator==(const ScatterRules& a, const ScatterRules& b)
 {
-    for (int k = 0; k < kSplatChannels; ++k) if (a.layerDensity[k] != b.layerDensity[k]) return false;
-    if (a.variantCount != b.variantCount) return false;
+    if (a.variantCount != b.variantCount || a.seed != b.seed) return false;
     for (int v = 0; v < a.variantCount && v < kMaxScatterVariants; ++v) if (!(a.variants[v] == b.variants[v])) return false;
-    return a.spacing == b.spacing && a.minDistance == b.minDistance && a.density == b.density && a.minSlope == b.minSlope &&
-           a.maxSlope == b.maxSlope && a.minHeight == b.minHeight && a.maxHeight == b.maxHeight && a.clusterStrength == b.clusterStrength &&
-           a.clusterScale == b.clusterScale && a.scaleMin == b.scaleMin && a.scaleMax == b.scaleMax && a.alignToNormal == b.alignToNormal &&
-           a.tilt == b.tilt && a.sink == b.sink && a.seed == b.seed;
+    return static_cast<const ScatterSpeciesRules&>(a) == static_cast<const ScatterSpeciesRules&>(b);
 }
+
+// One clamp per struct, so the settings (the editor's numbers) and the placement (what it reads) can never disagree about a range.
+void ClampScatterVariantBase(ScatterVariantBase& variant);
+void ClampScatterSpeciesRules(ScatterSpeciesRules& rules);
 
 // Puts every value into a range the placement can work with (a spacing of 0 would mean infinitely many objects).
 void ClampScatterRules(ScatterRules& rules);

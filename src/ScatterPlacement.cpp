@@ -162,7 +162,16 @@ int ChooseScatterVariant(const ScatterRules& rules, const ScatterSample& ground,
     return last;
 }
 
-void ClampScatterRules(ScatterRules& r)
+void ClampScatterVariantBase(ScatterVariantBase& v)
+{
+    v.weight = (std::min)((std::max)(v.weight, 0.0f), 1000.0f);
+    for (float& bias : v.layerBias) bias = (std::min)((std::max)(bias, 0.0f), 4.0f);
+    v.minSlope = (std::min)((std::max)(v.minSlope, 0.0f), 90.0f);
+    v.maxSlope = (std::min)((std::max)(v.maxSlope, v.minSlope), 90.0f);
+    v.scaleMul = (std::min)((std::max)(v.scaleMul, 0.05f), 20.0f);
+}
+
+void ClampScatterSpeciesRules(ScatterSpeciesRules& r)
 {
     r.spacing = (std::min)((std::max)(r.spacing, 0.25f), 500.0f);
     r.minDistance = (std::min)((std::max)(r.minDistance, 0.0f), r.spacing);   // beyond the spacing it could not be enforced (see GenerateScatter)
@@ -178,15 +187,15 @@ void ClampScatterRules(ScatterRules& r)
     r.alignToNormal = Saturate(r.alignToNormal);
     r.tilt = (std::min)((std::max)(r.tilt, 0.0f), 45.0f);
     r.sink = Saturate(r.sink);
+}
+
+void ClampScatterRules(ScatterRules& r)
+{
+    ClampScatterSpeciesRules(r);
     r.variantCount = (std::min)((std::max)(r.variantCount, 1), kMaxScatterVariants);
     for (int v = 0; v < kMaxScatterVariants; ++v) {
-        ScatterVariantRules& variant = r.variants[v];
-        variant.weight = (std::min)((std::max)(variant.weight, 0.0f), 1000.0f);
-        for (float& bias : variant.layerBias) bias = (std::min)((std::max)(bias, 0.0f), 4.0f);
-        variant.minSlope = (std::min)((std::max)(variant.minSlope, 0.0f), 90.0f);
-        variant.maxSlope = (std::min)((std::max)(variant.maxSlope, variant.minSlope), 90.0f);
-        variant.scaleMul = (std::min)((std::max)(variant.scaleMul, 0.05f), 20.0f);
-        variant.modelHeight = (std::min)((std::max)(variant.modelHeight, 0.0f), 10000.0f);
+        ClampScatterVariantBase(r.variants[v]);
+        r.variants[v].modelHeight = (std::min)((std::max)(r.variants[v].modelHeight, 0.0f), 10000.0f);
     }
 }
 
