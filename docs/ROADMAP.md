@@ -86,8 +86,8 @@ Sizes: `ScatterObject.cpp` is about 750 lines (the split is in S12); the scatter
 | ID | Problem | Cause (read in the code) | Fix |
 |---|---|---|---|
 | T1 `[x]` | Cliffs look like stairs and vertical streaks; flat pads | A 2048 px picture over 1024 m is 0.5 m/px, sampled every 4 m: about 8 px per cell, **no prefilter**, so thin escarpments alias. `smoothing` defaults to 0. About 13% of the demo picture's pixels sit at the minimum value (flat floor). | T1 below |
-| T2 `[~]` | Sculpting a world is slow | `SculptStep` marks tiles stale; `Stream()` builds a **new `Terrain` per touched tile per step** (heights for 257² + apron through the whole source chain, 64 chunks of vertices and index buffers, splat bake). The single-terrain path already patches chunks in place, but `Terrain::Sculpt` returns false for tiles. | T2 below |
-| T3 `[ ]` | Every chunk builds its own identical index buffers (3 LODs plus skirts) | `BuildTerrainModel` | T3 below |
+| T2 `[x]` | Sculpting a world is slow | `SculptStep` marks tiles stale; `Stream()` builds a **new `Terrain` per touched tile per step** (heights for 257² + apron through the whole source chain, 64 chunks of vertices and index buffers, splat bake). The single-terrain path already patches chunks in place, but `Terrain::Sculpt` returns false for tiles. | T2 below |
+| T3 `[~]` | Every chunk builds its own identical index buffers (3 LODs plus skirts) | `BuildTerrainModel` | T3 below |
 | W1 `[!]` | **Ocean is drawn under / through terrain that is below the shore level** | Not yet reproduced here (I could not run the engine). Ranked suspects in W1 below. | W1 below |
 | W2 `[ ]` | The sea is one plane, at most 2000 m, with a coarse CPU depth map, and it has no idea about tiles that are not loaded | `Water`, `WaterShore::Bake` | W2 below |
 | W3 `[ ]` | Rivers are one plane up to 2000 m (a found river is capped at 1500 m); no confluences or lake outlets | lesson 45 | W4 below |
@@ -117,7 +117,7 @@ Order is by what you see and what unblocks the rest. Items inside a milestone ca
 - Acceptance: `world_picture_test.cpp` `TestPrefilter`: a 1 px ridge at 8 px per cell changes by 0.062 over half a cell instead of 1.000; a footprint of one pixel
   or less equals the unfiltered source exactly; a step edge stays in range and only rises. Checked in the editor: the stairs on the demo escarpments are gone. Opening an existing world, the shape changes a little because `prefilter` is on by default; saved edits are deltas and stay.
 
-**T2. Sculpt a world without rebuilding tiles** `[~]` (lesson 55: written and unit-tested; **to check in the editor**: sculpt on a world and watch the inspector timers)
+**T2. Sculpt a world without rebuilding tiles** `[x]` (lesson 55; the author applied it and reports that sculpting works well)
 - `[x]` `Terrain::PatchTile(rect, groundIsFinal)`: rewrites only the samples of a loaded level-0 tile inside `rect` (tile-local, apron included) from the world's
   ground, then calls the existing `RefreshChunks` and `RefreshSplat` for that rectangle. The tile keeps its `Terrain` object, its index buffers and its textures.
 - `[x]` The affected samples come from pure functions: `TileSamplesAffectedBy` (the changed lattice points grown by one sample, clipped to the apron) and
@@ -132,12 +132,19 @@ Order is by what you see and what unblocks the rest. Items inside a milestone ca
   rebuilt one after every stroke, so the rebuild would only cost time.
 - Not done: paint strokes still rebuild the tile (same idea, `ReplacePaint` plus a splat refresh; later).
 - Acceptance: `tile_patch_test.cpp`: after each of 200 random brush strokes (all four brushes, strokes that only touch the apron included, with and without a river
-  crossing the tile) the patched tile equals a tile built from scratch, sample for sample, apron included. Still open (editor): while sculpting, the "built" counter
-  in the inspector does not move and "Last sculpt patch" stays in the low milliseconds.
+  crossing the tile) the patched tile equals a tile built from scratch, sample for sample, apron included. Checked in the editor by the author: sculpting a world works well.
 
-**T3. Shared index buffers** `[ ]`
-- Build one index set per (chunk size, LOD) and share it between all chunks of all tiles. Only vertex buffers differ per chunk.
-- Acceptance: creating a tile creates vertex buffers only.
+**T3. Shared index buffers** `[~]` (lesson 56: written and unit-tested; **to check in the editor**: load a world and compare "mesh" in the inspector's last tile build with before)
+- `[x]` The index buffers of a chunk depend only on its size in cells. `BuildChunkIndexLevels(cellsInX, cellsInZ, lodCount)` (`TerrainChunkIndices.cpp`, pure, moved
+  out of `BuildTerrainModel` without a change) makes the three levels of detail, each a surface and four skirts. `GetSharedChunkIndices` makes the GPU buffers
+  once per size and level count and hands the same set to every chunk; each `Mesh` keeps its own reference (`AddRef`), so the buffers live until the last chunk is gone.
+- `[x]` New `Mesh` constructor that takes a `SharedIndexLevels` and makes only the vertex buffer. The old constructors are unchanged.
+- `[x]` `ReleaseSharedChunkIndices()` runs in `Direct3D11Renderer::Release` before the device is released (the cached buffers would hold it alive).
+- Effect: a tile of 8 x 8 chunks used to make 64 x 3 index buffers and build their index data again each time; after the first tile it makes 64 vertex buffers.
+- Acceptance: a tile creates vertex buffers only (by construction: the only `CreateBuffer` left in a chunk is its vertex buffer). `terrain_chunk_indices_test.cpp`:
+  counts per level (32 x 32: 6144, 1536, 384 surface indices; skirts a sixth of that per edge), every index inside the vertex range for square, wide and
+  edge-sized chunks, the last grid line kept at every level, surface and skirt winding (skirts face outward), and a golden hash of the old code's output.
+  Still open (editor): the terrain looks the same (no holes at tile borders, skirts still hide cracks between levels) and "mesh" in the inspector drops.
 
 **W1. The ocean must not show where it should not** `[!]`
 The rule (the **water-terrain contract**, section 5): where ground is below the sea level the surface is visible above the ground;

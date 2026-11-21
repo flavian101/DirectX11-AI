@@ -110,6 +110,8 @@ add_library(Engine STATIC
 	src/PostProcess.cpp
 	src/DemoScene.cpp
 	src/Terrain.cpp
+	src/TerrainChunkIndices.cpp
+	src/TerrainChunkIndexCache.cpp
 	src/WorldGrid.cpp
 	src/WorldPicture.cpp
 	src/WorldShape.cpp
@@ -279,6 +281,10 @@ if(BUILD_TESTS)
     target_include_directories(TilePatchTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(TilePatchTests PRIVATE Threads::Threads)
     add_test(NAME TilePatch COMMAND TilePatchTests)
+    # The index buffers every terrain chunk of one size shares (roadmap T3).
+    add_executable(TerrainChunkIndicesTests tests/terrain_chunk_indices_test.cpp src/TerrainChunkIndices.cpp)
+    target_include_directories(TerrainChunkIndicesTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME TerrainChunkIndices COMMAND TerrainChunkIndicesTests)
     add_executable(ImageDownscaleTests tests/image_downscale_test.cpp)
     target_include_directories(ImageDownscaleTests PRIVATE ${CMAKE_SOURCE_DIR}/editor)
     add_test(NAME ImageDownscale COMMAND ImageDownscaleTests)

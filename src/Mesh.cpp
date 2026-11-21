@@ -22,6 +22,25 @@ Mesh::Mesh(ID3D11Device* device, const std::vector<Vertex>& vertices,
 {
 }
 
+bool Mesh::CreateVertexBuffer(ID3D11Device* device, const std::vector<Vertex>& vertices, bool updatableVertices)
+{
+    D3D11_BUFFER_DESC desc{};
+    desc.ByteWidth = static_cast<UINT>(vertices.size() * sizeof(Vertex));
+    // IMMUTABLE = fastest, but never writable. DEFAULT = still lives on the GPU, and UpdateSubresource can overwrite it.
+    desc.Usage = updatableVertices ? D3D11_USAGE_DEFAULT : D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA data{};
+    data.pSysMem = vertices.data();
+    HRESULT hr = device->CreateBuffer(&desc, &data, &vertexBuffer_);
+    if (FAILED(hr)) {
+        LOG_HR(hr, "Vertex buffer creation failed");
+        return false;
+    }
+    updatable_ = updatableVertices;
+    vertexCount_ = static_cast<UINT>(vertices.size());
+    return true;
+}
+
 Mesh::Mesh(ID3D11Device* device, const std::vector<Vertex>& vertices, const std::vector<MeshLevel>& levels,
            bool updatableVertices)
 {
@@ -36,20 +55,7 @@ Mesh::Mesh(ID3D11Device* device, const std::vector<Vertex>& vertices, const std:
         }
     }
 
-    D3D11_BUFFER_DESC desc{};
-    desc.ByteWidth = static_cast<UINT>(vertices.size() * sizeof(Vertex));
-    // IMMUTABLE = fastest, but never writable. DEFAULT = still lives on the GPU, and UpdateSubresource can overwrite it.
-    desc.Usage = updatableVertices ? D3D11_USAGE_DEFAULT : D3D11_USAGE_IMMUTABLE;
-    desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    D3D11_SUBRESOURCE_DATA data{};
-    data.pSysMem = vertices.data();
-    HRESULT hr = device->CreateBuffer(&desc, &data, &vertexBuffer_);
-    if (FAILED(hr)) {
-        LOG_HR(hr, "Vertex buffer creation failed");
-        return;
-    }
-    updatable_ = updatableVertices;
-    vertexCount_ = static_cast<UINT>(vertices.size());
+    if (!CreateVertexBuffer(device, vertices, updatableVertices)) return;
 
     for (const MeshLevel& level : levels) {
         const std::vector<uint32_t>& indices = level.indices;
@@ -60,7 +66,7 @@ Mesh::Mesh(ID3D11Device* device, const std::vector<Vertex>& vertices, const std:
         D3D11_SUBRESOURCE_DATA indexData{};
         indexData.pSysMem = indices.data();
         ID3D11Buffer* buffer = nullptr;
-        hr = device->CreateBuffer(&indexDesc, &indexData, &buffer);
+        const HRESULT hr = device->CreateBuffer(&indexDesc, &indexData, &buffer);
         if (FAILED(hr)) {
             LOG_HR(hr, "Index buffer creation failed");
             for (ID3D11Buffer* created : indexBuffers_) created->Release();
@@ -84,6 +90,54 @@ bool Mesh::UpdateVertices(ID3D11DeviceContext* ctx, const std::vector<Vertex>& v
     if (!ctx || !vertexBuffer_ || !updatable_ || vertices.size() != vertexCount_) return false;
     ctx->UpdateSubresource(vertexBuffer_, 0, nullptr, vertices.data(), 0, 0);   // the whole buffer, from the CPU copy
     return true;
+}
+
+bool CreateSharedIndexLevels(ID3D11Device* device, const std::vector<MeshLevel>& levels, SharedIndexLevels& out)
+{
+    out = SharedIndexLevels{};
+    if (!device || levels.empty()) return false;
+    for (const MeshLevel& level : levels) {
+        if (level.indices.empty()) { ReleaseSharedIndexLevels(out); return false; }
+        D3D11_BUFFER_DESC indexDesc{};
+        indexDesc.ByteWidth = static_cast<UINT>(level.indices.size() * sizeof(uint32_t));
+        indexDesc.Usage = D3D11_USAGE_IMMUTABLE;
+        indexDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA indexData{};
+        indexData.pSysMem = level.indices.data();
+        ID3D11Buffer* buffer = nullptr;
+        const HRESULT hr = device->CreateBuffer(&indexDesc, &indexData, &buffer);
+        if (FAILED(hr)) {
+            LOG_HR(hr, "Shared index buffer creation failed");
+            ReleaseSharedIndexLevels(out);
+            return false;
+        }
+        out.buffers.push_back(buffer);
+        out.counts.push_back(static_cast<UINT>(level.indices.size()));
+        out.parts.emplace_back(level.partIndexCounts.begin(), level.partIndexCounts.end());
+        if (out.parts.back().empty()) out.parts.back().push_back(static_cast<UINT>(level.indices.size()));   // no parts = one part holding everything
+    }
+    return true;
+}
+
+void ReleaseSharedIndexLevels(SharedIndexLevels& levels)
+{
+    for (ID3D11Buffer* buffer : levels.buffers) if (buffer) buffer->Release();
+    levels = SharedIndexLevels{};
+}
+
+Mesh::Mesh(ID3D11Device* device, const std::vector<Vertex>& vertices, const SharedIndexLevels& shared, bool updatableVertices)
+{
+    if (!device || vertices.empty() || shared.buffers.empty()) {
+        LOG_ERROR("Cannot create mesh from empty data or without a device");
+        return;
+    }
+    if (!CreateVertexBuffer(device, vertices, updatableVertices)) return;
+    for (ID3D11Buffer* buffer : shared.buffers) {
+        buffer->AddRef();   // this mesh's own reference: ~Mesh releases it like any other index buffer
+        indexBuffers_.push_back(buffer);
+    }
+    indexCounts_ = shared.counts;
+    partCounts_ = shared.parts;
 }
 
 Mesh::~Mesh()

@@ -13,6 +13,17 @@ struct MeshLevel {
     std::vector<uint32_t> partIndexCounts;   // how many indices each part has, in order; empty = one part holding everything
 };
 
+// Index buffers made ONCE and shared by many meshes (roadmap T3: every terrain chunk of one size draws with the same ones). Each Mesh
+// that uses a set takes its own reference with AddRef; whoever made the set releases its own with ReleaseSharedIndexLevels, and the
+// buffers die when the last mesh is gone.
+struct SharedIndexLevels {
+    std::vector<ID3D11Buffer*> buffers;         // one per level of detail
+    std::vector<UINT> counts;                   // indices per level (all parts)
+    std::vector<std::vector<UINT>> parts;       // per level: the index count of each part
+};
+bool CreateSharedIndexLevels(ID3D11Device* device, const std::vector<MeshLevel>& levels, SharedIndexLevels& out);
+void ReleaseSharedIndexLevels(SharedIndexLevels& levels);
+
 class Mesh {
 public:
     Mesh(ID3D11Device* device,
@@ -29,6 +40,12 @@ public:
     Mesh(ID3D11Device* device,
          const std::vector<Vertex>& vertices,
          const std::vector<MeshLevel>& levels,
+         bool updatableVertices = false);
+    // The same, but the index buffers already exist (CreateSharedIndexLevels): only the vertex buffer is made. The mesh keeps a
+    // reference to each shared buffer, so the set may be released while meshes still use it.
+    Mesh(ID3D11Device* device,
+         const std::vector<Vertex>& vertices,
+         const SharedIndexLevels& shared,
          bool updatableVertices = false);
     ~Mesh();
     Mesh(const Mesh&) = delete;
@@ -47,6 +64,7 @@ public:
     bool UpdateVertices(ID3D11DeviceContext* ctx, const std::vector<Vertex>& vertices);
 
 private:
+    bool CreateVertexBuffer(ID3D11Device* device, const std::vector<Vertex>& vertices, bool updatableVertices);
     ID3D11Buffer* vertexBuffer_ = nullptr;
     std::vector<ID3D11Buffer*> indexBuffers_;   // one per level of detail
     std::vector<UINT> indexCounts_;

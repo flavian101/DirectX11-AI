@@ -4,6 +4,7 @@
 #include "ShaderSlots.h"
 #include <algorithm>
 #include "Layer.h"
+#include "TerrainChunkIndices.h"
 
 Direct3D11Renderer::Direct3D11Renderer(HWND hwnd) : _hwnd(hwnd) {}
 Direct3D11Renderer::~Direct3D11Renderer() { Release(); }
@@ -410,5 +411,6 @@ void Direct3D11Renderer::Release()
     ReleaseBackBufferView();
     if (m_swapChain) { m_swapChain->Release(); m_swapChain = nullptr; }
     if (m_context) { m_context->Release(); m_context = nullptr; }
+    ReleaseSharedChunkIndices();   // the terrain's shared index buffers hold the device alive: let go before it
     if (m_device) { m_device->Release(); m_device = nullptr; }
 }
