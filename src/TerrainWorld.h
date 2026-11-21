@@ -45,13 +45,15 @@ struct TerrainWorldSettings {
     bool customMaterial = false;
     TerrainSettings material;
     std::vector<std::string> layerPaths;   // kTerrainLayerCount x 3 image paths (albedo, normal, orm) for customMaterial; empty = the default textures
-    float heightScale = 240.0f;     // metres for a ground height of 1.0
+    float heightScale = 240.0f;     // metres for a ground height of 1.0: how TALL the ground is. The lowest ground stays where it is; the highest rises or falls
+    float baseHeight = 0.0f;        // the world Y of the LOWEST possible ground (height 0.0): how HIGH the ground starts. Lifts or sinks the whole world, changes no slope (roadmap H1)
     float viewDistance = 5000.0f;   // tiles closer than this to the camera are loaded (far ones at a lower level of detail)
     std::vector<WorldRiver> rivers; // the rivers dug into the ground (lesson 51): part of the world, so they survive streaming
 
     static constexpr float kPictureWidthMin = 40.0f, kPictureWidthMax = 20000.0f;
     static constexpr float kPictureOffsetMax = 100000.0f;
     static constexpr float kViewDistanceMin = 500.0f, kViewDistanceMax = 8000.0f;
+    static constexpr float kBaseHeightMin = -1000.0f, kBaseHeightMax = 1000.0f;   // metres
     static constexpr int kMaxRivers = 32, kMaxRiverSamples = 4096;
     static constexpr int kMaxTiles = 256;   // however far you look, at most this many tiles are alive (far tiles are cheap: 1/4, 1/16, 1/64 of the cells)
     void Clamp();

@@ -2616,8 +2616,14 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
             ImGui::SetItemTooltip("The tile at the top-left of the rectangle (tile 0, 0 starts at the world origin). Changing it moves the rectangle.");
         }
     }
-    ImGui::SliderFloat("Height (m)", &s.heightScale, 20.0f, 500.0f, "%.0f");
+    // Two different things were called "height" (roadmap H1): how TALL the ground is, and how HIGH it starts. They are two controls now.
+    ImGui::SliderFloat("Hill height (m)", &s.heightScale, 20.0f, 500.0f, "%.0f");
     commitOnRelease();
+    ImGui::SetItemTooltip("How tall the ground is: the highest possible ground stands this many metres above the lowest. A bigger number raises the hilltops and\nmakes every slope steeper. The lowest ground does not move. To lift or sink the whole world, use Ground level.");
+    ImGui::DragFloat("Ground level (m)", &s.baseHeight, 0.5f, TerrainWorldSettings::kBaseHeightMin, TerrainWorldSettings::kBaseHeightMax, "%.1f");
+    commitOnRelease();
+    ImGui::SetItemTooltip("How high the ground starts: the height (world Y) of the lowest possible ground. It lifts or sinks the whole world without changing its\nshape. Water, objects and the camera stay where they are, so shorelines move.");
+    ImGui::TextDisabled("The ground spans %.0f to %.0f m (world Y).", s.baseHeight, s.baseHeight + s.heightScale);
     ImGui::SliderFloat("View distance (m)", &s.viewDistance, TerrainWorldSettings::kViewDistanceMin, TerrainWorldSettings::kViewDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
     commitOnRelease();
     ImGui::SetItemTooltip("Tiles nearer than this to the camera are loaded. Far tiles are built with fewer cells (every level has a quarter of\nthe cells of the one before), so a long view is cheap. At most %d tiles are kept.", TerrainWorldSettings::kMaxTiles);
@@ -3197,11 +3203,11 @@ void EditorLayer::CarveRiverChannel(Water* water)
     // In a terrain world the river is dug into the WORLD, not into one tile: tiles are rebuilt from the world as they stream, so
     // a carve in a tile's heights would be lost with it, and one river crosses many tiles (lesson 51).
     if (auto* world = scene_->FindFirst<TerrainWorld>()) {
-        const float unit = world->GetSettings().heightScale;   // metres of a sample value of 1 (a tile's ground starts at height 0)
+        const float unit = world->GetSettings().heightScale;   // metres of a sample value of 1; a sample value of 0 is at the world's baseHeight (H1)
         WorldRiver river;
         river.path = path;
         for (RiverPath::Sample& sample : river.path) sample.level /= unit;   // the river's own fall, in sample values like the level
-        river.carve.level = s.height / unit;
+        river.carve.level = (s.height - world->GetSettings().baseHeight) / unit;   // the water's Y, measured from where the ground starts (H1)
         river.carve.depth = s.riverDepth / unit;
         river.carve.bankWidth = s.riverBank;
         river.carve.bankHeight = s.riverBankHeight / unit;

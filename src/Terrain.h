@@ -99,7 +99,8 @@ struct TerrainSettings {
 	static constexpr int kOctavesMin = 1, kOctavesMax = 8;
 	static constexpr float kTilingMin = 0.25f, kTilingMax = 64.0f;
 	static constexpr float kRockTilingMin = 0.005f, kRockTilingMax = 0.5f;   // also the range of every layer's tiling
-	static constexpr float kBandMin = -50.0f, kBandMax = 200.0f;     // world-Y limits for shore/snow heights
+	static constexpr float kBandMin = -50.0f, kBandMax = 200.0f;     // world-Y range of the shore/snow SLIDERS of a single terrain
+	static constexpr float kBandHardMin = -2000.0f, kBandHardMax = 2000.0f;   // what Clamp allows: a world's automatic bands follow its height and base (roadmap H1)
 	static constexpr float kBreakupScaleMin = 0.005f, kBreakupScaleMax = 0.5f;
 	static constexpr float kLodDistanceMin = 10.0f, kLodDistanceMax = 1500.0f;
 
@@ -130,6 +131,7 @@ struct TerrainTile {
 	std::shared_ptr<const std::vector<WorldRiver>> rivers;   // the rivers dug into the ground (lesson 51); null or empty: none
 	bool capBottom = false;                          // every tile of a BOUNDED world also draws a bottom at the floor, so the world is a closed block (roadmap X1)
 	unsigned char outerEdges = 0;                    // TerrainEdgeBit mask: the sides of this tile that are the edge of a BOUNDED world. They are closed with a wall down to a floor (roadmap X1)
+	float baseHeight = 0.0f;                         // the world Y of ground height 0: the tile's position.y. Every tile of a world has the same one (roadmap H1)
 };
 
 class Terrain final : public SceneObject {

@@ -163,5 +163,5 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HeightShapeSettings, blackPoint,
 // hills, 1 picture). A scene saved before the picture source, the shape or the material existed has none of the new keys and loads as the
 // endless fractal world it always was. (The world's EDITS are not here: they are a file beside the scene, see SceneSerializer.cpp.)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainWorldSettings, grid, source, fractal, picturePath, pictureWidth, pictureOffsetX, pictureOffsetZ, bounds,
-                                                shape, customMaterial, material, layerPaths, heightScale, viewDistance, rivers)
+                                                shape, customMaterial, material, layerPaths, heightScale, baseHeight, viewDistance, rivers)
 

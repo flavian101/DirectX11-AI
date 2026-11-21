@@ -22,6 +22,7 @@ void TerrainWorldSettings::Clamp()
     material.Clamp();
     if (static_cast<int>(layerPaths.size()) != kTerrainLayerCount * 3) layerPaths.clear();
     heightScale = std::clamp(heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax);
+    baseHeight = std::clamp(baseHeight, kBaseHeightMin, kBaseHeightMax);
     viewDistance = std::clamp(viewDistance, kViewDistanceMin, kViewDistanceMax);
     if (static_cast<int>(rivers.size()) > kMaxRivers) rivers.resize(kMaxRivers);
     for (WorldRiver& river : rivers) {
@@ -40,11 +41,11 @@ TerrainSettings MakeWorldMaterial(const TerrainWorldSettings& world)
     }
     TerrainSettings material;
     material.heightScale = world.heightScale;
-    // The layer rules talk in world metres. The defaults suit a 45 m tall terrain, so they are scaled to this world's height
-    // (the editor's band sliders stop at 200 m: Clamp keeps them in range).
-    material.shoreHeight = world.heightScale * 0.03f;
+    // The layer rules talk in world metres (world Y). The defaults suit a 45 m tall terrain standing at Y = 0, so they are scaled to this
+    // world's height and lifted by its base height: the sand and the snow stay at the same fraction of the ground when either one changes.
+    material.shoreHeight = world.baseHeight + world.heightScale * 0.03f;
     material.shoreWidth = world.heightScale * 0.02f;
-    material.snowHeight = world.heightScale * 0.72f;
+    material.snowHeight = world.baseHeight + world.heightScale * 0.72f;
     material.snowFade = world.heightScale * 0.08f;
     // A tile is 1 km wide: the default detail distances (90 m, 220 m) would make most of it a coarse mesh.
     material.lodDistance0 = 350.0f;
@@ -274,6 +275,7 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
         tile.rivers = riversSnapshot_;
         tile.outerEdges = OuterEdgesOfTile(activeBounds_, request.coord);   // the edge of a bounded world gets a wall down to a floor (X1)
         tile.capBottom = activeBounds_.bounded;                              // and every tile of it a bottom
+        tile.baseHeight = settings_.baseHeight;                              // where the ground starts (H1)
         Terrain* terrain = scene.Add<Terrain>(device_, tile, MakeWorldMaterial(settings_), layers_.IsValid() ? &layers_ : nullptr);
         if (!terrain) { failed_ = true; break; }
         if (!terrain->IsValid()) {
@@ -402,6 +404,7 @@ WorldGroundFunction TerrainWorld::GroundFunction() const
     f.grid = settings_.grid;
     f.bounds = activeBounds_;
     f.heightScale = settings_.heightScale;
+    f.baseHeight = settings_.baseHeight;
     return f;
 }
 
@@ -435,7 +438,8 @@ bool TerrainWorld::BuildGroundGrid(double minX, double maxX, double minZ, double
 {
     out = WorldGroundGrid{};
     if (!HasGround()) return false;
-    out = BuildWorldGroundGrid(*source_, riversSnapshot_.get(), settings_.grid, activeBounds_, settings_.heightScale, minX, maxX, minZ, maxZ);
+    out = BuildWorldGroundGrid(*source_, riversSnapshot_.get(), settings_.grid, activeBounds_, settings_.heightScale, minX, maxX, minZ, maxZ,
+                               1024, settings_.baseHeight);
     return !out.IsEmpty();
 }
 
@@ -529,7 +533,11 @@ TerrainWorldSettings WorldSettingsFromTerrain(const Terrain& old)
     const double cell = static_cast<double>(s.grid.metresPerCell);
     s.pictureOffsetX = static_cast<float>(std::round((static_cast<double>(position.x) - 0.5 * width) / cell) * cell);
     s.pictureOffsetZ = static_cast<float>(std::round((static_cast<double>(position.z) - 0.5 * depth) / cell) * cell);
-    s.heightScale = old.GetSettings().heightScale * scale.y;
+    // Where the old ground stood in the air (roadmap C3): it started at its position.y (the default terrain stands at -2 m). Dropping that
+    // put the whole migrated world higher by that much, against the water, the objects on it and the layer rules (which are world Y).
+    const WorldHeightFrame frame = HeightFrameOfOldTerrain(position.y, old.GetSettings().heightScale, scale.y);
+    s.heightScale = frame.heightScale;
+    s.baseHeight = frame.baseHeight;
     s.shape.prefilter = false;   // a migrated terrain gives the old terrain's heights sample for sample: no filter on top
     s.customMaterial = true;
     s.material = old.GetSettings();

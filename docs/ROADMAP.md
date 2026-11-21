@@ -19,8 +19,10 @@ things were built and is never updated to match the plan.
 ## 1. Where we are
 
 ### Units and words
-One world unit is one metre. A height is stored 0..1 and multiplied by `heightScale` (metres). The ground is a function of the world
-position: **source -> shape -> edits -> rivers**.
+One world unit is one metre. A height is stored 0..1 and multiplied by `heightScale` (metres), then lifted by `baseHeight` (metres): a ground
+value g stands at world Y = `baseHeight` + g x `heightScale`. **Two different numbers, easy to mix up:** `heightScale` (the editor's **Hill height**) is
+how *tall* the ground is, from its lowest possible point to its highest; `baseHeight` (the editor's **Ground level**) is how *high* it starts, the world Y of
+that lowest point. The ground is a function of the world position: **source -> shape -> edits -> rivers**.
 
 | Word | Meaning |
 |---|---|
@@ -47,10 +49,11 @@ Chunks and tiles cut across all three; ecosystems are never chunks.
 | Layers: 4-layer splat, slope/height rules, biplanar rock, height blending | `[x]` | `TerrainSplat.*`, `terrain_ps.hlsl` |
 | Reversed-Z, 10 km far plane; sun shadow box follows the camera (400 m) in a world | `[x]` | lessons 46, 49 |
 | Sculpting on a world | `[~]` works, but **slow** (see T2) | `TerrainWorld::SculptStep` |
+| Where the ground starts (`baseHeight`, "Ground level"); a migrated terrain keeps its Y | `[~]` **H1** | `TerrainWorldSettings::baseHeight`, `WorldGround.*` |
 | `World::HeightAt(x, z)` for collision | `[ ]` | |
 | Camera-relative rendering, cascaded shadows, tile building off the main thread | `[ ]` | |
 
-Defaults worth knowing: world `heightScale` 240 m, `metresPerCell` 4 (allowed 0.25 to 32), `pictureWidth` 1024 m, `viewDistance`
+Defaults worth knowing: world `heightScale` 240 m, `baseHeight` 0 m (allowed -1000 to 1000), `metresPerCell` 4 (allowed 0.25 to 32), `pictureWidth` 1024 m, `viewDistance`
 5000 m. The single `Terrain` is limited to 40 to 1000 m wide and 1024 cells, heightScale 45 m. The single `Terrain` is the legacy
 path: it is deleted at **M2** once the world covers every row of the table above.
 
@@ -93,6 +96,7 @@ Sizes: `ScatterObject.cpp` is about 750 lines (the split is in S12); the scatter
 | W2 `[ ]` | The sea is one plane, at most 2000 m, with a coarse CPU depth map, and it has no idea about tiles that are not loaded | `Water`, `WaterShore::Bake` | W2 below |
 | W3 `[ ]` | Rivers are one plane up to 2000 m (a found river is capped at 1500 m); no confluences or lake outlets | lesson 45 | W4 below |
 | X1 `[x]` | The bounded world is a floating slab: raw edges, dark void | no backdrop | X1 below |
+| H1 `[~]` | **"Height" of a world is two things and only one has a control.** The slider "Height (m)" is how *tall* the hills are (`heightScale`); how *high* the ground starts (its Y) had no control, it was always 0. And **migrating an old terrain dropped its Y** (the default terrain stands at -2 m, the demo's water at 4 m): the world came out higher than the terrain by that much, against the water, the objects on it and the shore/snow rules. Not reproduced in the editor; found by reading (commit `265b50d`) | The slider had no tooltip and a one-word label. A tile was always made at `position.y = 0`; `WorldSettingsFromTerrain` copied the old terrain's X and Z and not its Y. Also: `MakeWorldMaterial` put the snow line at 0.72 x height, but `TerrainSettings::Clamp` held it to 200 m, so above a hill height of 277 m the snow line stopped following the slider | H1 below |
 | S12 `[!]` | Nothing grows on a world's tiles | Scatter has one grid over one `Terrain`'s extent, takes a `const Terrain*`, and tracks changes with that terrain's revision log | S12 below |
 | S4 `[ ]` | No biomes: a texture layer is the only way to say "where" | `layerDensity[4]` and `layerBias[4]` are tied to the 4 splat channels; a forest and a swamp on the same grass cannot differ; more than 4 layers (L2) would break the rules | S4 below |
 | S11 `[x]` | Dead and duplicate code in scatter | see S11 for the list, each item read in the code | S11 below |
@@ -224,7 +228,33 @@ The old terrain is deleted only when every row is `[x]`. Check each row against 
     and miss when they should (straight up, starting underground, too short, flying away from a bounded world).
   - Still open (editor): "Snap to terrain" on a world with the camera far from the object; the river overlay follows the cursor over unloaded ground.
 - **C2** Scatter over every tile. The plan lives in **S12** only; this line is a pointer.
-- **C3** Run every demo scene through migration, then delete `Scene::GetTerrain()` callers, `Terrain::CarveRiver`, and heightmap-only settings.
+- **H1** The two heights `[~]` (lesson 60: written and unit-tested; **to check in the editor**, see the end of this item). Found while starting C3 (the question "does Height mean the hills or the starting Y?").
+  - **What the slider did, and does:** it was already correct for what it is, the *hill height*: it multiplies the 0..1 ground, so the lowest ground stays at Y = 0 and
+    the highest rises to `heightScale`. Nothing was broken in the multiplication; what was missing was a second control and a clear name.
+  - `[x]` `TerrainWorldSettings::baseHeight` (metres, default 0, saved with the scene: an old scene has none and loads at 0, so nothing moves). `TerrainTile::baseHeight`
+    puts every tile at `position.y = baseHeight`; everything a tile already did with world Y (bounds, the shore/snow rules baked into the splat, picking, scatter's ground)
+    reads `position_.y`, so it follows without a change.
+  - `[x]` `WorldGroundFunction::baseHeight` and `BuildWorldGroundGrid(..., baseHeight)` (last parameter, default 0, so a caller that does not pass it gets the old answer).
+    Everything that asks the ground in metres goes through these two: `Scene::GetGroundHeight / GetGroundNormal / RaycastGround`, the water's shore depth, "Snap to terrain", the river overlay.
+  - `[x]` `MakeWorldMaterial` lifts the automatic shore and snow lines by the base, and `TerrainSettings::Clamp` allows -2000 to 2000 m for them (the single terrain's *sliders* keep
+    -50 to 200: `kBandMin/kBandMax`). A world now keeps its sand and snow at the same fraction of the ground whatever the hill height (up to 500 m) and the ground level.
+  - `[x]` Editor: the slider is **Hill height (m)** with a tooltip, **Ground level (m)** is new, and a line says "The ground spans A to B m (world Y)". Carving a river into a world
+    measures the water's Y from the ground level (`river.carve.level = (water Y - baseHeight) / heightScale`); before, with a ground level other than 0 the channel would have been dug at the wrong height.
+  - What it does **not** do (on purpose): water bodies, the cube and every object stay at their own Y, so a new ground level moves shorelines (the tooltip says so). The ground is not
+    a movable object (no gizmo): the base height is a setting of the world.
+  - For **S12 / C2**: scatter must read ground heights from `TerrainWorld::HeightAt` or `GroundFunction()` (both add the base), never by multiplying a 0..1 height by `heightScale` itself. A second copy of that formula would ignore the ground level.
+  - Acceptance: `world_base_height_test.cpp`: every height is exactly `baseHeight` + the old height (at bases of -250, -2, 0, 37.5 and 800 m, with and without a river; worst difference 0.00013 m);
+    a hill height of 100 -> 250 m at a base of 55 m makes every height *above the base* 2.5 times higher and leaves the base alone; normals do not change and a ray lifted by the base
+    hits at the same distance; the ground grid the water bakes from equals the function's heights plus the base and a base of 0 gives the old grid bit for bit.
+  - Still open (editor): drag **Ground level** on a world with the sea at y = 4: shorelines move, the sand and snow bands follow the ground, the cube snaps to the new ground ("Snap to terrain"). Raise **Hill height** to 500: the snow line stays at about 72% of the height.
+- **C3** Migration, then the deletions `[~]` **step 1 only** (the rest waits).
+  - `[x]` Step 1, run the demo scene through migration, by reading it (there is nothing to run here): `BuildDemoScene` adds **one** `Terrain` at its default position `(0, -2, 0)`, a `Water` at y = 4 and a `Cube` at y = 4, and the repo holds no scene files (`assets/` is textures and skyboxes). Migrating that terrain
+    used to give a world that rose 2 m (the Y was dropped: H1). `WorldSettingsFromTerrain` now carries it through `HeightFrameOfOldTerrain(position.y, heightScale, scale.y)`, so the migrated ground stands where the terrain stood.
+    Acceptance: `world_base_height_test.cpp` `TestMigrationKeepsTheOldHeight`: at (y -2, scale 1), (0, 1), (35, 2) and (-80, 0.5) the world's ground equals the old terrain's `position.y + Heightfield::HeightAt x scale.y` to 0.00003 m anywhere inside, and the test shows that
+    without the base the world would be off by exactly `|position.y|` (2 m for the default terrain).
+  - `[ ]` Step 1b, **scenes you saved yourself are not covered**: for each one, *Add > Terrain world from this terrain* and check that the world's **Ground level** equals the terrain's Y and the shoreline did not move. If one does not, the cause is somewhere else and goes in section 8.
+  - `[ ]` Step 2, delete the `Scene::GetTerrain()` callers, `Terrain::CarveRiver` and the heightmap-only settings. **Blocked**: the old terrain is deleted only when every row of the table above is `[x]` (most are `[~]` until checked in the editor), and scatter still calls `GetTerrain()` until C2 (S12) is in.
+    F10 is the list of callers to audit.
 - **C4** Build tiles off the main thread; upload on the main thread with a per-frame budget.
 - **C5** Camera-relative rendering (tile index + offset, subtract the camera before the GPU); cascaded shadow maps.
 - **C6** Tile file format with a version number: header, R16 heights, RGBA8 splat, optional hole mask.
@@ -405,6 +435,8 @@ Known limits left on purpose: the instanced draw has no GPU test; S10 and S14 wa
 10. **Placement stays a pure function; the instance stays 32 bytes** (scatter).
 11. **A biome is data on the ground, separate from the texture layers.** Texture layers say how the ground looks, biome weights say what lives there. Once S4 is done, plants never read the texture layers directly; only the biome recipe may.
 12. **Scatter reads the ground through one interface**, the world's ground function (decision 3), never a loaded mesh and never a `Terrain*` (S12).
+13. **A world has two heights: its extent and its placement.** `heightScale` (Hill height) is how tall the ground is, `baseHeight` (Ground level) is the world Y of its lowest point; world Y = `baseHeight` + g x `heightScale`.
+    A tile stands at `position.y = baseHeight`, and anything that needs the ground in metres asks the ground function, which adds it. No other code adds or subtracts the base (H1).
 
 ---
 
@@ -471,4 +503,6 @@ Fixed after the milestones are done (rule 6). Each item says where it was found 
 | F7 | T2 | `Terrain::BuildTimes` is one shared global, written by every tile build. It is not thread-safe, which matters once tiles are built off the main thread (C4). | Make each tile build return its own times, and let the world add them up. |
 | F8 | T1 | `prefilter` defaults to on, so opening an existing world changes its shape slightly (its edits are deltas and stay). | Store a version in the world settings and default old files to the old behaviour, with a button to convert. |
 | F9 | W1 | Items 6 and 7 of the water-terrain contract (sculpting and rivers update the shoreline; a river is only water inside its corridor) have no test. | Add them to `water_visibility_test.cpp`; item 6 needs the ground revision (lesson 57) to be observable from a test. |
+| F11 | H1 | A river dug into a world stores its level as a fraction of the ground (`carve.level`, `depth`, `bankHeight` are metres / `heightScale`), but its water body stays at its world Y. Changing **Hill height** (and now **Ground level**) *after* carving moves the channel against the water. Found by reading, not seen. The old slider did this too. | Store the river's carve in metres (world Y) and convert it when the tile is built, or re-derive it from the water body when the settings change. Until then: set the height first, then draw rivers. |
+| F12 | H1 | The ground level is a setting of the world, not a movable object: no gizmo, and objects standing on the ground do not follow when it changes. | An optional "keep objects on the ground" step when the level changes, or a gizmo handle on the world; decide when a real scene asks for it. |
 | F10 | C1 | Many editor tools still start from `scene_->GetTerrain()`, which is the first tile of a world and not the world (the river carve, the sculpt and paint paths that use a single terrain, the scatter menu). | Audit them at C3: each either asks the scene's ground (as C1 did) or the `TerrainWorld`. |

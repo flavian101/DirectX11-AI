@@ -378,9 +378,9 @@ void TerrainSettings::Clamp()
 	roughnessScale = std::clamp(roughnessScale, 0.0f, 2.0f);
 	slopeStart = std::clamp(slopeStart, 0.0f, 1.0f);
 	slopeFade = std::clamp(slopeFade, 0.01f, 1.0f);
-	shoreHeight = std::clamp(shoreHeight, kBandMin, kBandMax);
+	shoreHeight = std::clamp(shoreHeight, kBandHardMin, kBandHardMax);
 	shoreWidth = std::clamp(shoreWidth, 0.1f, 30.0f);
-	snowHeight = std::clamp(snowHeight, kBandMin, kBandMax);
+	snowHeight = std::clamp(snowHeight, kBandHardMin, kBandHardMax);
 	snowFade = std::clamp(snowFade, 0.1f, 50.0f);
 	breakupScale = std::clamp(breakupScale, kBreakupScaleMin, kBreakupScaleMax);
 	breakupAmount = std::clamp(breakupAmount, 0.0f, 1.0f);
@@ -478,10 +478,11 @@ Terrain::Terrain(ID3D11Device* device, const TerrainTile& tile, const TerrainSet
 	} else {
 		RebuildLayerTextures();
 	}
-	// The tile sits where the world puts it: its centre at the tile's centre, its ground starting at height 0.
+	// The tile sits where the world puts it: its centre at the tile's centre, its ground starting at the world's base height (default 0).
+	// Everything a tile does with world Y (bounds, the layer rules, picking, scatter) already goes through position_.y, so it follows.
 	double centerX = 0.0, centerZ = 0.0;
 	TileCenter(tile_.grid, tile_.coord, centerX, centerZ);
-	position_ = { static_cast<float>(centerX), 0.0f, static_cast<float>(centerZ) };
+	position_ = { static_cast<float>(centerX), tile_.baseHeight, static_cast<float>(centerZ) };
 	settings_ = material;
 	settings_.Clamp();
 	ForceTileSettings(settings_);

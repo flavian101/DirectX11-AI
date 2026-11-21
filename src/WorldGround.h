@@ -35,7 +35,8 @@ struct WorldGroundFunction {
     const std::vector<WorldRiver>* rivers = nullptr;    // may be null
     WorldGridSettings grid;
     WorldBounds bounds;
-    float heightScale = 1.0f;
+    float heightScale = 1.0f;   // metres of ground height 1.0: how TALL the ground is (the hills)
+    float baseHeight = 0.0f;    // the world Y of ground height 0.0: how HIGH the ground starts (roadmap H1). Moves the whole ground, changes no slope
 
     bool IsValid() const { return source != nullptr; }
     // Is the point inside the world? Always true in an endless world; inside the edge of a bounded one.
@@ -55,10 +56,20 @@ private:
     std::vector<float> Lattice(std::int64_t firstX, std::int64_t firstZ, int count) const;
 };
 
+// --- height and base height (roadmap H1, C3) --------------------------------------------------------------------------------------
+// Two different numbers place the ground in the air. `heightScale` says how TALL it is (metres from the lowest possible ground to the
+// highest); `baseHeight` says how HIGH it starts (the world Y of the lowest possible ground). A ground value g in 0..1 is at world Y
+//     baseHeight + g * heightScale.
+// An old single terrain stood at `position.y`, its heights stretched by `scale.y`, and it drew a value g at  position.y + g * heightScale * scale.y.
+// Migrated into a world it must stay exactly where it was, so its frame is:
+struct WorldHeightFrame { float baseHeight = 0.0f; float heightScale = 1.0f; };
+inline WorldHeightFrame HeightFrameOfOldTerrain(float positionY, float heightScale, float scaleY) { return { positionY, heightScale * scaleY }; }
+
 // The ground over the rectangle minX..maxX, minZ..maxZ (world metres; grown by one sample all round). The samples sit on the
 // world's own lattice (multiples of `step`), so at full resolution each one is exactly the height a tile's vertex has. A
 // rectangle that would need more than maxSamplesPerSide samples across gets a step that is a whole multiple of the lattice.
-// `rivers` may be null. A point beyond the edge of a bounded world has no ground.
+// `rivers` may be null. A point beyond the edge of a bounded world has no ground. Every height is `baseHeight + ground01 * heightScale`
+// (world Y in metres); `baseHeight` comes last and defaults to 0 so a caller that never heard of it keeps its old answer.
 WorldGroundGrid BuildWorldGroundGrid(const WorldHeightSource& source, const std::vector<WorldRiver>* rivers, const WorldGridSettings& grid,
                                      const WorldBounds& bounds, float heightScale, double minX, double maxX, double minZ, double maxZ,
-                                     int maxSamplesPerSide = 1024);
+                                     int maxSamplesPerSide = 1024, float baseHeight = 0.0f);
