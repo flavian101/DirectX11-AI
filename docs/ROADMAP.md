@@ -257,7 +257,14 @@ The old terrain is deleted only when every row is `[x]`. Check each row against 
     F10 is the list of callers to audit.
 - **C4** Build tiles off the main thread; upload on the main thread with a per-frame budget.
 - **C5** Camera-relative rendering (tile index + offset, subtract the camera before the GPU); cascaded shadow maps.
-- **C6** Tile file format with a version number: header, R16 heights, RGBA8 splat, optional hole mask.
+- **C6** `[x]` Tile file format (lesson 61; pure logic, so its acceptance is its tests): `WorldTileFile.{h,cpp}`. A baked tile is a 20-byte header (magic `DXWT`, **version**,
+  flags, cells, tile x and z), its heights as **R16** (0..65535 for 0..1; at most 0.0018 m off at 240 m), its layer weights as **RGBA8** (one texel per cell, adding up to 255, as
+  `SplatMap` holds them), an **optional hole mask** (one bit per cell) and a **CRC-32** of everything before it. Everything is little-endian. A reader accepts the versions it knows and
+  says "newer" for a newer one (that is not "damaged"); saving writes a temporary file and renames it, so a crash leaves no half tile.
+  - Acceptance: `world_tile_file_test.cpp`: the CRC is the standard one (`"123456789"` gives `0xCBF43926`); the layout is **frozen** by a golden byte vector made with Python's `zlib`, not with this code;
+    a round trip keeps everything, with and without holes, up to 64 cells; **every** change of **every** byte of a file is refused, as is every shorter length and a longer one; a newer version,
+    version 0, an unknown flag, a wrong magic and a wrong size each get their own answer; files on disk are saved, replaced, loaded and refused when missing or damaged.
+  - No consumer yet (section 8, F13): the first ones are the hole mask (L2) and a tile cache for building tiles off the main thread (C4).
 
 ### M3. Terrain that looks like terrain
 
@@ -505,4 +512,5 @@ Fixed after the milestones are done (rule 6). Each item says where it was found 
 | F9 | W1 | Items 6 and 7 of the water-terrain contract (sculpting and rivers update the shoreline; a river is only water inside its corridor) have no test. | Add them to `water_visibility_test.cpp`; item 6 needs the ground revision (lesson 57) to be observable from a test. |
 | F11 | H1 | A river dug into a world stores its level as a fraction of the ground (`carve.level`, `depth`, `bankHeight` are metres / `heightScale`), but its water body stays at its world Y. Changing **Hill height** (and now **Ground level**) *after* carving moves the channel against the water. Found by reading, not seen. The old slider did this too. | Store the river's carve in metres (world Y) and convert it when the tile is built, or re-derive it from the water body when the settings change. Until then: set the height first, then draw rivers. |
 | F12 | H1 | The ground level is a setting of the world, not a movable object: no gizmo, and objects standing on the ground do not follow when it changes. | An optional "keep objects on the ground" step when the level changes, or a gizmo handle on the world; decide when a real scene asks for it. |
+| F13 | C6 | The tile file format has no reader or writer in the engine yet, and a tile's Y (`baseHeight`) and hill height are not in it (they belong to the world's settings, which a loader must check against). | Write the first consumer (hole mask in L2, or the tile cache in C4) and decide there whether the file should carry the settings it was made with, or only a hash of them. |
 | F10 | C1 | Many editor tools still start from `scene_->GetTerrain()`, which is the first tile of a world and not the world (the river carve, the sculpt and paint paths that use a single terrain, the scatter menu). | Audit them at C3: each either asks the scene's ground (as C1 did) or the `TerrainWorld`. |

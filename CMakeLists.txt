@@ -300,6 +300,10 @@ if(BUILD_TESTS)
     target_include_directories(WorldHeightTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(WorldHeightTests PRIVATE Threads::Threads)
     add_test(NAME WorldHeight COMMAND WorldHeightTests)
+    # The file of one baked tile (roadmap C6).
+    add_executable(WorldTileFileTests tests/world_tile_file_test.cpp src/WorldTileFile.cpp)
+    target_include_directories(WorldTileFileTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME WorldTileFile COMMAND WorldTileFileTests)
     # The two heights of a world (how tall, how high) and a migrated terrain keeping its Y (roadmaps H1, C3).
     add_executable(WorldBaseHeightTests tests/world_base_height_test.cpp src/WorldGround.cpp src/WorldRivers.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
     target_include_directories(WorldBaseHeightTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
