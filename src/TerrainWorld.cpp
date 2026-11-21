@@ -272,6 +272,7 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
         tile.lod = request.lod;
         tile.source = source_;
         tile.rivers = riversSnapshot_;
+        tile.outerEdges = OuterEdgesOfTile(activeBounds_, request.coord);   // the edge of a bounded world gets a wall down to a floor (X1)
         Terrain* terrain = scene.Add<Terrain>(device_, tile, MakeWorldMaterial(settings_), layers_.IsValid() ? &layers_ : nullptr);
         if (!terrain) { failed_ = true; break; }
         if (!terrain->IsValid()) {

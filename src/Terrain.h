@@ -127,6 +127,7 @@ struct TerrainTile {
 	int lod = 0;                                     // its level of detail (WorldGridSettings::ForLod): `grid` is already the grid at this level
 	std::shared_ptr<const WorldHeightSource> source; // the ground, shared by every tile of the world
 	std::shared_ptr<const std::vector<WorldRiver>> rivers;   // the rivers dug into the ground (lesson 51); null or empty: none
+	unsigned char outerEdges = 0;                    // TerrainEdgeBit mask: the sides of this tile that are the edge of a BOUNDED world. They are closed with a wall down to a floor (roadmap X1)
 };
 
 class Terrain final : public SceneObject {
@@ -151,6 +152,7 @@ public:
 	// True for a tile of a world. Its heights come from the world, so (for now) it cannot be sculpted or carved: an edit would
 	// stop it matching its neighbours. Painting works.
 	bool IsTile() const { return tile_.source != nullptr; }
+	TerrainWalls Walls() const;   // the walls of this tile (none unless it is on the edge of a bounded world)
 	const TerrainTile& GetTile() const { return tile_; }
 	// The terrain can be deleted (and the delete undone): a scene without one is how a terrain world is tried on its own. The tiles of
 	// a world are not content: the world owns them.

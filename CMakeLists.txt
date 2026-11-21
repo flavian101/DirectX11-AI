@@ -286,6 +286,10 @@ if(BUILD_TESTS)
     add_executable(TerrainChunkIndicesTests tests/terrain_chunk_indices_test.cpp src/TerrainChunkIndices.cpp)
     target_include_directories(TerrainChunkIndicesTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME TerrainChunkIndices COMMAND TerrainChunkIndicesTests)
+    # The walls that close the edge of a bounded world (roadmap X1).
+    add_executable(TerrainWallsTests tests/terrain_walls_test.cpp src/WorldGrid.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
+    target_include_directories(TerrainWallsTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME TerrainWalls COMMAND TerrainWallsTests)
     # The water-terrain contract: the water measures the world's ground function, not its loaded tiles (roadmap W1).
     add_executable(WaterVisibilityTests tests/water_visibility_test.cpp src/WorldGround.cpp src/WorldRivers.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
     target_include_directories(WaterVisibilityTests PRIVATE ${CMAKE_SOURCE_DIR}/src)

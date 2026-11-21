@@ -22,6 +22,7 @@
 //    next tile. GenerateTileApron reads those samples from the same height source, so two tiles agree on the normals
 //    along their shared edge (Heightfield::SetApron).
 #include "Heightfield.h"
+#include "TerrainSkirts.h"
 #include <cstdint>
 #include <vector>
 
@@ -72,6 +73,10 @@ struct WorldBounds {
     // rectangle whose edge lies exactly on a tile border does not pull in the next tile.
     static WorldBounds Covering(const WorldGridSettings& grid, double minXm, double minZm, double maxXm, double maxZm);
 };
+
+// Which sides of `tile` are the edge of the world: a TerrainEdgeBit mask (north = the tile's z = 0 side, west = its x = 0 side). Always 0 for
+// an endless world and for a tile outside the bounds. A one-tile world has all four. These sides get a wall down to a floor (roadmap X1).
+unsigned char OuterEdgesOfTile(const WorldBounds& bounds, TileCoord tile);
 
 // --- where things are -----------------------------------------------------------------------------------------------
 TileCoord TileContaining(const WorldGridSettings& grid, double worldX, double worldZ);

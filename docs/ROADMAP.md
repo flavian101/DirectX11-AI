@@ -91,7 +91,7 @@ Sizes: `ScatterObject.cpp` is about 750 lines (the split is in S12); the scatter
 | W1 `[~]` | **Ocean is drawn under / through terrain that is below the shore level** | Not reproduced here (no editor). Suspects 2 and 3 (below) were real flaws and are fixed (lesson 57); suspect 1 (coarse mesh) is measured but open. | W1 below |
 | W2 `[ ]` | The sea is one plane, at most 2000 m, with a coarse CPU depth map, and it has no idea about tiles that are not loaded | `Water`, `WaterShore::Bake` | W2 below |
 | W3 `[ ]` | Rivers are one plane up to 2000 m (a found river is capped at 1500 m); no confluences or lake outlets | lesson 45 | W4 below |
-| X1 `[ ]` | The bounded world is a floating slab: raw edges, dark void | no backdrop | X1 below |
+| X1 `[~]` | The bounded world is a floating slab: raw edges, dark void | no backdrop | X1 below |
 | S12 `[!]` | Nothing grows on a world's tiles | Scatter has one grid over one `Terrain`'s extent, takes a `const Terrain*`, and tracks changes with that terrain's revision log | S12 below |
 | S4 `[ ]` | No biomes: a texture layer is the only way to say "where" | `layerDensity[4]` and `layerBias[4]` are tied to the 4 splat channels; a forest and a swamp on the same grass cannot differ; more than 4 layers (L2) would break the rules | S4 below |
 | S11 `[x]` | Dead and duplicate code in scatter | see S11 for the list, each item read in the code | S11 below |
@@ -173,11 +173,21 @@ Suspects, most likely first. Each one has a check that tells it from the others:
   level and none where it is above; inside a bounded world there is always ground and beyond its edge none; the ground grid equals the tile vertices
   (0.000000 m, with and without a river); two bodies, moved, turned and resized, agree on the shoreline to 0.05 m. Items 6 and 7 of the contract are not covered yet.
   Still open (editor): load a world with a sea body and fly around: the ocean should not show under land, also while tiles stream in. If it still does, tell me
-  which of the four checks above makes it vanish.
+  which of the four checks above makes it vanish. Seen by the author before this step (Nov 2026, screenshot of a new fractal bounded world with a body the size of the
+  terrain): a dark band over low ground with no water on it, near a shore; to be looked at again after step 1.
 
-**X1. A world edge that does not look like a slab** `[ ]`
-- Close the bounded world with skirts down to a floor below the lowest ground, or fade it into fog and a backdrop. Decide once and write it here.
-- Acceptance: from the demo camera, no black void is visible below or beside the terrain.
+**X1. A world edge that does not look like a slab** `[~]` (lesson 58: written and unit-tested; **to check in the editor**: orbit a bounded world and look at its sides)
+- **Decision (written once, here):** the bounded world is closed with **walls**: the skirt on every side that is the world's edge goes all the way down to a floor below the
+  lowest ground, so the world reads as a block (a diorama) and not a floating sheet. The floor is at `-max(10 m, heightScale / 10)` (-24 m at 240 m). Fading the edge into
+  fog and a backdrop is not done: it needs the environment (fog, sky) and is left until a world needs it.
+- `[x]` `OuterEdgesOfTile(bounds, tile)` (pure) says which sides of a tile are the edge of the world; `TerrainTile::outerEdges` carries it; `BuildChunkVertices` puts the skirt
+  vertices of those sides on the floor and gives them an outward normal and tangent, so they are lit as a wall. Only the chunks touching that side of the tile get it
+  (`ChunkWallEdges`); the seams between tiles keep their ordinary short skirts. The indices are the shared ones of T3 (only vertex positions change), so a wall costs nothing extra.
+- Acceptance: `terrain_walls_test.cpp`: a side is a wall exactly when the tile across it is not part of the world (checked for every rectangle of up to 5 x 5 tiles, negative
+  tile numbers included); an endless world has none; a one-tile world has all four; only the outline chunks of a tile carry a wall; the floor is always below the lowest ground.
+  Still open (editor): from the side and from below the edge, no black void shows between the ground and the floor, and the wall's lighting and texture look right. The
+  wall reuses the edge vertex's texture coordinates, so the layers are stretched down it; a darker or rock material for walls is a later polish.
+- Not done: a cap under the floor (from below you see into the block), and a different material for the wall.
 
 ### M2. Finish the world, then delete the single `Terrain`
 
@@ -238,6 +248,9 @@ A heightmap holds one height per position, so rock that bulges is geometry, not 
 - Step 2: a camera-following clipmap mesh (fine rings near, coarse far). This also fixes the open item "waves lose detail on a big body"
   and removes the 2000 m limit. Depth comes from a coarse always-resident height texture plus the fine tiles near the camera, read in the
   shader, so there is no CPU bake.
+- Seen by the author (Nov 2026): a body sized by hand to a bounded world only half covers it, and because most of a new fractal world lies below the body's level the
+  terrain reads as one flat teal slab. The sea of a world should cover the world's bounds by itself and sit at a level chosen with the ground in mind (a default near the
+  median ground height).
 - Acceptance: the water-terrain contract (section 5) holds with tiles loading and unloading, and at the world edge.
 
 **W3. Lakes and swamps** `[ ]`

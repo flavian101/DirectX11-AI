@@ -181,6 +181,17 @@ double WorldSamplePosition(const WorldGridSettings& grid, int tile, int local)
     return static_cast<double>(globalIndex) * static_cast<double>(grid.metresPerCell);
 }
 
+unsigned char OuterEdgesOfTile(const WorldBounds& bounds, TileCoord tile)
+{
+    if (!bounds.bounded || !bounds.Contains(tile)) return 0;
+    unsigned char mask = 0;
+    if (tile.z == bounds.minZ) mask |= kEdgeNorth;
+    if (tile.z == bounds.maxZ) mask |= kEdgeSouth;
+    if (tile.x == bounds.minX) mask |= kEdgeWest;
+    if (tile.x == bounds.maxX) mask |= kEdgeEast;
+    return mask;
+}
+
 TileSampleRect TileSamplesAffectedBy(const WorldGridSettings& grid, TileCoord tile, std::int64_t minX, std::int64_t minZ, std::int64_t maxX, std::int64_t maxZ)
 {
     TileSampleRect none;

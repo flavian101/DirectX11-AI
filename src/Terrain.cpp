@@ -232,7 +232,7 @@ float SkirtDepthFor(float heightScale)
 // it after a sculpt stroke, so the two can never disagree. Normals come from the WHOLE grid, so lighting is seamless
 // across chunk borders. `boundsMin/Max` come out including the skirt.
 void BuildChunkVertices(const Heightfield& field, int x0, int z0, int x1, int z1, std::vector<Vertex>& vertices,
-						XMFLOAT3& boundsMin, XMFLOAT3& boundsMax)
+						XMFLOAT3& boundsMin, XMFLOAT3& boundsMax, const TerrainWalls& walls = TerrainWalls{})
 {
 	const HeightfieldLayout& layout = field.GetLayout();
 	const float skirtDepth = SkirtDepthFor(layout.heightScale);
@@ -258,20 +258,29 @@ void BuildChunkVertices(const Heightfield& field, int x0, int z0, int x1, int z1
 	}
 
 	// SKIRTS: copies of the edge vertices moved straight down (see the long comment in BuildTerrainModel).
-	auto addSkirtVertex = [&](int x, int z) {
+	// A WALL (roadmap X1) is a skirt on the edge of a bounded world: it goes all the way down to a floor instead of a few metres, and
+	// faces outward (the normal and the tangent follow, so it is lit as a wall and not as a strip of ground).
+	const unsigned char wallMask = ChunkWallEdges(walls.edges, x0, z0, x1, z1, layout.cellsX, layout.cellsZ);
+	auto addSkirtVertex = [&](int x, int z, unsigned char edgeBit, float outX, float outZ) {
 		Vertex copy = vertices[static_cast<size_t>(z) * vertsX + x];
-		copy.position.y -= skirtDepth;
+		if (wallMask & edgeBit) {
+			copy.position.y = walls.floorY;
+			copy.normal = XMFLOAT3(outX, 0.0f, outZ);
+			copy.tangent = (outX != 0.0f) ? XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) : XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f);   // along the wall
+		} else {
+			copy.position.y -= skirtDepth;
+		}
 		boundsMin.y = (std::min)(boundsMin.y, copy.position.y);
 		vertices.push_back(copy);
 	};
-	for (int x = 0; x <= cellsInX; ++x) addSkirtVertex(x, 0);
-	for (int x = 0; x <= cellsInX; ++x) addSkirtVertex(x, cellsInZ);
-	for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(0, z);
-	for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(cellsInX, z);
+	for (int x = 0; x <= cellsInX; ++x) addSkirtVertex(x, 0, kEdgeNorth, 0.0f, -1.0f);
+	for (int x = 0; x <= cellsInX; ++x) addSkirtVertex(x, cellsInZ, kEdgeSouth, 0.0f, 1.0f);
+	for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(0, z, kEdgeWest, -1.0f, 0.0f);
+	for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(cellsInX, z, kEdgeEast, 1.0f, 0.0f);
 }
 
 Model* BuildTerrainModel(ID3D11Device* device, const Heightfield& field, std::vector<TerrainChunk>& outChunks,
-						 int& outChunksX, int& outChunksZ)
+						 int& outChunksX, int& outChunksZ, const TerrainWalls& walls = TerrainWalls{})
 {
 	if (!device || field.IsEmpty()) return nullptr;
 	const HeightfieldLayout& layout = field.GetLayout();
@@ -297,7 +306,7 @@ Model* BuildTerrainModel(ID3D11Device* device, const Heightfield& field, std::ve
 
 			std::vector<Vertex> vertices;
 			XMFLOAT3 boundsMin, boundsMax;
-			BuildChunkVertices(field, x0, z0, x1, z1, vertices, boundsMin, boundsMax);
+			BuildChunkVertices(field, x0, z0, x1, z1, vertices, boundsMin, boundsMax, walls);
 
 			const int cellsInX = x1 - x0;
 			const int cellsInZ = z1 - z0;
@@ -647,7 +656,7 @@ bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 	std::vector<TerrainChunk> chunks;
 	int chunksX = 0, chunksZ = 0;
 	const auto meshStart = Clock::now();
-	Model* model = BuildTerrainModel(device_, field, chunks, chunksX, chunksZ);
+	Model* model = BuildTerrainModel(device_, field, chunks, chunksX, chunksZ, Walls());
 	const double meshMs = MillisecondsSince(meshStart);
 	if (!model) return false;
 	auto replacement = std::make_unique<Renderable>(device_, model, L"shaders/vs.hlsl", L"shaders/terrain_ps.hlsl");
@@ -1017,6 +1026,16 @@ bool Terrain::PatchTile(const TileSampleRect& rect, bool groundIsFinal)
 	return true;
 }
 
+TerrainWalls Terrain::Walls() const
+{
+	TerrainWalls walls;
+	if (IsTile() && tile_.outerEdges != 0) {
+		walls.edges = tile_.outerEdges;
+		walls.floorY = WallFloorFor(heightfield_.GetLayout().heightScale);
+	}
+	return walls;
+}
+
 bool Terrain::ReplaceHeights(std::vector<float> samples, bool sculpted)
 {
 	if (heightfield_.IsEmpty() || !renderable_ || samples.size() != heightfield_.Samples().size()) return false;
@@ -1089,7 +1108,7 @@ void Terrain::RefreshChunks(const GridRect& changed)
 			const int x0 = chunkX * kChunkCells, x1 = (std::min)(x0 + kChunkCells, layout.cellsX);
 			const int z0 = chunkZ * kChunkCells, z1 = (std::min)(z0 + kChunkCells, layout.cellsZ);
 			XMFLOAT3 boundsMin, boundsMax;
-			BuildChunkVertices(heightfield_, x0, z0, x1, z1, vertices, boundsMin, boundsMax);
+			BuildChunkVertices(heightfield_, x0, z0, x1, z1, vertices, boundsMin, boundsMax, Walls());
 			if (!mesh->UpdateVertices(ctx, vertices)) continue;
 			chunks_[index].boundsMin = boundsMin;   // the box culling uses must follow the new shape
 			chunks_[index].boundsMax = boundsMax;
