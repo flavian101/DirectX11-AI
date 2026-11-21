@@ -4,6 +4,7 @@
 #include "Mesh.h"
 #include "ShaderSlots.h"
 #include "Terrain.h"
+#include "TerrainWorld.h"
 #include "WaterMesh.h"
 #include "WaterRiver.h"
 #include "WaterSelect.h"
@@ -760,10 +761,10 @@ void Water::SetSceneWind(const WindSettings& wind)
 	if (settings_.windSource == WindSource::Scene && !settings_.HasCurrent()) RebuildWaves();
 }
 
-void Water::RefreshShoreDepth(const std::vector<const Terrain*>& terrains, std::uint64_t groundStamp)
+void Water::RefreshShoreDepth(const std::vector<const Terrain*>& terrains, const std::vector<const TerrainWorld*>& worlds, std::uint64_t groundStamp)
 {
 	if (!device_ || !renderable_ || !renderable_->GetModel()) return;
-	if (terrains.empty()) {
+	if (terrains.empty() && worlds.empty()) {
 		if (depthView_ || shoreKeyValid_) { ReleaseShoreMap(); shoreKeyValid_ = false; }
 		return;
 	}
@@ -781,14 +782,36 @@ void Water::RefreshShoreDepth(const std::vector<const Terrain*>& terrains, std::
 	int width = 0, height = 0;
 	WaterShore::ChooseResolution(ExtentX(), ExtentZ(), width, height);
 	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
+
+	// The ground of every world under this body, from the world's ground function over the body's footprint (roadmap W1): no tile
+	// has to be loaded, so a tile that is still streaming in is not "100 m of open ocean", and the numbers do not depend on the mesh's level of detail.
+	std::vector<WorldGroundGrid> worldGrounds;
+	if (!worlds.empty()) {
+		double minX = 1.0e30, maxX = -1.0e30, minZ = 1.0e30, maxZ = -1.0e30;
+		for (int corner = 0; corner < 4; ++corner) {
+			const XMVECTOR p = XMVector3Transform(XMVectorSet((corner & 1) ? 1.0f : -1.0f, 0.0f, (corner & 2) ? 1.0f : -1.0f, 1.0f), world);
+			minX = (std::min)(minX, static_cast<double>(XMVectorGetX(p))); maxX = (std::max)(maxX, static_cast<double>(XMVectorGetX(p)));
+			minZ = (std::min)(minZ, static_cast<double>(XMVectorGetZ(p))); maxZ = (std::max)(maxZ, static_cast<double>(XMVectorGetZ(p)));
+		}
+		for (const TerrainWorld* ground : worlds) {
+			WorldGroundGrid grid;
+			if (ground && ground->BuildGroundGrid(minX, maxX, minZ, maxZ, grid)) worldGrounds.push_back(std::move(grid));
+		}
+	}
 	WaterShore::DepthField field = WaterShore::Bake(width, height, settings_.height,
 		[&world](float localX, float localZ, float& worldX, float& worldZ) {
 			const XMVECTOR p = XMVector3Transform(XMVectorSet(localX, 0.0f, localZ, 1.0f), world);
 			worldX = XMVectorGetX(p);
 			worldZ = XMVectorGetZ(p);
 		},
-		[&terrains](float worldX, float worldZ, float& groundY) {   // the highest ground of the terrains that cover this point
+		[&terrains, &worldGrounds](float worldX, float worldZ, float& groundY) {   // the highest ground of the terrains and worlds that cover this point
 			bool found = false;
+			for (const WorldGroundGrid& grid : worldGrounds) {
+				float height = 0.0f;
+				if (!grid.Sample(worldX, worldZ, height)) continue;
+				if (!found || height > groundY) groundY = height;
+				found = true;
+			}
 			for (const Terrain* terrain : terrains) {
 				float height = 0.0f;
 				if (!terrain->GetHeightAt(worldX, worldZ, height)) continue;

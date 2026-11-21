@@ -87,8 +87,8 @@ Sizes: `ScatterObject.cpp` is about 750 lines (the split is in S12); the scatter
 |---|---|---|---|
 | T1 `[x]` | Cliffs look like stairs and vertical streaks; flat pads | A 2048 px picture over 1024 m is 0.5 m/px, sampled every 4 m: about 8 px per cell, **no prefilter**, so thin escarpments alias. `smoothing` defaults to 0. About 13% of the demo picture's pixels sit at the minimum value (flat floor). | T1 below |
 | T2 `[x]` | Sculpting a world is slow | `SculptStep` marks tiles stale; `Stream()` builds a **new `Terrain` per touched tile per step** (heights for 257² + apron through the whole source chain, 64 chunks of vertices and index buffers, splat bake). The single-terrain path already patches chunks in place, but `Terrain::Sculpt` returns false for tiles. | T2 below |
-| T3 `[~]` | Every chunk builds its own identical index buffers (3 LODs plus skirts) | `BuildTerrainModel` | T3 below |
-| W1 `[!]` | **Ocean is drawn under / through terrain that is below the shore level** | Not yet reproduced here (I could not run the engine). Ranked suspects in W1 below. | W1 below |
+| T3 `[x]` | Every chunk builds its own identical index buffers (3 LODs plus skirts) | `BuildTerrainModel` | T3 below |
+| W1 `[~]` | **Ocean is drawn under / through terrain that is below the shore level** | Not reproduced here (no editor). Suspects 2 and 3 (below) were real flaws and are fixed (lesson 57); suspect 1 (coarse mesh) is measured but open. | W1 below |
 | W2 `[ ]` | The sea is one plane, at most 2000 m, with a coarse CPU depth map, and it has no idea about tiles that are not loaded | `Water`, `WaterShore::Bake` | W2 below |
 | W3 `[ ]` | Rivers are one plane up to 2000 m (a found river is capped at 1500 m); no confluences or lake outlets | lesson 45 | W4 below |
 | X1 `[ ]` | The bounded world is a floating slab: raw edges, dark void | no backdrop | X1 below |
@@ -134,7 +134,7 @@ Order is by what you see and what unblocks the rest. Items inside a milestone ca
 - Acceptance: `tile_patch_test.cpp`: after each of 200 random brush strokes (all four brushes, strokes that only touch the apron included, with and without a river
   crossing the tile) the patched tile equals a tile built from scratch, sample for sample, apron included. Checked in the editor by the author: sculpting a world works well.
 
-**T3. Shared index buffers** `[~]` (lesson 56: written and unit-tested; **to check in the editor**: load a world and compare "mesh" in the inspector's last tile build with before)
+**T3. Shared index buffers** `[x]` (lesson 56; the author applied it and reports that it works)
 - `[x]` The index buffers of a chunk depend only on its size in cells. `BuildChunkIndexLevels(cellsInX, cellsInZ, lodCount)` (`TerrainChunkIndices.cpp`, pure, moved
   out of `BuildTerrainModel` without a change) makes the three levels of detail, each a surface and four skirts. `GetSharedChunkIndices` makes the GPU buffers
   once per size and level count and hands the same set to every chunk; each `Mesh` keeps its own reference (`AddRef`), so the buffers live until the last chunk is gone.
@@ -144,31 +144,36 @@ Order is by what you see and what unblocks the rest. Items inside a milestone ca
 - Acceptance: a tile creates vertex buffers only (by construction: the only `CreateBuffer` left in a chunk is its vertex buffer). `terrain_chunk_indices_test.cpp`:
   counts per level (32 x 32: 6144, 1536, 384 surface indices; skirts a sixth of that per edge), every index inside the vertex range for square, wide and
   edge-sized chunks, the last grid line kept at every level, surface and skirt winding (skirts face outward), and a golden hash of the old code's output.
-  Still open (editor): the terrain looks the same (no holes at tile borders, skirts still hide cracks between levels) and "mesh" in the inspector drops.
+  Checked in the editor by the author: it works.
 
-**W1. The ocean must not show where it should not** `[!]`
+**W1. The ocean must not show where it should not** `[~]` (lesson 57: step 1 written and unit-tested; **to check in the editor**, see the end of this item)
 The rule (the **water-terrain contract**, section 5): where ground is below the sea level the surface is visible above the ground;
 where ground is above sea level plus the wave margin there is no water pixel; where the world has no ground, no deep ocean appears over
 land that exists in the world.
 Suspects, most likely first. Each one has a check that tells it from the others:
-1. **LOD mismatch.** The depth map is baked from the heightfield (true heights) but the screen shows the *coarser LOD mesh*. A coarse tile
-   (1/4, 1/16, 1/64 of the cells) cuts across peaks and ridges, so a ridge that is above the sea in the heightfield can dip below the sea
-   plane in the mesh. Check: set `viewDistance` small, or force every tile to LOD 0. If the artefact vanishes, this is it.
-2. **"No ground" means 100 m deep.** `Bake` fills every texel with no loaded terrain with `kDeepWater`. Tiles that have not streamed in yet,
-   tiles outside the bounded world, and the gaps while a tile is replaced all read as deep ocean. Check: select the water body and use
-   Advanced > Debug > Shore depth; magenta or very blue where land will appear.
-3. **Stale or coarse depth map.** The map is about 360 x 360 texels, rebuilt when the set of loaded tiles changes. `UpdateDryTiles` removes
-   water tiles whose ground is above the level using that same map; a narrow valley under the level can be dropped (water missing) while a
-   stale map elsewhere shows water that should be dry. Check: toggle the body's transform or sculpt to force a re-bake.
-4. **Skirts.** The skirt under a tile edge hangs `max(1.5, 0.06 x heightScale)` m (14.4 m at 240 m) and is in the depth buffer the shader
+1. **LOD mismatch.** `[ ]` open. The depth map is baked from true heights but the screen shows the *coarser LOD mesh*. A coarse tile (1/4, 1/16, 1/64 of the
+   cells) cuts across peaks and ridges, so a ridge above the sea in the ground can dip below the sea plane in the mesh. **Measured** (`water_visibility_test.cpp`,
+   gentle test hills, 4 m cells): a mesh at level of detail 1 stands up to 0.7 m off the true ground, level 2 up to 1.8 m, level 3 (32 m cells) up to 3.1 m,
+   both above and below. Rugged ground and a high `heightScale` give more. Check: set `viewDistance` small, or force every tile to LOD 0. If the artefact vanishes, this is it.
+2. **"No ground" means 100 m deep.** `[x]` fixed in step 1. `Bake` used to fill every texel without a loaded terrain with `kDeepWater`, so tiles not yet streamed in,
+   tiles being replaced, and (as far as the mesh is concerned) the gaps all read as deep ocean. The ground now comes from the world's ground function, which has an
+   answer for every point inside the world's edge; only beyond the edge of a **bounded** world is there still "no ground".
+3. **Stale or coarse depth map.** `[x]` the stale half is fixed in step 1: the stamp that triggers a re-bake no longer moves when tiles load and unload; it follows the
+   world's own ground revision (settings, rivers, finished strokes, undo, loaded edits), so there is no bake against half-loaded ground. The map is still about
+   360 x 360 texels for the biggest bodies (W2 step 2 removes the limit).
+4. **Skirts.** `[ ]` open. The skirt under a tile edge hangs `max(1.5, 0.06 x heightScale)` m (14.4 m at 240 m) and is in the depth buffer the shader
    measures `thickness` against. Check: wireframe, and the water's foam band along tile seams.
-- Fix: bake the depth map from the world's **ground function** (what tiles are built from: source -> shape -> edits -> rivers), not from
-  whichever tile meshes happen to be loaded. That removes 2 and, with a conservative margin, 3. For 1, keep the heightfield and the mesh
-  consistent near the shore: keep tiles whose bounds cross the sea level at LOD 0 or 1, or lower the coarse mesh's vertices at the shore
+- Step 1 `[x]`: `WorldGround.{h,cpp}` (`BuildWorldGroundGrid`, pure) makes a grid of the ground's heights in metres over a body's footprint from `source -> shape ->
+  edits -> rivers`, sitting on the world's own lattice, so at full detail each sample is exactly a tile vertex's height. `TerrainWorld::BuildGroundGrid` and
+  `GroundRevision()` expose it; `Water::RefreshShoreDepth` takes the worlds and bakes from the grid; `Scene::Update` leaves a world's tiles out of the list and stamps
+  by the world's revision. Single terrains still use their own heightfield.
+- Step 2 `[ ]` (only if suspect 1 reproduces): keep tiles whose bounds cross a water level at LOD 0 or 1, or lower the coarse mesh's vertices at the shore
   (skirt-style, never above the true height).
-- Acceptance: a pure-logic test `water_visibility_test.cpp` samples a grid of points and asserts the contract (below level -> water, above
-  level + margin -> none, no ground inside the bounds -> not deep ocean). I cannot confirm the root cause without running the editor; step 1
-  of the fix is to run the four checks above and record which one reproduces it here.
+- Acceptance: `water_visibility_test.cpp` (contract items 1 to 5): the depth map agrees with the ground function to 0.21 m, with water where the ground is below the
+  level and none where it is above; inside a bounded world there is always ground and beyond its edge none; the ground grid equals the tile vertices
+  (0.000000 m, with and without a river); two bodies, moved, turned and resized, agree on the shoreline to 0.05 m. Items 6 and 7 of the contract are not covered yet.
+  Still open (editor): load a world with a sea body and fly around: the ocean should not show under land, also while tiles stream in. If it still does, tell me
+  which of the four checks above makes it vanish.
 
 **X1. A world edge that does not look like a slab** `[ ]`
 - Close the bounded world with skirts down to a floor below the lowest ground, or fade it into fog and a backdrop. Decide once and write it here.

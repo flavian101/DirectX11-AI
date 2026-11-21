@@ -19,6 +19,7 @@
 #include <vector>
 
 class Terrain;
+class TerrainWorld;
 
 
 // What one draw of the water did, per kind of view (camera, mirror, sun).
@@ -99,7 +100,10 @@ public:
 	// or its level changed. No terrain (an empty list): the body then has no shore effects at all. A world is many terrains
 	// (tiles): the ground at a point is the highest of those that cover it. `groundStamp` changes whenever any of them is
 	// added, removed or edited (Scene::Update makes it), so a tile streaming in under the water makes it measure again.
-	void RefreshShoreDepth(const std::vector<const Terrain*>& terrains, std::uint64_t groundStamp);
+	// `worlds` are the terrain worlds: their ground comes from the world's GROUND FUNCTION (a grid of the same heights the tiles are made
+	// from), so it is the same whether a tile is loaded, still streaming in, or drawn at a coarser level of detail (roadmap W1). `terrains`
+	// are the single terrains (and any tile that has no world). The ground at a point is the highest of all that cover it.
+	void RefreshShoreDepth(const std::vector<const Terrain*>& terrains, const std::vector<const TerrainWorld*>& worlds, std::uint64_t groundStamp);
 	bool HasShoreDepth() const { return depthView_ != nullptr; }
 	// The river's curve (lesson 38). Measured again when the curve, the body or its size changes (called once a frame by the scene).
 	void RefreshRiverFlow();

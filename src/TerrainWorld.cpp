@@ -63,6 +63,7 @@ void TerrainWorld::SetSettings(TerrainWorldSettings settings)
     }
     settings_ = settings;
     RefreshRivers();
+    GroundChanged();
     dirty_ = true;
     failed_ = false;
 }
@@ -90,6 +91,7 @@ int TerrainWorld::AddRiver(WorldRiver river)
     if (river.id > 0) nextRiverId_ = std::max(nextRiverId_, river.id + 1); else river.id = nextRiverId_++;
     settings_.rivers.push_back(river);
     RefreshRivers();
+    GroundChanged();
     MarkTilesTouchedBy(river);   // only the tiles it touches are rebuilt, nearest the camera first
     return river.id;
 }
@@ -101,6 +103,7 @@ bool TerrainWorld::RemoveRiver(int id)
     const WorldRiver removed = *it;
     settings_.rivers.erase(it);
     RefreshRivers();
+    GroundChanged();
     MarkTilesTouchedBy(removed);
     return true;
 }
@@ -109,6 +112,7 @@ bool TerrainWorld::RemoveRiver(int id)
 // cannot be read the world has no land: failed_ stops the streaming until the settings change, and status_ says why.
 void TerrainWorld::BuildSource()
 {
+    GroundChanged();   // the ground function is made again (the water measures its shore from it)
     status_.clear();
     activeBounds_ = settings_.bounds;
     pictureRaw_.reset();
@@ -354,12 +358,14 @@ WorldEditPatch TerrainWorld::EndStroke()
     WorldEditPatch patch = recorder_.Finish(*edits_);
     recorder_.Clear();
     strokeEnded_ = true;   // the next Stream tells the water (and anything else watching) that the patched ground is final
+    GroundChanged();
     return patch;
 }
 
 void TerrainWorld::ApplyEditPatch(const WorldEditPatch& patch, bool useAfter)
 {
     const WorldPatchExtent extent = ApplyWorldEditPatch(*edits_, patch, useAfter);
+    GroundChanged();
     MarkEditedTiles(extent.heights, true, true);   // an undo or redo is final at once: no stroke to wait for
     MarkEditedTiles(extent.paint, false);
 }
@@ -367,6 +373,7 @@ void TerrainWorld::ApplyEditPatch(const WorldEditPatch& patch, bool useAfter)
 void TerrainWorld::ReplaceEdits(const WorldEdits& edits)
 {
     *edits_ = edits;
+    GroundChanged();
     MarkAllTilesStale();
 }
 
@@ -380,7 +387,16 @@ void TerrainWorld::ClearEdits(bool heights, bool paint)
         kept.SetBlock(tile, std::move(copy));
     });
     *edits_ = std::move(kept);
+    GroundChanged();
     MarkAllTilesStale();
+}
+
+bool TerrainWorld::BuildGroundGrid(double minX, double maxX, double minZ, double maxZ, WorldGroundGrid& out) const
+{
+    out = WorldGroundGrid{};
+    if (!HasGround()) return false;
+    out = BuildWorldGroundGrid(*source_, riversSnapshot_.get(), settings_.grid, activeBounds_, settings_.heightScale, minX, maxX, minZ, maxZ);
+    return !out.IsEmpty();
 }
 
 float TerrainWorld::GroundHeight01(double worldX, double worldZ) const
@@ -418,6 +434,7 @@ bool TerrainWorld::LoadEdits(const std::string& path, std::string& error)
         return false;
     }
     *edits_ = std::move(loaded);
+    GroundChanged();
     editsMetresPerCell_ = static_cast<double>(settings_.grid.metresPerCell);   // the settings (saved with the scene) are the lattice's other half
     dirty_ = true;   // every tile is rebuilt with the edits
     return true;

@@ -7,6 +7,7 @@
 #include "WorldPicture.h"
 #include "WorldShape.h"
 #include "WorldEdits.h"
+#include "WorldGround.h"
 #include <d3d11.h>
 #include <cstdint>
 #include <memory>
@@ -97,6 +98,16 @@ public:
     // sculpting (and noise) as height edits and its painting as paint edits. False if the world has no ground (the picture could not be read).
     bool AdoptFrom(const Terrain& old, MigrationStats* stats = nullptr);
 
+    // --- the ground as a function, for things that must not depend on which tiles happen to be loaded (roadmap W1) ---
+    // The ground over a world rectangle (metres) as a grid of heights, from the same source, edits and rivers the tiles are made
+    // from: at full detail each sample is exactly a tile vertex's height. The water measures its shore from this. False when the world
+    // has no ground (the picture could not be read).
+    bool BuildGroundGrid(double minX, double maxX, double minZ, double maxZ, WorldGroundGrid& out) const;
+    bool HasGround() const { return source_ != nullptr && !failed_; }
+    // Moves whenever the ground function changes: the settings, a river, a finished stroke, an undo, loaded or cleared edits. NOT on every
+    // step of a stroke (the water measures when the stroke ends, like the tiles' revision, roadmap T2).
+    unsigned GroundRevision() const { return groundRevision_; }
+
     // --- the picture, for the inspector ---
     const HeightImageStats* PictureStats() const { return hasPictureStats_ ? &pictureStats_ : nullptr; }
     float PictureMetresPerPixel() const { return pictureMetresPerPixel_; }
@@ -155,6 +166,8 @@ private:
     std::unordered_map<std::uint64_t, PendingEdit> pendingEdits_;
     std::unordered_set<std::uint64_t> patchedDuringStroke_;   // tiles a stroke patched: their ground revision moves when it ends
     bool strokeEnded_ = false;
+    unsigned groundRevision_ = 1;   // see GroundRevision()
+    void GroundChanged() { ++groundRevision_; }
     std::unordered_set<std::uint64_t> staleTiles_;                    // loaded tiles that a river change touched: rebuilt first
     int nextRiverId_ = 1;
     WorldBounds activeBounds_;   // see ActiveBounds()

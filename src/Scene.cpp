@@ -187,16 +187,28 @@ void Scene::Update(float dt)
     // Every water body measures the terrain under it (only when something changed: this is a cheap comparison otherwise).
     // The ground is every valid terrain (a world is many). The stamp changes when one is added, removed or edited (FNV-1a over
     // each terrain's identity and revision), so the water measures again exactly then.
-    std::vector<const Terrain*> groundTerrains;
+    // A world's ground comes from its ground function (roadmap W1), not from its tiles: a tile that has not streamed in yet, or is drawn
+    // at a coarser level of detail, must not change what the water thinks is deep. So the tiles of a world that has ground are left out of
+    // the list, and the stamp follows the world's own ground revision, not tiles loading and unloading.
+    std::vector<const TerrainWorld*> groundWorlds;
     std::uint64_t groundStamp = 1469598103934665603ull;
+    for (const auto& obj : objects_) {
+        const auto* world = dynamic_cast<const TerrainWorld*>(obj.get());
+        if (!world || !world->HasGround()) continue;
+        groundWorlds.push_back(world);
+        groundStamp = (groundStamp ^ static_cast<std::uint64_t>(world->GetId())) * 1099511628211ull;
+        groundStamp = (groundStamp ^ static_cast<std::uint64_t>(world->GroundRevision())) * 1099511628211ull;
+    }
+    std::vector<const Terrain*> groundTerrains;
     for (const auto& obj : objects_) {
         const auto* terrain = dynamic_cast<const Terrain*>(obj.get());
         if (!terrain || !terrain->IsValid()) continue;
+        if (terrain->IsTile() && !groundWorlds.empty()) continue;   // the world answers for its tiles
         groundTerrains.push_back(terrain);
         groundStamp = (groundStamp ^ static_cast<std::uint64_t>(terrain->GetId())) * 1099511628211ull;
         groundStamp = (groundStamp ^ static_cast<std::uint64_t>(terrain->GetRevision())) * 1099511628211ull;
     }
-    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) { water->RefreshShoreDepth(groundTerrains, groundStamp); water->RefreshRiverFlow(); }
+    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) { water->RefreshShoreDepth(groundTerrains, groundWorlds, groundStamp); water->RefreshRiverFlow(); }
     // Scatter follows the ground the same way: it regenerates the cells whose ground changed (within a time budget).
     // (It still reads only the FIRST terrain: scatter over a world is a later step.)
     const Terrain* terrain = GetTerrain();

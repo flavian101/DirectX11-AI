@@ -112,6 +112,7 @@ add_library(Engine STATIC
 	src/Terrain.cpp
 	src/TerrainChunkIndices.cpp
 	src/TerrainChunkIndexCache.cpp
+	src/WorldGround.cpp
 	src/WorldGrid.cpp
 	src/WorldPicture.cpp
 	src/WorldShape.cpp
@@ -285,6 +286,11 @@ if(BUILD_TESTS)
     add_executable(TerrainChunkIndicesTests tests/terrain_chunk_indices_test.cpp src/TerrainChunkIndices.cpp)
     target_include_directories(TerrainChunkIndicesTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME TerrainChunkIndices COMMAND TerrainChunkIndicesTests)
+    # The water-terrain contract: the water measures the world's ground function, not its loaded tiles (roadmap W1).
+    add_executable(WaterVisibilityTests tests/water_visibility_test.cpp src/WorldGround.cpp src/WorldRivers.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
+    target_include_directories(WaterVisibilityTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(WaterVisibilityTests PRIVATE Threads::Threads)
+    add_test(NAME WaterVisibility COMMAND WaterVisibilityTests)
     add_executable(ImageDownscaleTests tests/image_downscale_test.cpp)
     target_include_directories(ImageDownscaleTests PRIVATE ${CMAKE_SOURCE_DIR}/editor)
     add_test(NAME ImageDownscale COMMAND ImageDownscaleTests)
