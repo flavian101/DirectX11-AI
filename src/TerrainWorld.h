@@ -105,6 +105,14 @@ public:
     // has no ground (the picture could not be read).
     bool BuildGroundGrid(double minX, double maxX, double minZ, double maxZ, WorldGroundGrid& out) const;
     bool HasGround() const { return source_ != nullptr && !failed_; }
+    // The ground at one point, from the ground function (roadmap C1): the same whether a tile is loaded there or not, and the same
+    // triangles a full-detail tile is drawn from. False beyond the edge of a bounded world, or when the world has no ground.
+    // The function borrows this world's source and rivers: use it before the next change to the world's settings.
+    WorldGroundFunction GroundFunction() const;
+    bool HeightAt(double worldX, double worldZ, float& heightMetres) const;
+    bool NormalAt(double worldX, double worldZ, DirectX::XMFLOAT3& normal) const;
+    // Where the ray first meets the ground within maxDistance, tiles loaded or not (unlike Raycast, which tests the loaded tiles' meshes).
+    bool RaycastGround(const Ray& ray, float maxDistance, float& distance, DirectX::XMFLOAT3* point) const;
     // Moves whenever the ground function changes: the settings, a river, a finished stroke, an undo, loaded or cleared edits. NOT on every
     // step of a stroke (the water measures when the stroke ends, like the tiles' revision, roadmap T2).
     unsigned GroundRevision() const { return groundRevision_; }

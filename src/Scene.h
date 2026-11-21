@@ -45,6 +45,13 @@ public:
     // The height of the ground at a world position, from whichever terrain covers it (the highest, if they overlap).
     // False when no terrain does.
     bool GetGroundHeight(float worldX, float worldZ, float& worldY) const;
+    // The ground's unit normal at a world position, from the same places. False when nothing covers it.
+    bool GetGroundNormal(float worldX, float worldZ, DirectX::XMFLOAT3& normal) const;
+    // Where a ray first meets the ground (the nearest, over every world and every single terrain). Worlds answer from their ground function, so
+    // it works over tiles that are not loaded; a single terrain answers from its mesh.
+    bool RaycastGround(const Ray& ray, float& distance, DirectX::XMFLOAT3* point) const;
+    // Is there any ground at all (a world with a ground function, or a single terrain)?
+    bool HasGround() const;
     // The FIRST water body (scenes can have several: loop over GetObjects(), or use FindWaterAt for a position).
     Water* GetWater() { return FindFirst<Water>(); }
     const Water* GetWater() const { return FindFirst<Water>(); }

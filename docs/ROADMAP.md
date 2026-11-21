@@ -12,6 +12,7 @@ things were built and is never updated to match the plan.
 4. Status: `[x]` done, `[~]` written and unit-tested but not yet checked in the editor, `[ ]` open, `[!]` known bug.
 5. Facts about terrain and water were read from the code at commit `f9e0401`; facts about scatter and biomes (section 1 and M5) at commit `848a23f`.
    Nothing here was measured on a running build unless it says so.
+6. A problem found while working that is not part of a milestone goes to section 8 ("Later fixes") with an ID `F<n>`, and is fixed after the milestones. It is not forgotten, and it does not interrupt the milestone.
 
 ---
 
@@ -91,7 +92,7 @@ Sizes: `ScatterObject.cpp` is about 750 lines (the split is in S12); the scatter
 | W1 `[~]` | **Ocean is drawn under / through terrain that is below the shore level** | Not reproduced here (no editor). Suspects 2 and 3 (below) were real flaws and are fixed (lesson 57); suspect 1 (coarse mesh) is measured but open. | W1 below |
 | W2 `[ ]` | The sea is one plane, at most 2000 m, with a coarse CPU depth map, and it has no idea about tiles that are not loaded | `Water`, `WaterShore::Bake` | W2 below |
 | W3 `[ ]` | Rivers are one plane up to 2000 m (a found river is capped at 1500 m); no confluences or lake outlets | lesson 45 | W4 below |
-| X1 `[~]` | The bounded world is a floating slab: raw edges, dark void | no backdrop | X1 below |
+| X1 `[x]` | The bounded world is a floating slab: raw edges, dark void | no backdrop | X1 below |
 | S12 `[!]` | Nothing grows on a world's tiles | Scatter has one grid over one `Terrain`'s extent, takes a `const Terrain*`, and tracks changes with that terrain's revision log | S12 below |
 | S4 `[ ]` | No biomes: a texture layer is the only way to say "where" | `layerDensity[4]` and `layerBias[4]` are tied to the 4 splat channels; a forest and a swamp on the same grass cannot differ; more than 4 layers (L2) would break the rules | S4 below |
 | S11 `[x]` | Dead and duplicate code in scatter | see S11 for the list, each item read in the code | S11 below |
@@ -176,7 +177,7 @@ Suspects, most likely first. Each one has a check that tells it from the others:
   which of the four checks above makes it vanish. Seen by the author before this step (Nov 2026, screenshot of a new fractal bounded world with a body the size of the
   terrain): a dark band over low ground with no water on it, near a shore; to be looked at again after step 1.
 
-**X1. A world edge that does not look like a slab** `[~]` (lesson 58: written and unit-tested; **to check in the editor**: orbit a bounded world and look at its sides)
+**X1. A world edge that does not look like a slab** `[x]` (lesson 58; the author applied it, including the bottom, and reports that it works well)
 - **Decision (written once, here):** the bounded world is closed with **walls**: the skirt on every side that is the world's edge goes all the way down to a floor below the
   lowest ground, so the world reads as a block (a diorama) and not a floating sheet. The floor is at `-max(10 m, heightScale / 10)` (-24 m at 240 m). Fading the edge into
   fog and a backdrop is not done: it needs the environment (fog, sky) and is left until a world needs it.
@@ -185,7 +186,7 @@ Suspects, most likely first. Each one has a check that tells it from the others:
   (`ChunkWallEdges`); the seams between tiles keep their ordinary short skirts. The indices are the shared ones of T3 (only vertex positions change), so a wall costs nothing extra.
 - Acceptance: `terrain_walls_test.cpp`: a side is a wall exactly when the tile across it is not part of the world (checked for every rectangle of up to 5 x 5 tiles, negative
   tile numbers included); an endless world has none; a one-tile world has all four; only the outline chunks of a tile carry a wall; the floor is always below the lowest ground.
-  Still open (editor): from the side and from below, no void shows between the ground and the floor, and the bottom looks acceptable (it is lit by the ambient light only).
+  Checked in the editor by the author: it works well. The look of the wall and the bottom (stretched layers, ambient light only) is polish: F1.
 - `[x]` The bottom (added after the author's screenshot from below showed the block open underneath): part 5 of every chunk mesh, two triangles facing down on four extra
   corner vertices at the floor, the same at every level of detail; every tile of a bounded world draws it (`TerrainTile::capBottom`, bit `kTerrainCapPartBit` of the part mask).
   The vertex normal points down, so from below it is lit as a floor. The first five parts are exactly what T3 froze (the golden hash covers them and is unchanged).
@@ -206,12 +207,22 @@ The old terrain is deleted only when every row is `[x]`. Check each row against 
 | Splat painting | per tile, seamless | `[~]` |
 | Sculpt brushes | across tiles (and fast: T2) | `[~]` |
 | Undo and redo | touched lattice points | `[~]` |
-| **Collision and height queries** | `World::HeightAt(x, z)` across tiles | `[ ]` **C1** |
+| **Collision and height queries** | `World::HeightAt(x, z)` across tiles | `[~]` **C1** |
 | **Water reads world ground** | via the ground function (W1) | `[~]` |
 | **Scatter over every tile** | deterministic per tile, seed from the tile id | `[ ]` **C2 = S12** |
 | Save and load | settings in the scene, edits in `.worldedits` | `[~]` |
 
-- **C1** `World::HeightAt` (ground function, plus an exact tile raycast for picking). Acceptance: matches `Terrain::GetHeightAt` on a one-tile world.
+- **C1** `[~]` The ground at one point (lesson 59: written and unit-tested; **to check in the editor**: snap an object to a world, aim a river at it, with the camera far from the tiles).
+  - `[x]` `WorldGroundFunction` (`WorldGround.h`, pure): `HeightAt`, `NormalAt` and `Raycast` over the ground function. It reads the very triangles a full-detail tile is drawn
+    from (the split of `Heightfield::Locate`), so it is the same whether a tile is loaded there or not, and at any level of detail the tiles are drawn.
+  - `[x]` `TerrainWorld::HeightAt / NormalAt / RaycastGround`. `Scene::GetGroundHeight` now asks the worlds first and skips the tiles of a world that has ground; new
+    `Scene::GetGroundNormal`, `Scene::RaycastGround` and `Scene::HasGround`. The editor's "Snap to terrain", the river overlay and the river "ground above the water"
+    readout use them, so they work on a world. (Picking for sculpting still uses `TerrainWorld::Raycast`, the loaded tiles' meshes: it is fast.)
+  - Acceptance: `world_height_test.cpp`: on a one-tile world the height is within 0.000015 m of `Heightfield::HeightAt` (0.000080 m with a river dug in) and the normal within
+    0.000005 of `Heightfield::NormalAt`, at 4000 points including every edge (where the apron matters); across tile borders the ground is continuous with no tile loaded; a
+    bounded world has ground inside its edge and none beyond; 300 rays from above land on the ground to 0.000023 m and agree with a 5 cm brute-force walk to 0.05 m,
+    and miss when they should (straight up, starting underground, too short, flying away from a bounded world).
+  - Still open (editor): "Snap to terrain" on a world with the camera far from the object; the river overlay follows the cursor over unloaded ground.
 - **C2** Scatter over every tile. The plan lives in **S12** only; this line is a pointer.
 - **C3** Run every demo scene through migration, then delete `Scene::GetTerrain()` callers, `Terrain::CarveRiver`, and heightmap-only settings.
 - **C4** Build tiles off the main thread; upload on the main thread with a per-frame budget.
@@ -442,3 +453,22 @@ as curves (38), drawing a river (39), only-the-river-is-water (40), a river that
 | scatter design phases 1 to 10 | S1 to S10, revised in M5 (S3 dropped, S8 split between S4 and S13) |
 | "scatter over every tile" (C2) | S12 |
 | "terrain generators: ridged noise, terracing, erosion" | G1 |
+
+---
+
+## 8. Later fixes (found while working, not part of a milestone)
+
+Fixed after the milestones are done (rule 6). Each item says where it was found and what would fix it. Order is not priority.
+
+| ID | Found in | Problem | Fix |
+|---|---|---|---|
+| F1 | X1 | The wall and the bottom of a bounded world reuse the edge vertex's texture coordinates, so the layers are stretched down the wall (green streaks, seen in a screenshot) and the bottom is lit by ambient light only. | A rock-like wall material and a plain floor colour, chosen in the shader by a vertex flag or a per-part material. |
+| F2 | T2 | Paint strokes on a world still rebuild the tile (they mark it stale); only height edits are patched in place. | `Terrain::ReplacePaint` plus a splat refresh for the dirty rectangle, then the same pending-edit path as heights. |
+| F3 | the MSVC test build | A missing `#include <array>` in `WorldEdits.h` built with one compiler and not with MSVC. A scan found a dozen smaller gaps. | A CMake target that compiles each header on its own (a header must include what it uses), and a build with MSVC and with GCC or Clang in CI. |
+| F4 | W1 | The water now bakes its depth from a ground grid: up to about 250,000 height evaluations for a 2000 m body at 4 m cells. Not measured. | Time `BuildGroundGrid` with a timer like T2's; cache the grid per world revision and body footprint; use a coarser step far from the camera. |
+| F5 | C1 | Picking for sculpting (`TerrainWorld::Raycast`) tests the loaded tiles' meshes at their levels of detail; far away it differs slightly from the ground function. | Use `RaycastGround` for far hits, with a faster early-out than half-cell steps (a coarse-to-fine march). |
+| F6 | S11 | `editor/EditorLayer.cpp` is still about 4,450 lines. | Move the water, terrain and world inspectors out the way the scatter inspector was (lesson 53). |
+| F7 | T2 | `Terrain::BuildTimes` is one shared global, written by every tile build. It is not thread-safe, which matters once tiles are built off the main thread (C4). | Make each tile build return its own times, and let the world add them up. |
+| F8 | T1 | `prefilter` defaults to on, so opening an existing world changes its shape slightly (its edits are deltas and stay). | Store a version in the world settings and default old files to the old behaviour, with a button to convert. |
+| F9 | W1 | Items 6 and 7 of the water-terrain contract (sculpting and rivers update the shoreline; a river is only water inside its corridor) have no test. | Add them to `water_visibility_test.cpp`; item 6 needs the ground revision (lesson 57) to be observable from a test. |
+| F10 | C1 | Many editor tools still start from `scene_->GetTerrain()`, which is the first tile of a world and not the world (the river carve, the sculpt and paint paths that use a single terrain, the scatter menu). | Audit them at C3: each either asks the scene's ground (as C1 did) or the `TerrainWorld`. |

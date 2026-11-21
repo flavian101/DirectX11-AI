@@ -1,4 +1,5 @@
 ﻿#include "Scene.h"
+#include <cfloat>
 #include "TerrainWorld.h"
 #include "Color.h"
 #include "ModelObject.h"
@@ -215,17 +216,89 @@ void Scene::Update(float dt)
     for (auto& obj : objects_) if (auto* scatter = dynamic_cast<ScatterObject*>(obj.get())) scatter->Refresh(terrain, camera_.GetPosition());
 }
 
+// A world answers from its GROUND FUNCTION (roadmap C1), so the answer does not depend on which tiles are loaded or at what level of
+// detail they are drawn. The tiles of a world that has ground are therefore skipped; a single terrain still answers from its own mesh.
 bool Scene::GetGroundHeight(float worldX, float worldZ, float& worldY) const
 {
     bool found = false;
+    bool worldAnswers = false;
+    for (const auto& object : objects_) {
+        const auto* world = dynamic_cast<const TerrainWorld*>(object.get());
+        if (!world || !world->HasGround()) continue;
+        worldAnswers = true;
+        float height = 0.0f;
+        if (!world->HeightAt(worldX, worldZ, height)) continue;
+        if (!found || height > worldY) worldY = height;
+        found = true;
+    }
     for (const auto& object : objects_) {
         const auto* terrain = dynamic_cast<const Terrain*>(object.get());
+        if (!terrain || (worldAnswers && terrain->IsTile())) continue;
         float height = 0.0f;
-        if (!terrain || !terrain->GetHeightAt(worldX, worldZ, height)) continue;
+        if (!terrain->GetHeightAt(worldX, worldZ, height)) continue;
         if (!found || height > worldY) worldY = height;
         found = true;
     }
     return found;
+}
+
+bool Scene::GetGroundNormal(float worldX, float worldZ, DirectX::XMFLOAT3& normal) const
+{
+    bool found = false;
+    float bestHeight = -FLT_MAX;   // where ground overlaps, the highest one is the one you stand on
+    bool worldAnswers = false;
+    for (const auto& object : objects_) {
+        const auto* world = dynamic_cast<const TerrainWorld*>(object.get());
+        if (!world || !world->HasGround()) continue;
+        worldAnswers = true;
+        float height = 0.0f;
+        DirectX::XMFLOAT3 n;
+        if (!world->HeightAt(worldX, worldZ, height) || !world->NormalAt(worldX, worldZ, n)) continue;
+        if (height > bestHeight) { bestHeight = height; normal = n; found = true; }
+    }
+    for (const auto& object : objects_) {
+        const auto* terrain = dynamic_cast<const Terrain*>(object.get());
+        if (!terrain || (worldAnswers && terrain->IsTile())) continue;
+        float height = 0.0f;
+        DirectX::XMFLOAT3 n;
+        if (!terrain->GetHeightAt(worldX, worldZ, height) || !terrain->GetNormalAt(worldX, worldZ, n)) continue;
+        if (height > bestHeight) { bestHeight = height; normal = n; found = true; }
+    }
+    return found;
+}
+
+bool Scene::RaycastGround(const Ray& ray, float& distance, DirectX::XMFLOAT3* point) const
+{
+    constexpr float kLongestRay = 20000.0f;   // metres: beyond this nothing is picked
+    bool hit = false;
+    float best = FLT_MAX;
+    bool worldAnswers = false;
+    for (const auto& object : objects_) {
+        const auto* world = dynamic_cast<const TerrainWorld*>(object.get());
+        if (!world || !world->HasGround()) continue;
+        worldAnswers = true;
+        float d = 0.0f;
+        DirectX::XMFLOAT3 p;
+        if (world->RaycastGround(ray, kLongestRay, d, &p) && d < best) { best = d; hit = true; if (point) *point = p; }
+    }
+    for (const auto& object : objects_) {
+        const auto* terrain = dynamic_cast<const Terrain*>(object.get());
+        if (!terrain || (worldAnswers && terrain->IsTile())) continue;
+        float d = 0.0f;
+        DirectX::XMFLOAT3 p;
+        if (terrain->Raycast(ray, d, &p) && d < best) { best = d; hit = true; if (point) *point = p; }
+    }
+    if (hit) distance = best;
+    return hit;
+}
+
+bool Scene::HasGround() const
+{
+    for (const auto& object : objects_) {
+        if (const auto* world = dynamic_cast<const TerrainWorld*>(object.get())) { if (world->HasGround()) return true; }
+        else if (const auto* terrain = dynamic_cast<const Terrain*>(object.get())) { if (terrain->IsValid()) return true; }
+    }
+    return false;
 }
 
 // Smallest sphere containing both input spheres.

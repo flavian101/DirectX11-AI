@@ -23,6 +23,38 @@ struct WorldGroundGrid {
     bool Sample(double worldX, double worldZ, float& heightMetres) const;
 };
 
+// --- asking the ground at ONE point (roadmap C1) -----------------------------------------------------------------------------------
+// The same function, for collision, placing things on the ground, a character's feet, a line of sight: it answers for every point of
+// the world, whether or not a tile is loaded there. It reads the SAME triangles a tile's mesh is drawn from at full detail (each
+// cell is split along the diagonal from its south-west to its north-east corner: the triangles of Heightfield::Locate), so what it
+// says is what the player sees standing on it, and it matches Terrain::GetHeightAt / GetNormalAt on a one-tile world.
+struct WorldVec3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
+
+struct WorldGroundFunction {
+    const WorldHeightSource* source = nullptr;          // shape and edits over the base ground (not owned: it must outlive this struct)
+    const std::vector<WorldRiver>* rivers = nullptr;    // may be null
+    WorldGridSettings grid;
+    WorldBounds bounds;
+    float heightScale = 1.0f;
+
+    bool IsValid() const { return source != nullptr; }
+    // Is the point inside the world? Always true in an endless world; inside the edge of a bounded one.
+    bool HasGroundAt(double worldX, double worldZ) const;
+    // The ground's height in metres. False beyond the edge of a bounded world.
+    bool HeightAt(double worldX, double worldZ, float& heightMetres) const;
+    // The unit normal, blended from the normals of the triangle's three vertices exactly as Terrain::GetNormalAt does.
+    bool NormalAt(double worldX, double worldZ, WorldVec3& normal) const;
+    // Where a ray first goes from above the ground to below it, within maxDistance. `direction` need not be normalised. A ray that
+    // starts below the ground, or leaves the world before it meets the ground, does not hit. It walks the ray in half-cell steps and
+    // then narrows the crossing down by bisection, so it finds the surface to well under a millimetre, but a ridge thinner than half
+    // a cell that the ray clips between two steps is missed (a mesh has no such ridge: its features are a cell wide).
+    bool Raycast(const WorldVec3& origin, const WorldVec3& direction, float maxDistance, float& distance) const;
+
+private:
+    // The heights in metres of a count x count block of lattice points whose first is (firstX, firstZ), rivers dug in.
+    std::vector<float> Lattice(std::int64_t firstX, std::int64_t firstZ, int count) const;
+};
+
 // The ground over the rectangle minX..maxX, minZ..maxZ (world metres; grown by one sample all round). The samples sit on the
 // world's own lattice (multiples of `step`), so at full resolution each one is exactly the height a tile's vertex has. A
 // rectangle that would need more than maxSamplesPerSide samples across gets a step that is a whole multiple of the lattice.

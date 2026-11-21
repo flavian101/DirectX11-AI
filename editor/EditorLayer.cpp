@@ -2046,7 +2046,7 @@ void EditorLayer::DrawSurfaceInspector(SurfaceMaterial& surface)
 // Moves `object` straight up or down until the bottom of its box rests on the terrain. The ground is looked up under
 // every corner of the box and under its centre, and the HIGHEST ground wins: on a slope the uphill side would
 // otherwise sink into the hill. Does nothing if the object is not over the terrain at all.
-static void SnapToTerrain(SceneObject& object, const Terrain& terrain)
+static void SnapToTerrain(SceneObject& object, const Scene& scene)   // any ground: a world's ground function, or a single terrain
 {
     XMFLOAT4X4 worldFloats;
     XMFLOAT3 boundsMin, boundsMax;
@@ -2063,7 +2063,7 @@ static void SnapToTerrain(SceneObject& object, const Terrain& terrain)
         XMStoreFloat3(&p, XMVector3Transform(XMLoadFloat3(&localPoint), world));
         lowestY = (std::min)(lowestY, p.y);
         float ground = 0.0f;
-        if (terrain.GetHeightAt(p.x, p.z, ground)) { groundY = (std::max)(groundY, ground); overTerrain = true; }
+        if (scene.GetGroundHeight(p.x, p.z, ground)) { groundY = (std::max)(groundY, ground); overTerrain = true; }
     };
     for (int i = 0; i < 8; ++i) {
         consider({ (i & 1) ? boundsMax.x : boundsMin.x, (i & 2) ? boundsMax.y : boundsMin.y, (i & 4) ? boundsMax.z : boundsMin.z });
@@ -2121,9 +2121,8 @@ void EditorLayer::DrawTransformEditor(SceneObject* object)
     if (changed) object->SetEditorTransform(position, rotation, scale);
 
     // Cubes and models can be dropped onto the ground. (Terrain, water and sky are fixtures, not content.)
-    const Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;
-    if (terrain && object->IsUserContent()) {
-        if (ImGui::Button("Snap to terrain")) SnapToTerrain(*object, *terrain);
+    if (scene_ && scene_->HasGround() && object->IsUserContent()) {
+        if (ImGui::Button("Snap to terrain")) SnapToTerrain(*object, *scene_);
         ImGui::SetItemTooltip("Moves the object straight up or down until the bottom of its box rests on the ground.\nOn a slope it rests on the highest ground under it, so it never sinks in.");
     }
 }
@@ -2978,14 +2977,13 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
     const Ray ray = MakePickRay(view, projection, ndcX, ndcY);
     // Where the ray meets the ground (lesson 45). Aiming at the water's plane instead put a click far from the cursor wherever the
     // land stands above or below the water: the river is drawn where you point, on what you see.
-    const Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;
     XMFLOAT3 groundPoint(0.0f, 0.0f, 0.0f);
     float groundDistance = 0.0f;
-    const bool aimAtGround = riverAimAtGround_ && terrain && terrain->Raycast(ray, groundDistance, &groundPoint);
+    const bool aimAtGround = riverAimAtGround_ && scene_ && scene_->RaycastGround(ray, groundDistance, &groundPoint);   // a world or a single terrain
     // The overlay is drawn ON the ground (or on the water where that is higher), a hair above so it does not flicker.
     auto overlayY = [&](float worldX, float worldZ, float surfaceY) {
         float groundY = 0.0f;
-        if (terrain && riverAimAtGround_ && terrain->GetHeightAt(worldX, worldZ, groundY)) return (std::max)(groundY, surfaceY) + 0.15f;
+        if (scene_ && riverAimAtGround_ && scene_->GetGroundHeight(worldX, worldZ, groundY)) return (std::max)(groundY, surfaceY) + 0.15f;
         return surfaceY + 0.15f;
     };
     // The mouse's ray meets a horizontal plane at some height: the water's own level, or (lesson 41) the level of a river point
@@ -3155,7 +3153,7 @@ void EditorLayer::HandleRiverEditing(Water* water, const XMFLOAT4X4& view, const
         riverDragIndex_ = -1;
     }
     if (modified) {
-        if (riverFollowGround_ && terrain) FollowTerrainLevels(water, edited);   // the water runs downhill from point to point
+        if (riverFollowGround_ && scene_ && scene_->HasGround()) FollowTerrainLevels(water, edited);   // the water runs downhill from point to point
         if (refit && riverAutoFit_) FitRiverPlane(water, edited);
         water->SetSettings(edited);
     }
@@ -3461,15 +3459,15 @@ void EditorLayer::DrawRiverPathInspector(Water* water, WaterSettings& s, bool& c
         ImGui::SetItemTooltip("How far beyond the water's edge the bank climbs.");
         changed |= ImGui::SliderFloat("Bank height", &s.riverBankHeight, 0.0f, 30.0f, "%.1f above the water");
         ImGui::SetItemTooltip("How high the bank has climbed by the end of its width. Ground higher than that stays as a steep wall,\nso raise this where the land beside the river is high.");
-        Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;
-        if (terrain) {
+        Terrain* terrain = scene_ ? scene_->GetTerrain() : nullptr;   // the carve below still works on a single terrain only (roadmap C3)
+        if (scene_ && scene_->HasGround()) {
             // How far above the water is the ground along the middle line? (A level river through high ground is a canyon.)
             float above = 0.0f;
             const std::vector<RiverPath::Sample>& path = water->GetRiverWorldPath();
             const size_t stride = (std::max<size_t>)(1, path.size() / 128);
             for (size_t i = 0; i < path.size(); i += stride) {
                 float groundY = 0.0f;
-                if (terrain->GetHeightAt(path[i].x, path[i].z, groundY)) above = (std::max)(above, groundY - (s.height + path[i].level));
+                if (scene_->GetGroundHeight(path[i].x, path[i].z, groundY)) above = (std::max)(above, groundY - (s.height + path[i].level));
             }
             ImGui::TextDisabled("Ground on the middle line: up to %.1f above the water.", above);
         }

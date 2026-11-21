@@ -393,6 +393,44 @@ void TerrainWorld::ClearEdits(bool heights, bool paint)
     MarkAllTilesStale();
 }
 
+WorldGroundFunction TerrainWorld::GroundFunction() const
+{
+    WorldGroundFunction f;
+    if (!HasGround()) return f;
+    f.source = source_.get();
+    f.rivers = riversSnapshot_.get();
+    f.grid = settings_.grid;
+    f.bounds = activeBounds_;
+    f.heightScale = settings_.heightScale;
+    return f;
+}
+
+bool TerrainWorld::HeightAt(double worldX, double worldZ, float& heightMetres) const
+{
+    const WorldGroundFunction f = GroundFunction();
+    return f.IsValid() && f.HeightAt(worldX, worldZ, heightMetres);
+}
+
+bool TerrainWorld::NormalAt(double worldX, double worldZ, DirectX::XMFLOAT3& normal) const
+{
+    const WorldGroundFunction f = GroundFunction();
+    WorldVec3 n;
+    if (!f.IsValid() || !f.NormalAt(worldX, worldZ, n)) return false;
+    normal = DirectX::XMFLOAT3(n.x, n.y, n.z);
+    return true;
+}
+
+bool TerrainWorld::RaycastGround(const Ray& ray, float maxDistance, float& distance, DirectX::XMFLOAT3* point) const
+{
+    const WorldGroundFunction f = GroundFunction();
+    if (!f.IsValid()) return false;
+    float hit = 0.0f;
+    if (!f.Raycast(WorldVec3{ ray.origin.x, ray.origin.y, ray.origin.z }, WorldVec3{ ray.direction.x, ray.direction.y, ray.direction.z }, maxDistance, hit)) return false;
+    distance = hit;
+    if (point) *point = DirectX::XMFLOAT3(ray.origin.x + ray.direction.x * hit, ray.origin.y + ray.direction.y * hit, ray.origin.z + ray.direction.z * hit);
+    return true;
+}
+
 bool TerrainWorld::BuildGroundGrid(double minX, double maxX, double minZ, double maxZ, WorldGroundGrid& out) const
 {
     out = WorldGroundGrid{};
