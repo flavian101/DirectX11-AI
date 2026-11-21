@@ -5,6 +5,7 @@
 #include <d3d11.h>
 #include <memory>
 #include <string>
+#include <utility>
 
 // What the pixel shader should show instead of the final lit colour. Debug aids: when a normal-mapped
 // surface looks wrong, these tell you WHICH stage is wrong (see lesson 16).

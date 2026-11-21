@@ -13,6 +13,9 @@
 #include "Terrain.h"
 #include "TerrainWorld.h"
 #include "Water.h"
+#include <string>
+#include <utility>
+#include <vector>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;

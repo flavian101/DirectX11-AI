@@ -5,6 +5,7 @@
 #include "Heightfield.h"
 #include "HeightfieldEdit.h"
 #include "RiverPath.h"
+#include <vector>
 
 struct RiverCarveSettings {
 	float level = 0.5f;       // the water's surface, as a sample value

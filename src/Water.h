@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include "Renderable.h"
 #include "SceneObject.h"
 #include "Material.h"

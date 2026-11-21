@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <vector>
+#include <algorithm>
 
 static int g_failures = 0;
 #define CHECK(condition) do { if (!(condition)) { std::printf("FAIL line %d: %s\n", __LINE__, #condition); ++g_failures; } } while (0)

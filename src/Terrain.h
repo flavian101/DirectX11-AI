@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 #include "Heightfield.h"
 #include "WorldGrid.h"
 #include "WorldRivers.h"
@@ -127,6 +128,7 @@ struct TerrainTile {
 	int lod = 0;                                     // its level of detail (WorldGridSettings::ForLod): `grid` is already the grid at this level
 	std::shared_ptr<const WorldHeightSource> source; // the ground, shared by every tile of the world
 	std::shared_ptr<const std::vector<WorldRiver>> rivers;   // the rivers dug into the ground (lesson 51); null or empty: none
+	bool capBottom = false;                          // every tile of a BOUNDED world also draws a bottom at the floor, so the world is a closed block (roadmap X1)
 	unsigned char outerEdges = 0;                    // TerrainEdgeBit mask: the sides of this tile that are the edge of a BOUNDED world. They are closed with a wall down to a floor (roadmap X1)
 };
 

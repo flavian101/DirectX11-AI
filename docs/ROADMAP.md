@@ -185,9 +185,11 @@ Suspects, most likely first. Each one has a check that tells it from the others:
   (`ChunkWallEdges`); the seams between tiles keep their ordinary short skirts. The indices are the shared ones of T3 (only vertex positions change), so a wall costs nothing extra.
 - Acceptance: `terrain_walls_test.cpp`: a side is a wall exactly when the tile across it is not part of the world (checked for every rectangle of up to 5 x 5 tiles, negative
   tile numbers included); an endless world has none; a one-tile world has all four; only the outline chunks of a tile carry a wall; the floor is always below the lowest ground.
-  Still open (editor): from the side and from below the edge, no black void shows between the ground and the floor, and the wall's lighting and texture look right. The
-  wall reuses the edge vertex's texture coordinates, so the layers are stretched down it; a darker or rock material for walls is a later polish.
-- Not done: a cap under the floor (from below you see into the block), and a different material for the wall.
+  Still open (editor): from the side and from below, no void shows between the ground and the floor, and the bottom looks acceptable (it is lit by the ambient light only).
+- `[x]` The bottom (added after the author's screenshot from below showed the block open underneath): part 5 of every chunk mesh, two triangles facing down on four extra
+  corner vertices at the floor, the same at every level of detail; every tile of a bounded world draws it (`TerrainTile::capBottom`, bit `kTerrainCapPartBit` of the part mask).
+  The vertex normal points down, so from below it is lit as a floor. The first five parts are exactly what T3 froze (the golden hash covers them and is unchanged).
+- Not done: a different material for the wall and the bottom (they reuse the edge's texture coordinates; the layers are stretched down the wall, which the author's screenshot shows).
 
 ### M2. Finish the world, then delete the single `Terrain`
 

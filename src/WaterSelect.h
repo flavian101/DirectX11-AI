@@ -8,6 +8,7 @@
 #include "RiverPath.h"
 #include <cmath>
 #include <vector>
+#include <algorithm>
 
 namespace WaterSelect {
 

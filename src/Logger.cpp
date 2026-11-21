@@ -4,6 +4,7 @@
 #include <iostream>
 #include <iomanip>
 #include <sstream>
+#include <utility>
 
 namespace {
 const char* LevelLabel(Logger::LogLevel level)

@@ -23,7 +23,12 @@ enum TerrainEdgeBit : unsigned char {
 struct TerrainWalls {
     unsigned char edges = 0;   // TerrainEdgeBit mask of the TILE's sides that are the edge of the world
     float floorY = 0.0f;       // the y (metres, in the tile's own space) the wall goes down to
+    bool cap = false;          // the tile also has a bottom at the floor, so the block is closed from below (every tile of a bounded world)
 };
+
+// The bottom of a chunk is part 5 of its mesh (after the surface and the four skirts): two triangles on four extra vertices at the floor,
+// facing down. A tile of a bounded world draws it; every other tile leaves this bit of the part mask clear.
+constexpr unsigned char kTerrainCapPartBit = 16;
 
 // Where the floor is: below the lowest ground (height 0), by a tenth of the world's height, at least 10 m.
 inline float WallFloorFor(float heightScale) { return -(std::max)(10.0f, heightScale * 0.1f); }

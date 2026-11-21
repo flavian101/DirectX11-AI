@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include "ShaderSlots.h"
 #include <filesystem>
+#include <utility>
 
 SurfaceMaterial::SurfaceMaterial(ID3D11Device* device) : device_(device)
 {

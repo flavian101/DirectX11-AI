@@ -10,7 +10,8 @@
 static int g_failures = 0;
 #define CHECK(condition) do { if (!(condition)) { std::printf("FAIL line %d: %s\n", __LINE__, #condition); ++g_failures; } } while (0)
 
-// The vertex layout BuildChunkVertices makes: the (cx+1) x (cz+1) grid row by row, then the skirts north, south, west, east.
+// The vertex layout BuildChunkVertices makes: the (cx+1) x (cz+1) grid row by row, then the skirts north, south, west, east, then the
+// four corners of the bottom (north-west, north-east, south-west, south-east).
 struct P { float x, y, z; };
 static std::vector<P> MakeVertices(int cx, int cz)
 {
@@ -20,6 +21,8 @@ static std::vector<P> MakeVertices(int cx, int cz)
     for (int x = 0; x <= cx; ++x) v.push_back({ float(x), -1.0f, float(cz) });     // south
     for (int z = 0; z <= cz; ++z) v.push_back({ 0.0f, -1.0f, float(z) });          // west
     for (int z = 0; z <= cz; ++z) v.push_back({ float(cx), -1.0f, float(z) });     // east
+    v.push_back({ 0.0f, -2.0f, 0.0f }); v.push_back({ float(cx), -2.0f, 0.0f });          // the bottom, at the floor
+    v.push_back({ 0.0f, -2.0f, float(cz) }); v.push_back({ float(cx), -2.0f, float(cz) });
     return v;
 }
 
@@ -38,9 +41,10 @@ static void TestCountsForTheFullChunk()
     const uint32_t surface[3] = { 32 * 32 * 6, 16 * 16 * 6, 8 * 8 * 6 };
     const uint32_t skirt[3] = { 32 * 6, 16 * 6, 8 * 6 };
     for (int lod = 0; lod < 3; ++lod) {
-        CHECK(levels[lod].partIndexCounts.size() == 5);
+        CHECK(levels[lod].partIndexCounts.size() == 6);   // the surface, four skirts, the bottom
         CHECK(levels[lod].partIndexCounts[0] == surface[lod]);
         for (int edge = 1; edge <= 4; ++edge) CHECK(levels[lod].partIndexCounts[edge] == skirt[lod]);
+        CHECK(levels[lod].partIndexCounts[5] == 6);       // the bottom: two triangles at every level
         uint32_t total = 0;
         for (uint32_t part : levels[lod].partIndexCounts) total += part;
         CHECK(total == levels[lod].indices.size());
@@ -54,7 +58,7 @@ static void TestInRangeAndLastLineKept()
     for (const auto& size : sizes) {
         const int cx = size[0], cz = size[1];
         const std::vector<MeshLevel> levels = BuildChunkIndexLevels(cx, cz, 3);
-        const size_t vertexCount = static_cast<size_t>(cx + 1) * (cz + 1) + 2 * (cx + 1) + 2 * (cz + 1);
+        const size_t vertexCount = static_cast<size_t>(cx + 1) * (cz + 1) + 2 * (cx + 1) + 2 * (cz + 1) + 4;   // grid, skirts, the bottom's corners
         for (const MeshLevel& level : levels) {
             bool inRange = level.indices.size() % 3 == 0 && !level.indices.empty();
             for (uint32_t i : level.indices) inRange = inRange && i < vertexCount;
@@ -78,11 +82,12 @@ static void TestWinding()
     const P outward[4] = { { 0, 0, -1 }, { 0, 0, 1 }, { -1, 0, 0 }, { 1, 0, 0 } };   // north, south, west, east skirts face away from the chunk
     for (const MeshLevel& level : levels) {
         size_t cursor = 0;
-        for (int part = 0; part < 5; ++part) {
+        for (int part = 0; part < 6; ++part) {
             bool consistent = true;
             for (size_t t = cursor; t < cursor + level.partIndexCounts[part]; t += 3) {
                 const P n = Normal(v, level.indices, t);
                 if (part == 0) consistent = consistent && n.y > 0.0f && std::fabs(n.x) < 1e-6f && std::fabs(n.z) < 1e-6f;   // the surface: every triangle the same way
+                else if (part == 5) consistent = consistent && n.y < 0.0f && std::fabs(n.x) < 1e-6f && std::fabs(n.z) < 1e-6f;   // the bottom: facing down
                 else consistent = consistent && n.x * outward[part - 1].x + n.z * outward[part - 1].z > 0.0f;               // a skirt: facing outward
             }
             CHECK(consistent);
@@ -91,13 +96,15 @@ static void TestWinding()
     }
 }
 
+// Hashes the surface and the four skirts only (parts 0 to 4): exactly what the code made before the bottom (part 5) was added at the end.
 static uint64_t HashLevels(const std::vector<MeshLevel>& levels)
 {
     uint64_t h = 1469598103934665603ull;
     auto mix = [&](uint32_t value) { for (int b = 0; b < 4; ++b) { h ^= (value >> (8 * b)) & 0xFF; h *= 1099511628211ull; } };
     for (const MeshLevel& level : levels) {
-        for (uint32_t part : level.partIndexCounts) mix(part);
-        for (uint32_t index : level.indices) mix(index);
+        size_t kept = 0;
+        for (int part = 0; part < 5; ++part) { mix(level.partIndexCounts[part]); kept += level.partIndexCounts[part]; }
+        for (size_t i = 0; i < kept; ++i) mix(level.indices[i]);
     }
     return h;
 }
@@ -106,6 +113,21 @@ static uint64_t HashLevels(const std::vector<MeshLevel>& levels)
 // the triangles of every terrain changed: find out why before touching the constants.
 static const uint64_t kGolden32x32 = 0x20f979f749eb7116ull;
 static const uint64_t kGolden10x7 = 0x7ae2757192f416f8ull;
+
+static void TestTheBottom()
+{
+    // The bottom is the LAST part of every level, built on the four vertices after the skirts' vertices, the same at every level of detail.
+    const int cx = 32, cz = 32;
+    const std::vector<MeshLevel> levels = BuildChunkIndexLevels(cx, cz, 3);
+    const uint32_t capBase = static_cast<uint32_t>((cx + 1) * (cz + 1) + 2 * (cx + 1) + 2 * (cz + 1));
+    for (const MeshLevel& level : levels) {
+        const size_t first = level.indices.size() - 6;
+        const uint32_t expected[6] = { capBase, capBase + 1, capBase + 2, capBase + 1, capBase + 3, capBase + 2 };
+        bool same = true;
+        for (int k = 0; k < 6; ++k) same = same && level.indices[first + k] == expected[k];
+        CHECK(same);
+    }
+}
 
 static void TestGolden()
 {
@@ -121,6 +143,7 @@ int main()
     TestCountsForTheFullChunk();
     TestInRangeAndLastLineKept();
     TestWinding();
+    TestTheBottom();
     TestGolden();
     if (g_failures == 0) std::printf("All terrain chunk index tests passed.\n");
     return g_failures == 0 ? 0 : 1;

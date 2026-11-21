@@ -241,7 +241,7 @@ void BuildChunkVertices(const Heightfield& field, int x0, int z0, int x1, int z1
 	const int vertsX = cellsInX + 1;
 
 	vertices.clear();
-	vertices.reserve(static_cast<size_t>(vertsX) * (cellsInZ + 1) + 2 * static_cast<size_t>(vertsX + cellsInZ + 1));
+	vertices.reserve(static_cast<size_t>(vertsX) * (cellsInZ + 1) + 2 * static_cast<size_t>(vertsX + cellsInZ + 1) + 4);
 	boundsMin = XMFLOAT3(FLT_MAX, FLT_MAX, FLT_MAX);
 	boundsMax = XMFLOAT3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
 	for (int z = z0; z <= z1; ++z) {
@@ -277,6 +277,23 @@ void BuildChunkVertices(const Heightfield& field, int x0, int z0, int x1, int z1
 	for (int x = 0; x <= cellsInX; ++x) addSkirtVertex(x, cellsInZ, kEdgeSouth, 0.0f, 1.0f);
 	for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(0, z, kEdgeWest, -1.0f, 0.0f);
 	for (int z = 0; z <= cellsInZ; ++z) addSkirtVertex(cellsInX, z, kEdgeEast, 1.0f, 0.0f);
+
+	// THE BOTTOM (roadmap X1): the four corners of the chunk at the floor, facing down. Always four vertices (the index buffers are shared
+	// by every chunk of this size); a tile that is not part of a bounded world never draws them, so they stay where the surface is.
+	auto addCapVertex = [&](int x, int z) {
+		Vertex corner = vertices[static_cast<size_t>(z) * vertsX + x];
+		if (walls.cap) {
+			corner.position.y = walls.floorY;
+			corner.normal = XMFLOAT3(0.0f, -1.0f, 0.0f);
+			corner.tangent = XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f);
+			boundsMin.y = (std::min)(boundsMin.y, corner.position.y);
+		}
+		vertices.push_back(corner);
+	};
+	addCapVertex(0, 0);
+	addCapVertex(cellsInX, 0);
+	addCapVertex(0, cellsInZ);
+	addCapVertex(cellsInX, cellsInZ);
 }
 
 Model* BuildTerrainModel(ID3D11Device* device, const Heightfield& field, std::vector<TerrainChunk>& outChunks,
@@ -800,7 +817,7 @@ void Terrain::DrawChunks(ID3D11DeviceContext* ctx, const Shader* shaderOverride,
 		const unsigned char mask = gridMatches
 			? ComputeSkirtMask(static_cast<int>(i % chunksX_), static_cast<int>(i / chunksX_), chunksX_, chunksZ_, drawList_)
 			: static_cast<unsigned char>(15);   // (cannot happen) fall back to every skirt rather than risk a crack
-		partMasks_[i] = mask;
+		partMasks_[i] = static_cast<unsigned char>(mask | (tile_.capBottom ? kTerrainCapPartBit : 0));   // the bottom of a bounded world (X1)
 		for (int edge = 0; edge < 4; ++edge) {
 			if (mask & (1 << edge)) stats.trianglesDrawn += chunks_[i].skirtTriangles[lod][edge];
 		}
@@ -1029,8 +1046,9 @@ bool Terrain::PatchTile(const TileSampleRect& rect, bool groundIsFinal)
 TerrainWalls Terrain::Walls() const
 {
 	TerrainWalls walls;
-	if (IsTile() && tile_.outerEdges != 0) {
+	if (IsTile() && (tile_.outerEdges != 0 || tile_.capBottom)) {
 		walls.edges = tile_.outerEdges;
+		walls.cap = tile_.capBottom;
 		walls.floorY = WallFloorFor(heightfield_.GetLayout().heightScale);
 	}
 	return walls;

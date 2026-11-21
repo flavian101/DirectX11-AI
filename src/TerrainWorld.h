@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 // A world of terrain tiles that loads and unloads itself around the camera (lessons 48 and 49).
 // The maths is in WorldGrid.h (which tiles, where, what height); this is the part that talks to the scene and the GPU.
 #include "SceneObject.h"

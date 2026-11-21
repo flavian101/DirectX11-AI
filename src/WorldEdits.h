@@ -16,6 +16,7 @@
 #include "HeightfieldEdit.h"
 #include "TerrainPaint.h"
 #include "WorldGrid.h"
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -23,6 +24,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <utility>
 
 using LatticeIndex = std::int64_t;
 

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
 void LatticeRect::Include(LatticeIndex x, LatticeIndex z)
 {

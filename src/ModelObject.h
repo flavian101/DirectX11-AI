@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <cstdint>
 
 // One SurfaceMaterial built from an imported material: its textures, colour factors, roughness and metallic. Shared by
 // ModelObject and ScatterObject, so a tree looks the same whether you placed it by hand or scattered a thousand of it.

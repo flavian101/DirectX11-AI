@@ -1,4 +1,5 @@
 #include "TerrainChunkIndices.h"
+#include <utility>
 #include <cstdint>
 
 std::vector<MeshLevel> BuildChunkIndexLevels(int cellsInX, int cellsInZ, int lodCount)
@@ -9,6 +10,7 @@ std::vector<MeshLevel> BuildChunkIndexLevels(int cellsInX, int cellsInZ, int lod
 	const int southBase = northBase + (cellsInX + 1);             // z = cellsInZ edge
 	const int westBase = southBase + (cellsInX + 1);              // x = 0 edge, one per z
 	const int eastBase = westBase + (cellsInZ + 1);               // x = cellsInX edge
+	const int capBase = eastBase + (cellsInZ + 1);                // the four corners of the bottom: north-west, north-east, south-west, south-east
 	auto grid = [&](int x, int z) { return static_cast<uint32_t>(z * vertsX + x); };
 
 	// LEVELS OF DETAIL: the same vertices, connected more coarsely. Level L skips grid lines
@@ -72,6 +74,13 @@ std::vector<MeshLevel> BuildChunkIndexLevels(int cellsInX, int cellsInZ, int lod
 		for (int edge = 0; edge < 4; ++edge) {
 			level.partIndexCounts.push_back(static_cast<uint32_t>(skirtIndices[edge].size()));
 			level.indices.insert(level.indices.end(), skirtIndices[edge].begin(), skirtIndices[edge].end());
+		}
+		// Part 5: the bottom (roadmap X1), two triangles facing down on the four corner vertices at the floor. The same at every level of detail.
+		{
+			const uint32_t nw = capBase, ne = capBase + 1, sw = capBase + 2, se = capBase + 3;
+			const uint32_t cap[6] = { nw, ne, sw,  ne, se, sw };
+			level.partIndexCounts.push_back(6);
+			level.indices.insert(level.indices.end(), cap, cap + 6);
 		}
 		levels.push_back(std::move(level));
 	}
