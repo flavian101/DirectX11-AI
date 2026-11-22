@@ -30,6 +30,7 @@ struct HeightImportSettings {
     double originX = 0.0, originZ = 0.0;   // world position of the picture's top-left pixel
     float lowestY = 0.0f;          // world Y of the picture's lowest point
     float relief = 100.0f;         // metres from the lowest point to the highest
+    bool deterrace = true;         // 8-bit pictures only: take the stairs out first (HeightDeterrace.h). 16-bit pictures are never touched.
 
     static constexpr double kWidthMin = 1.0, kWidthMax = 100000.0;
     static constexpr float kYMin = -10000.0f, kYMax = 10000.0f;
@@ -38,8 +39,8 @@ struct HeightImportSettings {
 };
 
 struct HeightImportInfo {
-    int minLevel = 0, maxLevel = 0;   // the file's true range, in levels
-    bool flat = false;                // every pixel has one level: the raster is flat at lowestY (the relief has nothing to stretch)
+    float minLevel = 0.0f, maxLevel = 0.0f;   // the range that was fitted, in levels (a de-terraced 8-bit picture can end a little inside the file's own)
+    bool flat = false;                        // every pixel has one level: the raster is flat at lowestY (the relief has nothing to stretch)
 };
 
 // Fills `raster` from `picture`. Returns false (and leaves `raster` alone) for a picture that is not valid.
