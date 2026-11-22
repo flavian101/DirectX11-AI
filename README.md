@@ -18,5 +18,5 @@ cmake -S . -B out/build -G Ninja `
 ```
 ## Docs
 
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) is the single source of truth for the terrain, world, water and scatter plan: current state, known bugs, milestones and the rules the code must keep.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) is the single source of truth for the terrain and water plan. `python tools/roadmap.py status` shows where it stands.
 - [`docs/lessons/`](docs/lessons/) explains how each piece was built. Lessons are history and are not updated when the plan changes.

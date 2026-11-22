@@ -318,6 +318,11 @@ if(BUILD_TESTS)
     add_executable(ImageDownscaleTests tests/image_downscale_test.cpp)
     target_include_directories(ImageDownscaleTests PRIVATE ${CMAKE_SOURCE_DIR}/editor)
     add_test(NAME ImageDownscale COMMAND ImageDownscaleTests)
+    # docs/ROADMAP.md is checked against the tests and the CMake file: see "Tracking" in the roadmap.
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME Roadmap COMMAND ${Python3_EXECUTABLE} tools/roadmap.py check WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
 endif()
 
 if(BUILD_EDITOR)
