@@ -59,10 +59,10 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - What: `HeightPicture` reads an 8- or 16-bit PNG as integer levels. `ImportHeightRaster` maps it linearly to metres (`lowestY`, `relief`).
   - Tests: `tests/height_raster_test.cpp`
   - Acceptance: for the dark-alien picture the raster has exactly the file's 6,425 distinct values, the minimum is `lowestY`, the maximum is `lowestY + relief`, the mapping is monotonic and **no pixel is clamped**: the 20,954 pixels above the old white point keep their 1,246 different heights. (Numbers measured independently with Python before the test was written; the test was also run against a deliberately clamping mutant and fails on it.)
-- **H2** `[ ]` Fit, not clip: range statistics
+- **H2** `[~]` Fit, not clip: range statistics
   - What: true range, share of the area below a given Y (for example the sea), typical slope. Percentile auto-levels are not carried over.
   - Tests: `tests/height_stats_test.cpp`
-  - Acceptance: the share below the lowest height is 0 and just above it is 12.436% for the dark-alien picture; the peak's top 20% is present in the raster.
+  - Acceptance: for the dark-alien picture the share below the lowest height is 0 and just above it is 12.436% (521,605 of 4,194,304 samples); the 21,406 samples above 161.5 m are all present; the mean slope between neighbouring pixels is 54.86 degrees at 240 m of relief (a fact H3 has to deal with). Reference numbers computed independently in Python; two deliberate mutants fail the test.
 - **H3** `[ ]` Smooth sampling and area-average resampling
   - What: bicubic (C1) sampling with no clamp; one area-average down to the lattice spacing when the raster is finer than the cell size. Replaces the mip pyramid and prefilter.
   - Tests: `tests/height_sample_test.cpp`
