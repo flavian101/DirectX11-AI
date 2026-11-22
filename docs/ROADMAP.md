@@ -55,10 +55,10 @@ Measured on `assets/dark alien/Height Map.png` (2048 x 2048, 16-bit):
 ### M1. Rewrite the height system
 Pure logic first (no Direct3D, built and tested on any compiler), then wired into the editor in H7.
 
-- **H1** `[ ]` HeightPicture and HeightRaster: import without clipping
+- **H1** `[~]` HeightPicture and HeightRaster: import without clipping
   - What: `HeightPicture` reads an 8- or 16-bit PNG as integer levels. `ImportHeightRaster` maps it linearly to metres (`lowestY`, `relief`).
   - Tests: `tests/height_raster_test.cpp`
-  - Acceptance: for the dark-alien picture the raster has exactly the file's 6,425 distinct values, the minimum is `lowestY`, the maximum is `lowestY + relief`, the mapping is monotonic and **no pixel is clamped**.
+  - Acceptance: for the dark-alien picture the raster has exactly the file's 6,425 distinct values, the minimum is `lowestY`, the maximum is `lowestY + relief`, the mapping is monotonic and **no pixel is clamped**: the 20,954 pixels above the old white point keep their 1,246 different heights. (Numbers measured independently with Python before the test was written; the test was also run against a deliberately clamping mutant and fails on it.)
 - **H2** `[ ]` Fit, not clip: range statistics
   - What: true range, share of the area below a given Y (for example the sea), typical slope. Percentile auto-levels are not carried over.
   - Tests: `tests/height_stats_test.cpp`
