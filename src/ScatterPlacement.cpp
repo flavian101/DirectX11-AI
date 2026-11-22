@@ -101,14 +101,14 @@ struct Candidate {
     ScatterSample ground;
 };
 
-void Evaluate(const ScatterGround& ground, const ScatterRules& rules, const ScatterRect& extent, int i, int j, Candidate& c)
+void Evaluate(const ScatterGroundSource& ground, const ScatterRules& rules, const ScatterRect& extent, int i, int j, Candidate& c)
 {
     c.x = (static_cast<float>(i) + Unit(Hash(i, j, rules.seed, 1u))) * rules.spacing;
     c.z = (static_cast<float>(j) + Unit(Hash(i, j, rules.seed, 2u))) * rules.spacing;
     c.priority = Hash(i, j, rules.seed, 3u);
     c.accepted = false;
     if (c.x < extent.minX || c.x >= extent.maxX || c.z < extent.minZ || c.z >= extent.maxZ) return;
-    if (!SampleScatterGround(ground, c.x, c.z, c.ground)) return;
+    if (!ground.Sample(c.x, c.z, c.ground)) return;
 
     if (c.ground.y < rules.minHeight || c.ground.y > rules.maxHeight) return;
     const float slope = std::acos(Saturate(c.ground.normal[1])) * (180.0f / kPi);
@@ -212,6 +212,10 @@ ScatterRect ScatterGroundExtent(const ScatterGround& g)
     return { g.posX - halfX, g.posZ - halfZ, g.posX + halfX, g.posZ + halfZ };
 }
 
+bool ScatterGround::IsValid() const { return ScatterGroundIsValid(*this); }
+ScatterRect ScatterGround::Extent() const { return ScatterGroundExtent(*this); }
+bool ScatterGround::Sample(float x, float z, ScatterSample& out) const { return SampleScatterGround(*this, x, z, out); }
+
 bool SampleScatterGround(const ScatterGround& g, float x, float z, ScatterSample& out)
 {
     if (!ScatterGroundIsValid(g)) return false;
@@ -232,15 +236,15 @@ bool SampleScatterGround(const ScatterGround& g, float x, float z, ScatterSample
     return true;
 }
 
-int GenerateScatter(const ScatterGround& ground, const ScatterRules& requested, const ScatterRect& wanted, std::vector<ScatterInstance>& out,
+int GenerateScatter(const ScatterGroundSource& ground, const ScatterRules& requested, const ScatterRect& wanted, std::vector<ScatterInstance>& out,
                     std::vector<std::uint8_t>* variantOut)
 {
-    if (!ScatterGroundIsValid(ground)) return 0;
+    if (!ground.IsValid()) return 0;
     ScatterRules rules = requested;
     ClampScatterRules(rules);
 
     // Only the part of the area that is on the terrain can hold anything.
-    const ScatterRect extent = ScatterGroundExtent(ground);
+    const ScatterRect extent = ground.Extent();
     const ScatterRect area{ (std::max)(wanted.minX, extent.minX), (std::max)(wanted.minZ, extent.minZ),
                             (std::min)(wanted.maxX, extent.maxX), (std::min)(wanted.maxZ, extent.maxZ) };
     if (area.IsEmpty()) return 0;

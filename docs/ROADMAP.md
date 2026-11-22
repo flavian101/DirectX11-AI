@@ -357,7 +357,7 @@ feeds these parts or what wraps them, not how they work.
 | S2 | Built-in rocks and a starter scatter | very low | `[x]` |
 | S3 | ~~Groups with inherited defaults~~ | | dropped: a biome recipe (S4) lists its species, which is the same job. Revisit only if the species list gets long in practice |
 | S11 | Clean-up before anything new (no behaviour change) | low | `[x]` lessons 52, 53; checked in the editor by the author |
-| S12 | One ground interface and cells per tile (this is C2) | medium-high | `[ ]` |
+| S12 | One ground interface and cells per tile (this is C2) | medium-high | `[~]` stage 1 done (lesson 62); stage 2, the runtime, is next |
 | S4 | Biomes as data, rule-based | low-medium | `[ ]` |
 | S13 | Water depth and exclusion masks (roads, buildings) | medium | `[ ]` |
 | S6 | Painted `BiomeMap` (a second texture beside the splat map) | medium | `[ ]` |
@@ -380,18 +380,22 @@ feeds these parts or what wraps them, not how they work.
 - Acceptance: all existing scatter tests pass. `scatter_golden_test.cpp` hashes the instances of `ScatterSettings::Starter()` over a fixed ground; the hash was
   recorded **before** the first deletion (commit `848a23f`, g++) and must not change. Hashes are per compiler: run it once on the unchanged code on your machine and use your numbers if they differ (lesson 52). Adding a rule now touches four files, not six: the struct and `operator==` (`ScatterPlacement.h`, where a forgotten `operator==` stops the build), the clamp (`ScatterPlacement.cpp`), the JSON list (`SceneJson.h`) and the inspector (`ScatterInspector.cpp`).
 
-**S12. One ground interface and cells per tile (C2)** `[ ]`
-- `SampleScatterGround` is already the only door through which placement reads the ground. Replace `ScatterGround` (a heightfield pointer, a splat pointer and a
-  transform) with a small interface: `Sample(x, z)` gives a `ScatterSample` (height, normal, layer weights; later biome weights and water depth).
-  Two implementations: one `Terrain` (legacy, until M2 deletes it) and the world's ground function (decision 12).
-- Cells belong to tiles. A tile that streams in makes its cells, a tile that unloads drops them, and a changed tile (sculpt, paint, river) marks only its own cells
-  dirty, by the tile's revision. This replaces the one grid over one terrain's extent.
-- Instance buffers per tile (or per small group of tiles) instead of one per species for everything. `maxInstancesPerSpecies` becomes a limit on the loaded
-  area, so the cut falls by distance, not by buffer order.
-- Split `ScatterObject.cpp` into model and material cache, cell scheduling and upload, and culling, level of detail and drawing.
-- Acceptance (`scatter_ground_test.cpp`): on a one-tile world the instances equal those of a single `Terrain` with the same heights and layers; the cells on both
-  sides of a tile border give the union (no seam, nothing doubled); streaming a tile out and in again gives the same instances. In the editor, a forest grows on
-  streamed tiles and leaves with them. Frame time on a 3 x 3 world is read from the timers: not measured.
+**S12. One ground interface and cells per tile (C2)** `[~]` (stage 1 written and unit-tested in lesson 62; stages 2 and 3 open)
+- **Design, revised after reading `ScatterObject`** (it keeps one fixed grid of 32 m cells over the terrain's extent, species cells in vectors indexed by that grid, one instance buffer per species):
+  scatter reads the **finished tiles that are loaded, at full detail** (their heightfield with apron and their final layer weights, paint included), because that is exactly what the player sees.
+  A tile drawn at a coarser level is not used: its coarser layer weights would put trees somewhere else once it sharpens. The grid stays, but for a world it is a **window** (a bounded world
+  smaller than the window uses its own extent) that follows the camera; a cell is placed only when the tiles around it are ready; a tile's surface revision marks its cells dirty.
+- `[x]` **Stage 1: the interface.** `ScatterGroundSource` (`IsValid`, `Extent`, `Sample`, `IsReady`) is all the placement knows about the ground. `ScatterGround` (one terrain) implements it and is
+  unchanged in behaviour (the S11 golden hash and every placement test pass untouched). `ScatterTileGround` (pure) answers from the loaded tiles: a point belongs to the tile that contains it,
+  `IsReady(area)` is false while a tile that touches the area is missing (tiles beyond a bounded world's edge are not waited for).
+- `[ ]` **Stage 2: the runtime.** `ScatterObject::Refresh` takes the scene instead of `const Terrain*`: a world with ground gives a `ScatterTileGround` of its loaded full-detail tiles; otherwise the single
+  terrain as before. The window follows the camera and re-anchors in whole-cell steps; `GenerateCells` skips (and keeps dirty) a cell whose area, grown by two spacings, is not ready; a tile that
+  arrives, is replaced or is patched marks its own cells dirty.
+- `[ ]` **Stage 3: the cleanup.** One instance buffer per tile (or small group) instead of per species for everything; `maxInstancesPerSpecies` per loaded area; split `ScatterObject.cpp` into the model and
+  material cache, cell scheduling and upload, and culling, level of detail and drawing. After C3, the single-terrain path goes.
+- Acceptance (`scatter_tile_ground_test.cpp`, stage 1): the ground is continuous across tile borders (0.007 m, normal 0.0002); `IsReady` is false exactly while a touching tile is missing; the same 6,840 trees
+  whatever order 9 tiles arrived in and after a tile leaves and comes back; placing the area at once equals placing it in cells of 32 m or 100 m that cross tile borders (no tree twice, none missing);
+  a cell on a tile border has 7 trees before its neighbour arrives and 14 after, which is why a cell must wait for `IsReady`. Still open (stage 2, editor): a forest grows on streamed tiles and leaves with them.
 
 **S4. Biomes as data, rule-based** `[ ]`
 - Decision 11 (section 4): a biome is a set of overlapping weights on the ground, separate from the texture layers. A texture says how the ground looks; a biome

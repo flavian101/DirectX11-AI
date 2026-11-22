@@ -122,22 +122,11 @@ void ClampScatterSpeciesRules(ScatterSpeciesRules& rules);
 // Puts every value into a range the placement can work with (a spacing of 0 would mean infinitely many objects).
 void ClampScatterRules(ScatterRules& rules);
 
-// The terrain as the placement sees it. All pointers are borrowed and read-only.
-struct ScatterGround {
-    const Heightfield* field = nullptr;
-    const SplatMap* splat = nullptr;   // the FINAL weights (baked rules + paint); null or empty = all grass
-    float posX = 0.0f, posY = 0.0f, posZ = 0.0f;       // the terrain's position (its local origin) in the world
-    float scaleX = 1.0f, scaleY = 1.0f, scaleZ = 1.0f; // and its scale. (The terrain is never rotated.)
-};
-bool ScatterGroundIsValid(const ScatterGround& ground);
-
 // A rectangle on the ground plane, in world X and Z. Half-open: minX <= x < maxX.
 struct ScatterRect {
     float minX = 0.0f, minZ = 0.0f, maxX = 0.0f, maxZ = 0.0f;
     bool IsEmpty() const { return maxX <= minX || maxZ <= minZ; }
 };
-// Where the terrain is, in world X and Z.
-ScatterRect ScatterGroundExtent(const ScatterGround& ground);
 
 // What the placement learns about the ground at one point. Exposed so tests (and tools) can ask the same question.
 struct ScatterSample {
@@ -145,6 +134,38 @@ struct ScatterSample {
     float normal[3] = { 0.0f, 1.0f, 0.0f };   // unit WORLD-space normal (a stretched terrain has steeper normals)
     float weights[kSplatChannels] = { 1.0f, 0.0f, 0.0f, 0.0f };   // grass, rock, sand, snow: add up to 1
 };
+
+// THE GROUND, as the placement asks about it (roadmap S12). The placement needs three things of any ground and nothing else: where it
+// may have ground, whether it has any at a point, and what it is like there. One terrain answers from its heightfield (ScatterGround
+// below); a world answers from its loaded tiles (ScatterTileGround). The placement never learns which.
+class ScatterGroundSource {
+public:
+    virtual ~ScatterGroundSource() = default;
+    virtual bool IsValid() const = 0;
+    // Where there can be ground, in world X and Z (half-open). Candidates outside it are never placed.
+    virtual ScatterRect Extent() const = 0;
+    // False if (x, z) has no ground (off the terrain, or on a tile that is not loaded).
+    virtual bool Sample(float x, float z, ScatterSample& out) const = 0;
+    // Can everything inside `area` be answered yet? False while part of it waits for ground that is still loading. A cell is only
+    // placed when the ground around it is ready, so that a tile arriving later never changes what was already placed.
+    virtual bool IsReady(const ScatterRect& /*area*/) const { return true; }
+};
+
+// The terrain as the placement sees it. All pointers are borrowed and read-only.
+struct ScatterGround : ScatterGroundSource {
+    bool IsValid() const override;
+    ScatterRect Extent() const override;
+    bool Sample(float x, float z, ScatterSample& out) const override;
+
+    const Heightfield* field = nullptr;
+    const SplatMap* splat = nullptr;   // the FINAL weights (baked rules + paint); null or empty = all grass
+    float posX = 0.0f, posY = 0.0f, posZ = 0.0f;       // the terrain's position (its local origin) in the world
+    float scaleX = 1.0f, scaleY = 1.0f, scaleZ = 1.0f; // and its scale. (The terrain is never rotated.)
+};
+bool ScatterGroundIsValid(const ScatterGround& ground);
+
+// Where the terrain is, in world X and Z.
+ScatterRect ScatterGroundExtent(const ScatterGround& ground);
 // False if (x, z) is off the terrain.
 bool SampleScatterGround(const ScatterGround& ground, float x, float z, ScatterSample& out);
 
@@ -158,7 +179,7 @@ int ChooseScatterVariant(const ScatterRules& rules, const ScatterSample& ground,
 // Deterministic: the same rules and the same ground always give the same instances, and the instances of a big
 // rectangle are exactly the union of the instances of any tiling of it (no seams, nothing doubled).
 // If `variantOut` is given, one byte per appended instance is appended to it: that instance's variant number.
-int GenerateScatter(const ScatterGround& ground, const ScatterRules& rules, const ScatterRect& area, std::vector<ScatterInstance>& out,
+int GenerateScatter(const ScatterGroundSource& ground, const ScatterRules& rules, const ScatterRect& area, std::vector<ScatterInstance>& out,
                     std::vector<std::uint8_t>* variantOut = nullptr);
 
 // --- The scatter grid: the unit of CULLING, of regeneration and of drawing -------------------------------------------
