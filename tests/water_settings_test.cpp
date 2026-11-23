@@ -149,8 +149,11 @@ static void TestWaveScale()
 	s.waveScale = 0.0f; s.Clamp();
 	CHECK(s.waveScale == WaterSettings::kWaveScaleMin);
 
-	// The author's Scale is part of the sea: it reaches the wave parameters (lengths and heights together).
-	WaterSettings a = WaterSettings::Defaults(WaterBodyType::Ocean), b = a;
+	// The author's Scale is part of the artist's (Spectrum) sea: it reaches the wave parameters (lengths and heights together).
+	// (The Sea style is not scaled: its Scale only exaggerates the height, and the wind decides the lengths. See sea_state_test.)
+	WaterSettings a = WaterSettings::Defaults(WaterBodyType::Ocean), b;
+	a.waveStyle = WaterWaves::Style::Spectrum;
+	b = a;
 	b.waveScale = 2.0f;
 	CHECK(std::abs(b.WaveParams().amplitude - 2.0f * a.WaveParams().amplitude) < 1e-5f);
 	CHECK(std::abs(b.WaveParams().frequency * 2.0f - a.WaveParams().frequency) < 1e-5f);
@@ -177,6 +180,8 @@ static void TestWaveScale()
 	const int cells = 32;   // the default mesh detail
 	for (WavePreset preset : { WavePreset::Calm, WavePreset::Choppy, WavePreset::Stormy }) {
 		WaterSettings sea = WaterSettings::Defaults(WaterBodyType::Ocean);
+		sea.waveStyle = WaterWaves::Style::Spectrum;   // the artist's model: it is the one that needs a scale to fit a big mesh
+		sea.waveCount = 7;                             // (what the Ocean had before the Sea style: sixteen waves reach much finer than a mesh shows)
 		sea.ApplyWavePreset(preset);
 		const float targetCell = std::clamp(6.2831853f / (3.0f * 2.5f * std::max(sea.waveFrequency, 0.05f)), 0.5f, 2.0f);   // as Water::EnsureMesh
 		float kept[4];

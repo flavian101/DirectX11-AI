@@ -65,10 +65,16 @@ public:
 	// The direction the surface travels toward, in WORLD space, as an angle (0 = +X, 90 = +Z). For a river it follows the
 	// body's own rotation, so turning the river turns its flow; for every other type it is the wind direction.
 	float GetTravelDegrees() const;
-	// The scene's wind, pushed in by the scene every frame. The waves are rebuilt only when it actually changed, and only if this
-	// body follows the scene wind.
+	// The scene's wind, pushed in by the scene every frame. The waves are rebuilt only when it actually changed, and only if the wind makes
+	// this body's waves (the Sea style, no current): there is no wind of a body's own any more (lesson 63).
 	void SetSceneWind(const WindSettings& wind);
-	float EffectiveWindDegrees() const { return settings_.windSource == WindSource::Scene ? sceneWind_.direction : settings_.windDirection; }
+	// How far the wind can blow across this body, in metres, along the wind's direction: 0 = unlimited (an Ocean is the open sea). A lake's
+	// waves are small because this is small. Used by the Sea style (SeaState.h).
+	float WindFetch() const;
+	// What the wind makes of this body right now: how tall, how long and how fast its biggest waves are (the editor shows it).
+	const SeaState::Summary& GetSeaSummary() const { return seaSummary_; }
+	// Do the scene's wind and this body's own size make its waves (rather than the artist's values, or a current)?
+	bool WavesFollowWind() const { return settings_.waveStyle == WaterWaves::Style::Sea && !settings_.HasCurrent(); }
 	void SetSettings(const WaterSettings& settings);
 	void Update(float dt) override;
 	void Render(ID3D11DeviceContext* ctx, const RenderView& view) const override;
@@ -176,6 +182,7 @@ private:
 	bool shoreKeyValid_ = false;
 	std::vector<Tile> tiles_;
 	WindSettings sceneWind_;                // the scene's wind as last pushed by the scene (SetSceneWind)
+	SeaState::Summary seaSummary_;          // what that wind makes of this body (RebuildWaves)
 	std::vector<unsigned char> tileDry_;   // per tile: 1 = ground stands above the highest the surface can reach, nothing to draw
 	std::vector<unsigned char> tileOffRiver_;   // per tile: 1 = a river with a curve, and the corridor never comes near this tile
 	int builtMeshDetail_ = -1;

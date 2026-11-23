@@ -250,7 +250,7 @@ void Water::RebuildMesh(const WaterMesh::TileGrid& grid)
 
 float Water::GetTravelDegrees() const
 {
-	if (!settings_.HasCurrent()) return EffectiveWindDegrees();   // the scene's wind, or this body's own direction
+	if (!settings_.HasCurrent()) return sceneWind_.direction;   // the scene's wind (a body has none of its own since lesson 63)
 	// The flow is stored in the body's OWN space: flowAngle 0 = along its +Z. The world matrix turns that direction by the
 	// yaw (rotation about Y), so a local (sin a, cos a) becomes the world direction (sin(a + yaw), cos(a + yaw)).
 	// The editor's angle runs 0 = +X, 90 = +Z, which makes that direction 90 - (a + yaw) degrees.
@@ -262,12 +262,26 @@ WaterWaves::Params Water::CurrentWaveParams() const
 	WaterWaves::Params p = settings_.WaveParams();
 	p.windDegrees = GetTravelDegrees();
 	p.shoreWaves = settings_.shoreWaves;   // waves can grow near a shore: the table's height bound must have room for that
-	if (settings_.windSource == WindSource::Scene && !settings_.HasCurrent()) p.amplitude *= WindWaveScale(sceneWind_);   // a stronger wind, taller waves
 	if (settings_.HasCurrent()) {
 		p.flowSpeed = settings_.flowSpeed;
 		p.spread = (std::min)(p.spread, 0.25f);   // a current has one direction: a wide spread would send waves sideways or upstream
 	}
+	if (WavesFollowWind()) {   // the wind makes the sea (lesson 63): how hard, and over how much water. No scale: a sea is not made bigger to fit a mesh.
+		p.windSpeed = sceneWind_.speed;
+		p.fetch = WindFetch();
+		return p;
+	}
 	return WaterWaves::ScaledBy(p, autoWaveScale_);   // a big body's mesh cannot show small waves: the same sea, bigger (lesson 44)
+}
+
+float Water::WindFetch() const
+{
+	if (settings_.bodyType == WaterBodyType::Ocean) return 0.0f;   // the open sea: no shore upwind, so nothing limits the waves but the wind
+	// The wind's direction in the body's own frame. A body turned by `yaw` about Y sends its local +X to the world direction -yaw
+	// (XMMatrixRotationY), so a world direction at angle a is at angle a + yaw in the body's frame.
+	const float angle = XMConvertToRadians(GetTravelDegrees()) + rotation_.y;
+	const double chord = SeaState::ChordLength(ExtentX(), ExtentZ(), settings_.shape == WaterShape::Ellipse, std::cos(angle), std::sin(angle));
+	return static_cast<float>((std::max)(chord, 1.0));
 }
 
 float Water::FinestCell() const
@@ -281,10 +295,11 @@ void Water::RebuildWaves()
 {
 	// The automatic scale is found for the sea as the author set it (so with the scale of 1), then applied by CurrentWaveParams.
 	autoWaveScale_ = 1.0f;
-	if (settings_.autoWaveScale && gridBuilt_ && !settings_.HasCurrent()) {   // (a river keeps its waves as set: the current carries its look, and its grid is long and thin, not coarse)
+	if (settings_.autoWaveScale && gridBuilt_ && !settings_.HasCurrent() && !WavesFollowWind()) {   // (a river keeps its waves as set: the current carries its look, and its grid is long and thin, not coarse; the wind's sea is never made bigger to fit the mesh)
 		autoWaveScale_ = WaterWaves::ResolvableScale(CurrentWaveParams(), FinestCell());
 	}
 	waves_ = WaterWaves::Build(CurrentWaveParams());
+	seaSummary_ = SeaState::Describe(sceneWind_.speed, WindFetch());
 	UpdateDryTiles();   // how high the surface can reach decides which tiles are safely under the ground
 }
 
@@ -690,7 +705,7 @@ bool Water::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotatio
 	rotation_ = { 0.0f, rotation.y, 0.0f };   // water is level: a body can be turned about the vertical, never tilted (the river's frame, the depth map and IsOverWater all assume it)
 	scale_ = scale;
 	settings_.height = position_.y;   // one source of truth: otherwise the next SetSettings() snaps Y back
-	if (settings_.HasCurrent()) RebuildWaves();   // a current's flow follows the way the body is turned
+	if (settings_.HasCurrent() || WavesFollowWind()) RebuildWaves();   // a current's flow follows the way the body is turned; a wind sea's fetch follows its size and turn
 	EnsureMesh();                      // scaling can change the body's proportions: a river needs a different grid than a pond
 	if (settings_.autoWaveScale) RebuildWaves();   // ...and the size of its cells, so the waves it can show (lesson 44)
 	tileDry_.assign(tiles_.size(), 0);   // moving or scaling changes which ground is under each tile: show all until the map is re-measured
@@ -755,10 +770,10 @@ float Water::LevelAtWorld(float x, float z) const
 
 void Water::SetSceneWind(const WindSettings& wind)
 {
-	if (wind.direction == sceneWind_.direction && wind.strength == sceneWind_.strength) return;
+	if (wind.direction == sceneWind_.direction && wind.speed == sceneWind_.speed) return;
 	sceneWind_ = wind;
-	// A body with its own direction, or with a current, does not listen to the scene wind: nothing to rebuild.
-	if (settings_.windSource == WindSource::Scene && !settings_.HasCurrent()) RebuildWaves();
+	// A current carries its own waves, and the artist's styles do not listen to the wind: nothing to rebuild for them.
+	if (WavesFollowWind()) RebuildWaves();
 }
 
 void Water::RefreshShoreDepth(const std::vector<const Terrain*>& terrains, const std::vector<const TerrainWorld*>& worlds, std::uint64_t groundStamp)

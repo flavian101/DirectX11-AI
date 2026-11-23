@@ -10,11 +10,10 @@ enum class Control : int {
 	WavePresets,       // Calm / Choppy / Stormy
 	Speed,
 	Frequency,
-	WindSource,        // follow the scene's wind, or a direction of its own
 	Spread,            // directional spread
 	Choppiness,
 	WaveCount,
-	WaveModel,         // classic / spectrum
+	WaveModel,         // sea (from the wind) / spectrum / classic
 	Roughness,
 	Swell,             // swell amount, angle, length
 	WaveGroups,
@@ -34,11 +33,10 @@ inline unsigned TypesShowing(Control control)
 	case Control::WavePresets:  return kOcean | kLake | kCustom;
 	case Control::Speed:        return kOcean | kLake | kPond | kCustom;
 	case Control::Frequency:    return kOcean | kLake | kCustom;
-	case Control::WindSource:   return kOcean | kLake | kCustom;          // a river's direction is its current; a pond just follows the scene wind
 	case Control::Spread:       return kOcean | kLake | kCustom;
 	case Control::Choppiness:   return kOcean | kLake | kCustom;
 	case Control::WaveCount:    return kOcean | kCustom;
-	case Control::WaveModel:    return kOcean | kCustom;
+	case Control::WaveModel:    return kOcean | kLake | kPond | kCustom;   // the Sea style (from the wind) is the default of all four; a river is always the artist's model
 	case Control::Roughness:    return kOcean | kLake | kCustom;
 	case Control::Swell:        return kOcean | kCustom;                  // swell needs open water and a free direction
 	case Control::WaveGroups:   return kOcean | kLake | kCustom;

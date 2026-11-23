@@ -79,20 +79,18 @@ struct WaterSettings {
 
 	// --- waves ---
 	float waveAmplitude = 0.35f;
-	float waveScale = 1.0f;       // the WHOLE sea bigger or smaller: every wavelength and every height times this (lesson 44)
-	bool autoWaveScale = true;    // and on top of that, as much bigger as this body's mesh needs to be able to show the waves (a big body has big cells)
+	float waveScale = 1.0f;       // Spectrum and Classic: the WHOLE sea bigger or smaller, every wavelength and every height times this (lesson 44).
+	                              // Sea: only the HEIGHT (an exaggeration: the wavelengths and speeds stay what the wind makes)
+	bool autoWaveScale = true;    // Spectrum and Classic: and on top of that, as much bigger as this body's mesh needs to show the waves. Not used by Sea
 	float waveSpeed = 1.0f;
 	float waveFrequency = 0.6f;   // radians per world unit of the base wave (0.6 = ~10 unit wavelength)
-	// Where the wind comes from: the scene's weather (one wind for everything: Weather.h), or a direction of this body's own.
-	// Scenes saved before the scene wind existed keep the direction they had (they load as Custom).
-	WindSource windSource = WindSource::Scene;
-	float windDirection = 20.0f;  // degrees: the direction the waves travel toward (0 = +X, 90 = +Z). Used when windSource is Custom
 	float directionalSpread = 0.7f;   // 0 = all waves run with the wind (a clean swell), 1 = waves from every which way
 	float choppiness = 0.5f;      // 0 = rounded sine waves, 1 = sharp crests and wide troughs
-	int waveCount = 6;            // 2..12 waves summed. Fewer = cheaper and simpler
-	// The sea model (lesson 34). Classic = the original fixed waves (the five values below are ignored); Spectrum = a wind sea
-	// built from a spectrum, plus a swell, plus wave groups. Scenes saved before this existed load as Spectrum with these defaults.
-	WaterWaves::Style waveStyle = WaterWaves::Style::Spectrum;
+	int waveCount = 6;            // 2..16 waves summed (WaterWaves::kMaxWaves). Fewer = cheaper and simpler
+	// The sea model. Sea (lesson 63) = what the scene's WIND makes: the wind speed and the fetch decide how tall and how long the waves are, their
+	// speed follows from their length, and the amplitude, frequency, speed and roughness below are ignored. Spectrum (lesson 34) = an artist's
+	// wind sea, a swell and wave groups from those values (rivers use it: a current carries its waves). Classic = the original fixed waves.
+	WaterWaves::Style waveStyle = WaterWaves::Style::Sea;
 	float waveRoughness = 0.5f;   // 0 = glassy (small waves die away fast), 1 = rough (many small waves)
 	float swell = 0.3f;           // 0 = none; 1 = a swell nearly as tall as the biggest wind wave. A river has none
 	float swellAngle = 35.0f;     // degrees from the wind: where the swell comes from
@@ -151,7 +149,7 @@ struct WaterSettings {
 	// A current carries everything downstream. Rivers always have one; a Custom body has one when its flow speed is above 0.
 	bool HasCurrent() const { return bodyType == WaterBodyType::River || (bodyType == WaterBodyType::Custom && flowSpeed > 0.0f); }
 	void Clamp();
-	void ApplyWavePreset(WavePreset preset);   // only touches the wave shape values (not wind direction)
+	void ApplyWavePreset(WavePreset preset);   // only touches the artist's wave values (Spectrum style); the Sea style follows the wind
 	void ApplyLook(WaterLook look);            // only touches colours, depth and optics (not waves, level or size)
 	// Sets the type AND the starting values that suit it (waves, ripples, foam, look). Keeps level, size, shape and debug switches.
 	void ApplyBodyType(WaterBodyType type);
@@ -220,12 +218,10 @@ inline void WaterSettings::Clamp()
 	waveScale = std::clamp(waveScale, kWaveScaleMin, kWaveScaleMax);
 	waveSpeed = std::clamp(waveSpeed, 0.0f, kSpeedMax);
 	waveFrequency = std::clamp(waveFrequency, kFrequencyMin, kFrequencyMax);
-	windDirection = std::fmod(windDirection, 360.0f);   // an angle: wrap instead of clamping
-	if (windDirection < 0.0f) windDirection += 360.0f;
 	directionalSpread = clamp01(directionalSpread);
 	choppiness = clamp01(choppiness);
 	waveCount = std::clamp(waveCount, kWaveCountMin, kWaveCountMax);
-	waveStyle = static_cast<WaterWaves::Style>(std::clamp(static_cast<int>(waveStyle), 0, 1));
+	waveStyle = static_cast<WaterWaves::Style>(std::clamp(static_cast<int>(waveStyle), 0, 2));
 	waveRoughness = clamp01(waveRoughness);
 	swell = clamp01(swell);
 	swellAngle = std::clamp(swellAngle, -90.0f, 90.0f);
@@ -233,7 +229,6 @@ inline void WaterSettings::Clamp()
 	waveGroups = std::clamp(waveGroups, 0.0f, kWaveGroupsMax);
 	waveSeed = std::clamp(waveSeed, 0, 9999);
 	shoreShelter = clamp01(shoreShelter);
-	windSource = windSource == WindSource::Custom ? WindSource::Custom : WindSource::Scene;
 	detailNormal = std::clamp(detailNormal, 0.0f, kDetailMax);
 	detailScale = std::clamp(detailScale, kDetailScaleMin, kDetailScaleMax);
 	detailDistance = std::clamp(detailDistance, kDetailDistanceMin, kDetailDistanceMax);
@@ -290,16 +285,18 @@ inline void WaterSettings::ApplyBodyType(WaterBodyType type)
 	switch (type) {
 	case WaterBodyType::Ocean:
 		ApplyLook(WaterLook::Ocean);
-		waveAmplitude = 0.45f; waveSpeed = 1.0f; waveFrequency = 0.5f; directionalSpread = 0.7f; choppiness = 0.55f; waveCount = 7;
+		waveStyle = WaterWaves::Style::Sea; waveScale = 1.0f;   // the open sea: what the scene's wind makes over an unlimited fetch (lesson 63)
+		waveAmplitude = 0.45f; waveSpeed = 1.0f; waveFrequency = 0.5f; directionalSpread = 0.7f; choppiness = 0.55f; waveCount = 16;
 		waveRoughness = 0.5f; swell = 0.5f; swellAngle = 35.0f; swellLength = 2.5f; waveGroups = 0.4f;
 		detailNormal = 0.5f; detailScale = 0.8f; crestFoam = 0.5f; crestFoamThreshold = 0.25f;
 		shoreWaves = 1.0f; swash = 0.6f;   // swells shoal, break and wash up the beach
 		foamScale = 1.0f; foamTrail = 1.8f;   // big white caps that linger behind the crest
 		break;
 	case WaterBodyType::Lake:
-		// Short wind chop that hardly ever breaks: wavelengths a third of the ocean's, a fraction of its height.
+		// Short wind chop that hardly ever breaks. In the Sea style that follows from the lake's own size: the wind only has its length to blow over.
 		ApplyLook(WaterLook::Lake);
-		waveAmplitude = 0.12f; waveSpeed = 0.7f; waveFrequency = 0.9f; directionalSpread = 1.0f; choppiness = 0.2f; waveCount = 5;
+		waveStyle = WaterWaves::Style::Sea; waveScale = 1.0f;
+		waveAmplitude = 0.12f; waveSpeed = 0.7f; waveFrequency = 0.9f; directionalSpread = 1.0f; choppiness = 0.2f; waveCount = 12;
 		waveRoughness = 0.55f; swell = 0.1f; swellAngle = 25.0f; swellLength = 2.0f; waveGroups = 0.3f;
 		detailNormal = 0.6f; detailScale = 1.2f; crestFoam = 0.1f; crestFoamThreshold = 0.4f;
 		shoreWaves = 0.8f; swash = 0.3f;
@@ -308,6 +305,7 @@ inline void WaterSettings::ApplyBodyType(WaterBodyType type)
 	case WaterBodyType::River:
 		// A current, not a swell: low waves that all travel one way, fast ripples carried downstream, no white caps.
 		ApplyLook(WaterLook::Lake);
+		waveStyle = WaterWaves::Style::Spectrum; waveScale = 1.0f;   // a current carries its waves: the artist's model, not the wind's
 		foamDistance = 0.5f; absorption = 0.45f;
 		waveAmplitude = 0.05f; waveSpeed = 1.0f; waveFrequency = 1.2f; directionalSpread = 0.1f; choppiness = 0.1f; waveCount = 4;
 		waveRoughness = 0.5f; swell = 0.0f; waveGroups = 0.2f;   // a current has one direction: no cross swell
@@ -320,7 +318,8 @@ inline void WaterSettings::ApplyBodyType(WaterBodyType type)
 	case WaterBodyType::Custom:
 		// A blank slate that shows every setting. It starts as a lake with the full sea model: a sensible middle to bend either way.
 		ApplyLook(WaterLook::Lake);
-		waveAmplitude = 0.2f; waveSpeed = 0.8f; waveFrequency = 0.7f; directionalSpread = 0.8f; choppiness = 0.3f; waveCount = 6;
+		waveStyle = WaterWaves::Style::Sea; waveScale = 1.0f;
+		waveAmplitude = 0.2f; waveSpeed = 0.8f; waveFrequency = 0.7f; directionalSpread = 0.8f; choppiness = 0.3f; waveCount = 12;
 		waveRoughness = 0.5f; swell = 0.2f; swellAngle = 30.0f; swellLength = 2.2f; waveGroups = 0.3f;
 		detailNormal = 0.6f; detailScale = 1.2f; crestFoam = 0.2f; crestFoamThreshold = 0.35f;
 		shoreWaves = 0.8f; swash = 0.3f;
@@ -329,8 +328,9 @@ inline void WaterSettings::ApplyBodyType(WaterBodyType type)
 		break;
 	case WaterBodyType::Pond:
 		ApplyLook(WaterLook::Lake);
+		waveStyle = WaterWaves::Style::Sea; waveScale = 1.0f;
 		alpha = 0.85f; foamStrength = 0.3f;
-		waveAmplitude = 0.03f; waveSpeed = 0.5f; waveFrequency = 1.4f; directionalSpread = 1.0f; choppiness = 0.05f; waveCount = 3;
+		waveAmplitude = 0.03f; waveSpeed = 0.5f; waveFrequency = 1.4f; directionalSpread = 1.0f; choppiness = 0.05f; waveCount = 8;
 		waveRoughness = 0.4f; swell = 0.0f; waveGroups = 0.2f;
 		detailNormal = 0.7f; detailScale = 1.8f; crestFoam = 0.0f; crestFoamThreshold = 0.5f;
 		shoreWaves = 0.5f; swash = 0.15f;
@@ -345,7 +345,6 @@ inline WaterWaves::Params WaterSettings::WaveParams() const
 	p.amplitude = waveAmplitude;
 	p.speed = waveSpeed;
 	p.frequency = waveFrequency;
-	p.windDegrees = windDirection;
 	p.spread = directionalSpread;
 	p.choppiness = choppiness;
 	p.count = waveCount;
@@ -356,6 +355,10 @@ inline WaterWaves::Params WaterSettings::WaveParams() const
 	p.swellLength = swellLength;
 	p.groups = waveGroups;
 	p.seed = static_cast<std::uint32_t>(waveSeed);
+	if (waveStyle == WaterWaves::Style::Sea) {
+		p.heightScale = waveScale;   // the sea is what the wind makes: the author's scale only exaggerates the height (Water adds the wind and the fetch)
+		return p;
+	}
 	return WaterWaves::ScaledBy(p, waveScale);   // (the author's Scale; the automatic one for a big body is added by Water, which knows its mesh)
 }
 
@@ -380,7 +383,7 @@ inline void WaterSettings::VisitGroup(Group group, Self& a, const WaterSettings&
 	switch (group) {
 	case Group::Appearance:  WATER_FIELD(color); WATER_FIELD(alpha); WATER_FIELD(shallowColor); WATER_FIELD(absorption); break;
 	case Group::Waves:
-		WATER_FIELD(waveAmplitude); WATER_FIELD(waveScale); WATER_FIELD(autoWaveScale); WATER_FIELD(waveSpeed); WATER_FIELD(waveFrequency); WATER_FIELD(windSource); WATER_FIELD(windDirection);
+		WATER_FIELD(waveAmplitude); WATER_FIELD(waveScale); WATER_FIELD(autoWaveScale); WATER_FIELD(waveSpeed); WATER_FIELD(waveFrequency);
 		WATER_FIELD(directionalSpread); WATER_FIELD(choppiness); WATER_FIELD(waveCount); WATER_FIELD(waveStyle); WATER_FIELD(waveRoughness);
 		WATER_FIELD(swell); WATER_FIELD(swellAngle); WATER_FIELD(swellLength); WATER_FIELD(waveGroups); WATER_FIELD(waveSeed);
 		WATER_FIELD(detailNormal); WATER_FIELD(detailScale); WATER_FIELD(detailDistance);

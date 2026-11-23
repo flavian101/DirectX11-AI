@@ -42,7 +42,6 @@ NLOHMANN_JSON_SERIALIZE_ENUM(WaterBodyType, { { WaterBodyType::Ocean, "ocean" },
 NLOHMANN_JSON_SERIALIZE_ENUM(LightRole, { { LightRole::None, "none" }, { LightRole::Sun, "sun" }, { LightRole::Moon, "moon" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(SkyMode, { { SkyMode::Cubemap, "cubemap" }, { SkyMode::Procedural, "procedural" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(LightKind, { { LightKind::Directional, "directional" }, { LightKind::Point, "point" } })
-NLOHMANN_JSON_SERIALIZE_ENUM(WindSource, { { WindSource::Scene, "scene" }, { WindSource::Custom, "custom" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, { ReflectionMode::PlanarHalf, "planar_half" },
                                                { ReflectionMode::PlanarFull, "planar_full" }, { ReflectionMode::PlanarQuarter, "planar_quarter" } })
 
@@ -82,7 +81,7 @@ inline void from_json(const json& j, WorldRiver& river)
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PostSettings, srgbEncode, exposureEV, toneMapper)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ShadowSettings, enabled, resolution, depthBias, slopeBias, normalOffset, strength)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WindSettings, direction, strength)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WindSettings, direction, speed)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FogSettings, enabled, color, followSky, brightness, visibility, startDistance, heightFalloff, baseHeight, sunGlow, skyBlend, maxOpacity)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TimeOfDaySettings, enabled, hour, animate, dayLengthMinutes, noonAzimuth, maxElevation, sunSize, moonSize, starBrightness, sunsetStrength, skyBrightness, skyUpdateSeconds)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WeatherSettings, wind, fog, timeOfDay)
@@ -96,11 +95,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SurfaceSettings, baseColor, alph
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(UnderwaterSettings, custom, shallowColor, deepColor, visibility, colorDepth, lightDepth, brightness, nightBrightness, sunGlow, startDistance, surfaceMirror)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RiverPoint, x, z, width, level)   // (a scene saved before the level existed loads with 0: a level river)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpeed, flowAngle, bankDrag, channelProfile, rippleStretch, rapids, riverPath, riverDepth, riverBank, riverBankHeight, shoreWaves, swash, height, size, sizeZ, shape, color, alpha, shallowColor, absorption, fadeDistance,
-                                                foamDistance, foamStrength, foamScale, foamTrail, waveAmplitude, waveSpeed, waveFrequency, windSource, windDirection, shoreShelter,
+                                                foamDistance, foamStrength, foamScale, foamTrail, waveAmplitude, waveSpeed, waveFrequency, shoreShelter,
                                                 directionalSpread, choppiness, waveCount, waveStyle, waveRoughness, swell, swellAngle, swellLength, waveGroups, waveSeed, detailNormal, detailScale, detailDistance,
                                                 reflectivity, reflectionMode, reflectionDistortion, refraction, scatter,
                                                 glintStrength, glintSharpness, crestFoam, crestFoamThreshold,
-                                                meshDetail, lodDistance, frustumCulling, underwater, foamIntensity, waveScale, autoWaveScale)   // (foamIntensity: lesson 43, waveScale and autoWaveScale: lesson 44. A scene saved before them loads with the defaults: the foam it always had, a scale of 1, and the automatic scale on: a big body's waves are no longer flattened)
+                                                meshDetail, lodDistance, frustumCulling, underwater, foamIntensity, waveScale, autoWaveScale)   // (foamIntensity: lesson 43, waveScale and autoWaveScale: lesson 44; the wind is the scene's alone since lesson 63, a saved windSource or windDirection is ignored. A scene saved before them loads with the defaults: the foam it always had, a scale of 1, and the automatic scale on: a big body's waves are no longer flattened)
 // Culling and level of detail of a model (lesson 31), and the scatter that grows trees and rocks on the terrain.
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ModelRenderSettings, frustumCulling, lodEnabled, lodBias, lodScreen, cullScreen)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FloatingSettings, enabled, draft, responsiveness, damping, tilt, hullMask, maskPart, maskHeight, maskInset)

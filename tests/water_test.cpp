@@ -633,17 +633,17 @@ static void TestTypeUiAndWeather()
 		for (WaterBodyType type : types) anyone = anyone || IsShown(type, static_cast<Control>(c));
 		CHECK(anyone);
 	}
-	// A river has a current, not a swell or a wind direction of its own; an ocean has both.
+	// A river has a current, not a swell; an ocean has a swell. Nobody has a wind of their own any more (lesson 63): the scene's wind makes the sea.
 	CHECK(!IsShown(WaterBodyType::River, Control::Swell));
-	CHECK(!IsShown(WaterBodyType::River, Control::WindSource));
 	CHECK(!IsShown(WaterBodyType::River, Control::ShoreSection));
 	CHECK(IsShown(WaterBodyType::River, Control::Current) && !IsShown(WaterBodyType::Ocean, Control::Current) && !IsShown(WaterBodyType::Lake, Control::Current));
 	CHECK(IsShown(WaterBodyType::Ocean, Control::Swell));
-	CHECK(IsShown(WaterBodyType::Ocean, Control::WindSource));
 	CHECK(IsShown(WaterBodyType::Ocean, Control::WaveModel));
-	// A lake is chop: wind and roughness, no swell, no wave model switch. A pond shows almost nothing.
-	CHECK(IsShown(WaterBodyType::Lake, Control::WindSource) && !IsShown(WaterBodyType::Lake, Control::Swell) && !IsShown(WaterBodyType::Lake, Control::WaveModel));
-	CHECK(!IsShown(WaterBodyType::Pond, Control::WindSource) && !IsShown(WaterBodyType::Pond, Control::Swell) && !IsShown(WaterBodyType::Pond, Control::WavePresets));
+	// The wave model (Sea, Spectrum, Classic) is a choice for every still water; a river is always the artist's model, a current carries its waves.
+	CHECK(IsShown(WaterBodyType::Lake, Control::WaveModel) && IsShown(WaterBodyType::Pond, Control::WaveModel) && !IsShown(WaterBodyType::River, Control::WaveModel));
+	// A lake is chop: no swell. A pond shows almost nothing.
+	CHECK(!IsShown(WaterBodyType::Lake, Control::Swell));
+	CHECK(!IsShown(WaterBodyType::Pond, Control::Swell) && !IsShown(WaterBodyType::Pond, Control::WavePresets));
 	// Each ordinary type shows strictly fewer settings than Custom.
 	for (WaterBodyType type : { WaterBodyType::Ocean, WaterBodyType::Lake, WaterBodyType::River, WaterBodyType::Pond }) {
 		int shown = 0;
@@ -653,18 +653,15 @@ static void TestTypeUiAndWeather()
 	// The saved value of the first four types never moves (scene files); Custom is new, at the end.
 	CHECK(static_cast<int>(WaterBodyType::Ocean) == 0 && static_cast<int>(WaterBodyType::Pond) == 3 && static_cast<int>(WaterBodyType::Custom) == 4);
 
-	// Wind: the direction wraps, the strength clamps, the wave scale follows the strength.
+	// Wind: the direction wraps, the speed (m/s) clamps. The default is a fresh breeze.
 	WindSettings wind;
-	wind.direction = -90.0f; wind.strength = 7.0f;
+	wind.direction = -90.0f; wind.speed = 70.0f;
 	wind.Clamp();
-	CHECK(std::fabs(wind.direction - 270.0f) < 1e-4f && wind.strength == WindSettings::kStrengthMax);
-	wind.direction = 725.0f; wind.strength = -1.0f;
+	CHECK(std::fabs(wind.direction - 270.0f) < 1e-4f && wind.speed == WindSettings::kSpeedMax);
+	wind.direction = 725.0f; wind.speed = -1.0f;
 	wind.Clamp();
-	CHECK(std::fabs(wind.direction - 5.0f) < 1e-3f && wind.strength == 0.0f);
-	WindSettings calm; calm.strength = 0.0f;
-	CHECK(WindWaveScale(calm) == 0.0f);
-	WindSettings normal;
-	CHECK(WindWaveScale(normal) == 1.0f);
+	CHECK(std::fabs(wind.direction - 5.0f) < 1e-3f && wind.speed == 0.0f);
+	CHECK(WindSettings{}.speed == 8.0f && SeaState::Beaufort(WindSettings{}.speed) == 5);
 }
 
 // ---- Lesson 37: how a river runs, and the trail of crest foam --------------------------------------------------------

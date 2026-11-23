@@ -10,13 +10,14 @@
 //     rest position (x, z)  ->  phase = k * dot(dir, (x, z)) + omega * time + phase0
 //     displaced x, z        =  rest + Q * a * cos(phase) * dir
 //     height                =  a * sin(phase)
+#include "SeaState.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 
 namespace WaterWaves {
 
-constexpr int kMaxWaves = 12;   // must equal WATER_MAX_WAVES in shaders/water_material.hlsli
+constexpr int kMaxWaves = 16;   // must equal WATER_MAX_WAVES in shaders/water_material.hlsli
 constexpr float kBaseFrequency = 0.6f;   // radians per world unit of the first wave; matches WaterSettings' default
 
 // --- Waves near a shore (the same numbers are in shaders/waves.hlsli) ---------------------------------------------
@@ -52,8 +53,10 @@ inline float ShoalAmplitude(float amplitude, float k, float depth, float strengt
 }
 
 // How the table is made. Classic is the original fixed list of eight waves (kept so old scenes can look as they did);
-// Spectrum builds the waves from a sea model: a wind sea whose waves get shorter and lower together, plus a long swell.
-enum class Style : int { Classic = 0, Spectrum = 1 };
+// Spectrum builds the waves from an artist's sea model: a wind sea whose waves get shorter and lower together, plus a long swell.
+// Sea builds them from PHYSICS (lesson 63): the wind speed and the fetch decide how tall and how long the waves are, and the speed of
+// each wave follows from its length. Appended at the end: the style is saved by number.
+enum class Style : int { Classic = 0, Spectrum = 1, Sea = 2 };
 
 struct Params {
 	float amplitude = 0.35f;     // height of the biggest wave, world units
@@ -74,6 +77,12 @@ struct Params {
 	float swellLength = 2.5f;    // how much longer the swell's wavelength is than the biggest wind wave's
 	float groups = 0.0f;         // 0 = even waves everywhere; 1 = the sea breathes: patches of calm and rough water (wave groups)
 	std::uint32_t seed = 1;      // another seed = another sea with the same character
+
+	// --- Sea style only (lesson 63): the wind decides, so amplitude, frequency and speed above are ignored ---
+	float windSpeed = 8.0f;      // m/s, 10 m above the water (the scene's weather)
+	float fetch = 0.0f;          // metres of open water the wind has blown over; <= 0 = unlimited (the open ocean, no limit but the wind)
+	float depth = 0.0f;          // metres of water under the waves, for the dispersion; <= 0 = deep
+	float heightScale = 1.0f;    // an artist's multiplier on every wave height (1 = exactly what the physics says); wavelengths do not change
 };
 
 struct Wave {
@@ -233,9 +242,113 @@ inline Table BuildSpectrum(const Params& p)
 	return t;
 }
 
+// ---- A wind sea (lesson 63) ---------------------------------------------------------------------------------------------
+// The JONSWAP spectrum of this wind and fetch (SeaState.h), scaled to the significant height the wind makes, cut into `count` bands that are equally wide in LOG frequency, one wave
+// per band. A wave's height is the square root of twice the energy of its band, so the table has exactly the energy of the
+// spectrum: 4 sqrt(sum a^2 / 2) is the significant wave height the physics asks for. Its length follows from its frequency by
+// dispersion, so it also has the speed the physics asks for. Its direction is drawn from the spread of that frequency around the wind.
+inline Table BuildSea(const Params& p)
+{
+	constexpr float kDegToRad = 0.01745329252f;
+	constexpr float kTwoPi = 6.28318530718f;
+	Table t;
+	t.count = std::clamp(p.count, 1, kMaxWaves);
+	Random random(p.seed);
+
+	const double wind = std::clamp(static_cast<double>(p.windSpeed), 0.0, 60.0);
+	const SeaState::Spectrum spectrum = SeaState::MakeSpectrum(wind, p.fetch);
+	const double peak = spectrum.peakOmega;
+	const double height = SeaState::CalmFactor(wind) * std::max(static_cast<double>(p.heightScale), 0.0);
+
+	const bool openSea = p.fetch <= 0.0f;   // a swell is the memory of a storm far away: only the open sea has one, a lake does not
+	int swellCount = (p.swell > 0.0f && openSea && p.flowSpeed <= 0.0f && t.count >= 2) ? std::clamp(static_cast<int>(std::lround(t.count * 0.25f)), 1, 3) : 0;
+	swellCount = std::min(swellCount, t.count - 1);
+	const int windCount = t.count - swellCount;
+
+	// As in BuildSpectrum: groups only ever turn the waves down, so the heights are raised a little to keep the average what was asked.
+	const float groups = std::clamp(p.groups, 0.0f, 0.9f);
+	const double groupBoost = 1.0 / (1.0 - 0.5 * groups);
+
+	// The bands: from a little below the peak (nothing is there) up to 7 x the peak, or 22 rad/s (a 13 cm wave) when the peak is high.
+	const double low = 0.7 * peak;
+	const double high = std::max(std::min(7.0 * peak, 22.0), 1.8 * low);
+	const double step = std::pow(high / low, 1.0 / windCount);
+	// Wider spread, in the artist's terms: 0 = every wave nearly dead on the wind, 1 = waves from all around (the physical widths are in the middle).
+	const double spreadScale = 2.0 - 1.55 * std::clamp(static_cast<double>(p.spread), 0.0, 1.0);
+
+	float weight[kMaxWaves];
+	double windEnergy = 0.0;
+	int index = 0;
+	for (int i = 0; i < windCount; ++i, ++index) {
+		const double lo = low * std::pow(step, i), hi = lo * step;
+		const double energy = SeaState::BandEnergy(spectrum, lo, hi);
+		windEnergy += energy;
+		const double jitter = 1.0 + 0.05 * random.Signed();   // not exactly the middle of its band: a regular comb of waves looks regular
+		const double omega = std::sqrt(lo * hi) * jitter;
+		const double s = std::max(SeaState::SpreadExponent(omega, peak) * spreadScale, 0.8);
+		const double offset = SeaState::DirectionOffset(s, 0.06 + 0.88 * random.Unit());   // (not the far tails: a wave straight against the wind is rare)
+		Wave& w = t.waves[index];
+		w.omega = static_cast<float>(omega);
+		w.k = static_cast<float>(SeaState::Wavenumber(omega, p.depth));
+		w.amplitude = static_cast<float>(std::sqrt(2.0 * energy) * height * groupBoost);
+		const double angle = p.windDegrees * kDegToRad + offset;
+		w.dirX = static_cast<float>(-std::cos(angle));   // the direction the crests come FROM (see BuildClassic)
+		w.dirZ = static_cast<float>(-std::sin(angle));
+		w.phase0 = random.Unit() * kTwoPi;
+		weight[index] = 1.0f;
+	}
+	if (swellCount > 0) {
+		// The swell: a few long waves, as tall as `swell` x 80% of the wind sea (in height), from a direction of their own.
+		const double swellEnergy = std::pow(std::clamp(static_cast<double>(p.swell), 0.0, 1.0) * 0.8, 2.0) * windEnergy;
+		double shareSum = 0.0;
+		for (int j = 0; j < swellCount; ++j) shareSum += 1.0 / (1.0 + 0.6 * j);
+		for (int j = 0; j < swellCount; ++j, ++index) {
+			const double lengthen = std::max(static_cast<double>(p.swellLength), 1.2) * (1.0 + 0.37 * j);   // x as long as the peak wave
+			const double omega = peak / std::sqrt(lengthen);                                                    // (omega^2 = g k)
+			const double share = (1.0 / (1.0 + 0.6 * j)) / shareSum;
+			Wave& w = t.waves[index];
+			w.omega = static_cast<float>(omega);
+			w.k = static_cast<float>(SeaState::Wavenumber(omega, p.depth));
+			w.amplitude = static_cast<float>(std::sqrt(2.0 * swellEnergy * share) * height * groupBoost);
+			const float angle = (p.windDegrees + p.swellAngle + 10.0f * random.Signed()) * kDegToRad;
+			w.dirX = -std::cos(angle);
+			w.dirZ = -std::sin(angle);
+			w.phase0 = random.Unit() * kTwoPi;
+			weight[index] = 0.5f;   // rounder crests than the wind waves
+		}
+	}
+
+	// The tallest wave goes first: the shader reads wave 0 for the swash at the shore.
+	int biggest = 0;
+	for (int i = 1; i < t.count; ++i) {
+		if (t.waves[i].amplitude > t.waves[biggest].amplitude) biggest = i;
+	}
+	std::swap(t.waves[0], t.waves[biggest]);
+	std::swap(weight[0], weight[biggest]);
+
+	float weightedKA = 0.0f;
+	for (int i = 0; i < t.count; ++i) {
+		weightedKA += weight[i] * t.waves[i].k * t.waves[i].amplitude;
+		t.heightBound += t.waves[i].amplitude * (1.0f + kShoalGrowth * std::clamp(p.shoreWaves, 0.0f, 1.0f));
+	}
+	// Steepness as in BuildSpectrum: sum of Q k a <= choppiness <= 1, so no crest folds over.
+	const float c = std::clamp(p.choppiness, 0.0f, 1.0f);
+	const float m = std::min(1.0f, 1.0f / std::max(weightedKA, 1e-4f));
+	for (int i = 0; i < t.count; ++i) t.waves[i].steepness = weight[i] * c * m;
+
+	// Wave groups: patches about eight peak wavelengths across. A group travels at half the speed of the waves in it.
+	const double peakK = SeaState::Wavenumber(peak, p.depth);
+	t.groupStrength = groups;
+	t.groupK = static_cast<float>(0.13 * peakK);
+	t.groupSpeed = static_cast<float>(0.13 * peakK * 0.5 * SeaState::kGravity / peak);
+	return t;
+}
+
 inline Table Build(const Params& p)
 {
-	return p.style == Style::Classic ? BuildClassic(p) : BuildSpectrum(p);
+	if (p.style == Style::Classic) return BuildClassic(p);
+	if (p.style == Style::Sea && p.flowSpeed <= 0.0f) return BuildSea(p);   // a current carries its waves along: that is the Spectrum style's river branch
+	return BuildSpectrum(p);
 }
 
 // ---- Waves the mesh can show (lesson 44) -----------------------------------------------------------------------------------

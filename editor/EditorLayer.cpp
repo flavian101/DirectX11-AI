@@ -3718,18 +3718,32 @@ void EditorLayer::DrawWaterInspector(Water* water)
     // --- Waves ----------------------------------------------------------------------------------------------------------------
     if (section("Waves", "waves", Group::Waves, ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::PushID("waves");
-        if (!river && shows(Control::WavePresets)) {   // the three presets are open-water swells: a river's waves come from its type
+        // The Sea model (lesson 63): the scene's wind makes the sea, so the artist's amplitude, frequency, speed and roughness do not apply.
+        const bool sea = s.waveStyle == WaterWaves::Style::Sea && !river;
+        if (sea) {
+            const WindSettings& wind = scene_->GetWeather().wind;
+            const SeaState::Summary& state = water->GetSeaSummary();
+            static const char* const kForce[] = { "calm", "light air", "light breeze", "gentle breeze", "moderate breeze", "fresh breeze", "strong breeze",
+                                                  "near gale", "gale", "strong gale", "storm", "violent storm", "hurricane" };
+            ImGui::TextDisabled("Wind from the scene: toward %.0f deg, %.1f m/s (%s)", wind.direction, wind.speed, kForce[SeaState::Beaufort(wind.speed)]);
+            ImGui::TextDisabled("Biggest waves: %.1f m long, %.1f m/s, significant height %.2f m", state.peakWavelength, state.peakSpeed, state.significantHeight);
+            if (water->WindFetch() > 0.0f) ImGui::TextDisabled("The wind only has %.0f m of water to blow over: no swell, and the waves stay short.", water->WindFetch());
+        }
+        if (!river && !sea && shows(Control::WavePresets)) {   // the three presets are open-water swells: a river's waves come from its type
             if (ImGui::Button("Calm"))   { s.ApplyWavePreset(WavePreset::Calm);   changed = true; }
             ImGui::SameLine();
             if (ImGui::Button("Choppy")) { s.ApplyWavePreset(WavePreset::Choppy); changed = true; }
             ImGui::SameLine();
             if (ImGui::Button("Stormy")) { s.ApplyWavePreset(WavePreset::Stormy); changed = true; }
         }
-        changed |= ImGui::SliderFloat("Amplitude", &s.waveAmplitude, 0.0f, WaterSettings::kAmplitudeMax);
-        decorate(s.waveAmplitude, defaults.waveAmplitude, nullptr);
-        changed |= ImGui::SliderFloat("Scale", &s.waveScale, WaterSettings::kWaveScaleMin, WaterSettings::kWaveScaleMax, "%.2fx", ImGuiSliderFlags_Logarithmic);
-        decorate(s.waveScale, defaults.waveScale, "Makes the whole sea bigger or smaller: every wave's length AND height times this, so the waves keep their shape.\nA big stretch of water wants big waves: raise this to make them roll instead of ripple.");
-        if (!river) {
+        if (!sea) {
+            changed |= ImGui::SliderFloat("Amplitude", &s.waveAmplitude, 0.0f, WaterSettings::kAmplitudeMax);
+            decorate(s.waveAmplitude, defaults.waveAmplitude, nullptr);
+        }
+        changed |= ImGui::SliderFloat(sea ? "Height" : "Scale", &s.waveScale, WaterSettings::kWaveScaleMin, WaterSettings::kWaveScaleMax, "%.2fx", ImGuiSliderFlags_Logarithmic);
+        decorate(s.waveScale, defaults.waveScale, sea ? "Exaggerates every wave's HEIGHT. 1 = exactly what this wind makes. The wavelengths and the speeds do not change: they follow from the wind."
+                                                     : "Makes the whole sea bigger or smaller: every wave's length AND height times this, so the waves keep their shape.\nA big stretch of water wants big waves: raise this to make them roll instead of ripple.");
+        if (!river && !sea) {
             changed |= ImGui::Checkbox("Scale waves to the water's size", &s.autoWaveScale);
             decorate(s.autoWaveScale, defaults.autoWaveScale, "A big body of water is drawn with a coarse mesh, and a coarse mesh cannot follow short waves: they fade away and the sea goes flat.\nWith this on, a big body gets bigger waves (longer and taller, the same steepness) so that the mesh can show them. A small body is not touched.");
             if (s.autoWaveScale && water->AutoWaveScale() > 1.02f) {
@@ -3739,30 +3753,15 @@ void EditorLayer::DrawWaterInspector(Water* water)
                                       cell, 6.0f * cell, water->AutoWaveScale());
             }
         }
-        if (!river && shows(Control::Speed)) {
+        if (!river && !sea && shows(Control::Speed)) {
             changed |= ImGui::SliderFloat("Speed", &s.waveSpeed, 0.0f, WaterSettings::kSpeedMax);
             decorate(s.waveSpeed, defaults.waveSpeed, nullptr);
             decorate(s.waveSpeed, defaults.waveSpeed, nullptr);
         }
-        if (shows(Control::Frequency)) {
+        if (!sea && shows(Control::Frequency)) {
             changed |= ImGui::SliderFloat("Frequency", &s.waveFrequency, WaterSettings::kFrequencyMin, WaterSettings::kFrequencyMax);
             ImGui::SetItemTooltip("Radians per world unit. Lower = longer, lazier waves.");
             decorate(s.waveFrequency, defaults.waveFrequency, nullptr);
-        }
-        if (!river && shows(Control::WindSource)) {   // a river's direction is its current (above)
-            int source = static_cast<int>(s.windSource);
-            static const char* const kSourceNames[] = { "Scene wind", "Own direction" };
-            if (ImGui::Combo("Wind", &source, kSourceNames, IM_ARRAYSIZE(kSourceNames))) { s.windSource = static_cast<WindSource>(source); changed = true; }
-            ImGui::SetItemTooltip("Scene wind: this body follows the Weather entry in the Hierarchy, like everything else that the wind blows.\nOwn direction: it ignores the scene wind and uses the direction below.");
-            decorate(s.windSource, defaults.windSource, nullptr);
-            if (s.windSource == WindSource::Custom) {
-                changed |= ImGui::SliderFloat("Wind direction", &s.windDirection, 0.0f, 360.0f, "%.0f deg");
-                ImGui::SetItemTooltip("The way the waves travel. 0 = toward +X, 90 = toward +Z.");
-                decorate(s.windDirection, defaults.windDirection, nullptr);
-            } else {
-                const WindSettings& wind = scene_->GetWeather().wind;
-                ImGui::TextDisabled("Following the scene wind: toward %.0f deg, strength %.1f", wind.direction, wind.strength);
-            }
         }
         if (shows(Control::Spread)) {
             changed |= ImGui::SliderFloat("Direction spread", &s.directionalSpread, 0.0f, 1.0f);
@@ -3782,19 +3781,19 @@ void EditorLayer::DrawWaterInspector(Water* water)
         }
         {   // the sea model (lesson 34)
             int style = static_cast<int>(s.waveStyle);
-            static const char* const kStyleNames[] = { "Classic (fixed waves)", "Spectrum (sea model)" };
+            static const char* const kStyleNames[] = { "Classic (fixed waves)", "Spectrum (artist's sea)", "Sea (made by the wind)" };
             if (shows(Control::WaveModel)) {
                 if (ImGui::Combo("Wave model", &style, kStyleNames, IM_ARRAYSIZE(kStyleNames))) { s.waveStyle = static_cast<WaterWaves::Style>(style); changed = true; }
-                ImGui::SetItemTooltip("Classic: the original eight fixed waves. Spectrum: waves built from a sea model: they get finer and lower\ntogether, with an optional swell and patches of calmer and rougher water.");
+                ImGui::SetItemTooltip("Sea: the scene's wind and the water's own size make the waves: a stronger wind and more open water give taller, longer, faster waves.\nSpectrum: waves from the sliders below: they get finer and lower together, with an optional swell and patches of calmer and rougher water.\nClassic: the original eight fixed waves.");
                 decorate(s.waveStyle, defaults.waveStyle, nullptr);
             }
-            if (s.waveStyle == WaterWaves::Style::Spectrum) {
-                if (shows(Control::Roughness)) {
+            if (s.waveStyle != WaterWaves::Style::Classic) {
+                if (!sea && shows(Control::Roughness)) {
                     changed |= ImGui::SliderFloat("Roughness", &s.waveRoughness, 0.0f, 1.0f);
                     ImGui::SetItemTooltip("0 = glassy: the small waves die away fast. 1 = rough: the small waves stay almost as tall.");
                     decorate(s.waveRoughness, defaults.waveRoughness, nullptr);
                 }
-                if (!river && shows(Control::Swell)) {   // a current has one direction: there is no cross swell on a river
+                if (!river && shows(Control::Swell) && (!sea || water->WindFetch() <= 0.0f)) {   // a current has one direction: no cross swell on a river; a lake has no swell either
                     changed |= ImGui::SliderFloat("Swell", &s.swell, 0.0f, 1.0f);
                     ImGui::SetItemTooltip("Long, low waves from their own direction under the small ones. This is what a boat heaves on.");
                     decorate(s.swell, defaults.swell, nullptr);
@@ -3818,9 +3817,11 @@ void EditorLayer::DrawWaterInspector(Water* water)
                     if (ImGui::SmallButton("Re-roll")) { s.waveSeed = (s.waveSeed * 7919 + 104729) % 10000; changed = true; }
                     ImGui::SetItemTooltip("Another seed is another sea with the same character: different angles, wavelengths and phases.");
                 }
-                ImGui::TextDisabled("Biggest wind wave %.1f units long", 6.2831853f / (std::max)(s.waveFrequency, 0.001f));
-                if (!river && shows(Control::Swell) && s.swell > 0.0f)
-                    ImGui::TextDisabled("Swell %.1f units long", 6.2831853f / (std::max)(s.waveFrequency, 0.001f) * s.swellLength);
+                if (!sea) {
+                    ImGui::TextDisabled("Biggest wind wave %.1f units long", 6.2831853f / (std::max)(s.waveFrequency, 0.001f));
+                    if (!river && shows(Control::Swell) && s.swell > 0.0f)
+                        ImGui::TextDisabled("Swell %.1f units long", 6.2831853f / (std::max)(s.waveFrequency, 0.001f) * s.swellLength);
+                }
             }
         }
         ImGui::SeparatorText("Ripples");
@@ -4057,17 +4058,23 @@ void EditorLayer::DrawWeatherInspector()
     WeatherSettings& weather = scene_->GetWeather();
     ImGui::SeparatorText("Wind");
     ImGui::SliderFloat("Direction", &weather.wind.direction, 0.0f, 360.0f, "%.0f deg");
-    ImGui::SetItemTooltip("The way the wind blows TOWARD. 0 = +X, 90 = +Z. Water bodies set to follow the scene wind turn their\nwaves to match.");
-    ImGui::SliderFloat("Strength", &weather.wind.strength, 0.0f, WindSettings::kStrengthMax, "%.2f");
-    ImGui::SetItemTooltip("0 = dead calm, 1 = the sea each water body was set up for, 2 = a much rougher one.\nOnly the HEIGHT of the waves follows it; wavelength and speed stay as the body's settings say.");
+    ImGui::SetItemTooltip("The way the wind blows TOWARD. 0 = +X, 90 = +Z. The waves of the sea turn to match.");
+    ImGui::SliderFloat("Speed", &weather.wind.speed, 0.0f, WindSettings::kSpeedMax, "%.1f m/s");
+    ImGui::SetItemTooltip("How hard the wind blows, in metres per second, like a weather report (10 m above the water).\n0 = calm, 5 = a gentle breeze, 8 = a fresh breeze, 14 = a near gale, 25 = a storm.\nThe sea follows it: a stronger wind makes taller, longer and faster waves, over open water. A lake stays small.");
     weather.Clamp();
+    {
+        static const char* const kForce[] = { "calm", "light air", "light breeze", "gentle breeze", "moderate breeze", "fresh breeze", "strong breeze",
+                                              "near gale", "gale", "strong gale", "storm", "violent storm", "hurricane" };
+        const int force = SeaState::Beaufort(weather.wind.speed);
+        ImGui::TextDisabled("Beaufort %d: %s", force, kForce[force]);
+    }
     int followers = 0;
     for (const auto& object : scene_->GetObjects()) {
         if (const auto* water = dynamic_cast<const Water*>(object.get())) {
-            if (water->GetSettings().windSource == WindSource::Scene && !water->GetSettings().HasCurrent()) ++followers;
+            if (water->WavesFollowWind()) ++followers;
         }
     }
-    ImGui::TextDisabled("%d water %s following the scene wind.", followers, followers == 1 ? "body is" : "bodies are");
+    ImGui::TextDisabled("%d water %s made by this wind.", followers, followers == 1 ? "body's waves are" : "bodies' waves are");
 
     ImGui::SeparatorText("Fog");
     FogSettings& fog = weather.fog;

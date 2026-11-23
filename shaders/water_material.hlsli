@@ -4,7 +4,7 @@
 #ifndef WATER_MATERIAL_HLSLI
 #define WATER_MATERIAL_HLSLI
 
-#define WATER_MAX_WAVES 12   // must equal WaterWaves::kMaxWaves (src/WaterWaves.h)
+#define WATER_MAX_WAVES 16   // must equal WaterWaves::kMaxWaves (src/WaterWaves.h)
 
 cbuffer WaterMaterial : register(b4) {
     float4 waterDeepColor;      // rgb = deep-water colour (linear), a = opacity of deep water

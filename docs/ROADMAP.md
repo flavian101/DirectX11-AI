@@ -101,12 +101,15 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - Acceptance: no foam band along tile seams.
 - **W5** `[ ]` Editor check of the water contract
   - Acceptance: the contract below holds while tiles stream in, at the world edge, and while sculpting.
-- **W6** `[ ]` A sea from the wind
+- **W6** `[~]` A sea from the wind
   - What: the weather's wind is a real wind (a speed in m/s and a direction) and is the only wind: a water body has none of its own. The sea is a
     JONSWAP spectrum of that wind over the body's fetch (an ocean: unlimited; a lake: its own length along the wind), cut into bands, one Gerstner wave
     per band, each travelling at the speed its length asks for (`omega^2 = g k`). Nothing is scaled to fit the mesh, so the sea no longer depends on how big the body is.
   - Acceptance: over open water at 10 m/s the significant height is about 2 m and the peak wavelength 80 to 100 m, whatever the size of the body; a lake's waves stay
     short and low in the same wind; every wave of the table has the speed its length asks for; no crest folds over.
+  - Tests: `tests/sea_state_test.cpp`
+  - Editor check to do: Weather > Wind > Speed from 3 to 25 m/s makes the open sea taller, longer and faster (the Waves panel shows the numbers); a lake in the
+    same wind stays small; an old Ocean body needs Wave model set to Sea; moving a body or changing its size never changes its waves (an ocean) or only its fetch (a lake).
 - **W7** `[ ]` Where the sea is not
   - What: the world's sea (W1) is water only where the ground SURFACE is below `seaLevel` and the spot is not inside an exclusion zone (a box in world x, z that the
     world owns). Space under dry ground (a cave, a dungeon) never gets a sea, and a basin that is below sea level but should stay dry (a drained dock, a cave mouth) can be excluded.

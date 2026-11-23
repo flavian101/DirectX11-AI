@@ -18,7 +18,7 @@ static WaterSettings Busy()
 	WaterSettings s = WaterSettings::Defaults(WaterBodyType::Ocean);
 	s.ApplyLook(WaterLook::Arctic);
 	s.waveScale = 2.25f; s.autoWaveScale = false;
-	s.waveAmplitude = 0.77f; s.waveSeed = 31; s.windDirection = 123.0f; s.detailNormal = 1.3f;
+	s.waveAmplitude = 0.77f; s.waveSeed = 31; s.swellAngle = 41.0f; s.detailNormal = 1.3f;
 	s.reflectivity = 0.6f; s.reflectionMode = ReflectionMode::PlanarFull; s.refraction = 0.09f;
 	s.glintStrength = 2.2f; s.glintSharpness = 300.0f; s.scatter = 1.1f;
 	s.foamIntensity = 1.6f; s.crestFoam = 0.35f; s.foamTrail = 3.0f;
