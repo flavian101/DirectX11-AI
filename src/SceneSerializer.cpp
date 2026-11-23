@@ -250,8 +250,6 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
     } else if (auto* water = dynamic_cast<Water*>(&object)) {
         if (entry.contains("name") && entry["name"].is_string()) water->SetName(entry["name"].get<std::string>());
         WaterSettings loaded = entry.value("settings", WaterSettings{});
-        // Scenes saved before water had a separate length were square: the missing length is the width.
-        if (entry.contains("settings") && entry["settings"].is_object() && !entry["settings"].contains("sizeZ")) loaded.sizeZ = loaded.size;
         loaded.debugView = water->GetSettings().debugView;   // debug switches are not part of a scene: undo and load must not flip them
         loaded.wireframe = water->GetSettings().wireframe;
         water->SetSettings(loaded);

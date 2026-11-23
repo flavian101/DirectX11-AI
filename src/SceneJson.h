@@ -35,10 +35,6 @@ inline void from_json(const json& j, XMFLOAT4& v) { v = XMFLOAT4(j.at(0).get<flo
 // means. (An unknown name falls back to the FIRST entry.)
 NLOHMANN_JSON_SERIALIZE_ENUM(ToneMapper, { { ToneMapper::Clamp, "clamp" }, { ToneMapper::Reinhard, "reinhard" },
                                            { ToneMapper::ACES, "aces" }, { ToneMapper::Filmic, "filmic" } })
-NLOHMANN_JSON_SERIALIZE_ENUM(WaterShape, { { WaterShape::Rectangle, "rectangle" }, { WaterShape::Ellipse, "ellipse" } })
-NLOHMANN_JSON_SERIALIZE_ENUM(WaterBodyType, { { WaterBodyType::Ocean, "ocean" }, { WaterBodyType::Lake, "lake" },
-                                              { WaterBodyType::River, "river" }, { WaterBodyType::Pond, "pond" },
-                                              { WaterBodyType::Custom, "custom" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(LightRole, { { LightRole::None, "none" }, { LightRole::Sun, "sun" }, { LightRole::Moon, "moon" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(SkyMode, { { SkyMode::Cubemap, "cubemap" }, { SkyMode::Procedural, "procedural" } })
 NLOHMANN_JSON_SERIALIZE_ENUM(LightKind, { { LightKind::Directional, "directional" }, { LightKind::Point, "point" } })
@@ -93,13 +89,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SurfaceSettings, baseColor, alph
                                                 emissiveIntensity)
 // (WaterSettings::debugView and ::wireframe are debug-only and deliberately not listed.)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(UnderwaterSettings, custom, shallowColor, deepColor, visibility, colorDepth, lightDepth, brightness, nightBrightness, sunGlow, startDistance, surfaceMirror)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RiverPoint, x, z, width, level)   // (a scene saved before the level existed loads with 0: a level river)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, bodyType, flowSpeed, flowAngle, bankDrag, channelProfile, rippleStretch, rapids, riverPath, riverDepth, riverBank, riverBankHeight, shoreWaves, swash, height, size, sizeZ, shape, color, alpha, shallowColor, absorption, fadeDistance,
-                                                foamDistance, foamStrength, foamScale, foamTrail, waveAmplitude, waveSpeed, waveFrequency, shoreShelter,
-                                                directionalSpread, choppiness, waveCount, waveStyle, waveRoughness, swell, swellAngle, swellLength, waveGroups, waveSeed, detailNormal, detailScale, detailDistance,
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WaterSettings, shoreWaves, swash, height, size, sizeZ, color, alpha, shallowColor, absorption, fadeDistance,
+                                                foamDistance, foamStrength, foamScale, foamTrail, shoreShelter,
+                                                directionalSpread, choppiness, waveCount, swell, swellAngle, swellLength, waveGroups, waveSeed, detailNormal, detailScale, detailDistance,
                                                 reflectivity, reflectionMode, reflectionDistortion, refraction, scatter,
                                                 glintStrength, glintSharpness, crestFoam, crestFoamThreshold,
-                                                meshDetail, lodDistance, frustumCulling, underwater, foamIntensity, waveScale, autoWaveScale)   // (foamIntensity: lesson 43, waveScale and autoWaveScale: lesson 44; the wind is the scene's alone since lesson 63, a saved windSource or windDirection is ignored. A scene saved before them loads with the defaults: the foam it always had, a scale of 1, and the automatic scale on: a big body's waves are no longer flattened)
+                                                meshDetail, lodDistance, frustumCulling, underwater, foamIntensity, waveScale)   // (WaterSettings::debugView and ::wireframe are debug-only and deliberately not listed.)
 // Culling and level of detail of a model (lesson 31), and the scatter that grows trees and rocks on the terrain.
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ModelRenderSettings, frustumCulling, lodEnabled, lodBias, lodScreen, cullScreen)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FloatingSettings, enabled, draft, responsiveness, damping, tilt, hullMask, maskPart, maskHeight, maskInset)

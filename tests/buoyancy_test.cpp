@@ -133,7 +133,7 @@ static void TestRotation()
 static void TestFloatingOnRealWaves()
 {
     WaterWaves::Params params;
-    params.amplitude = 0.5f; params.count = 8; params.choppiness = 0.8f;
+    params.count = 8; params.choppiness = 0.8f;   // the wind sea at its default wind (8 m/s)
     const WaterWaves::Table table = WaterWaves::Build(params);
     const float hullHalfLength = 2.0f, hullHalfWidth = 0.7f, draft = 0.3f;
     Buoyancy::Spring heave, slopeX, slopeZ;

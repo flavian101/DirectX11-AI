@@ -43,8 +43,10 @@ When an item reaches `[x]`, the `Editor:` line is the record of what was seen.
 | The world starts at 0.0 and the old terrain was centred | tile (0,0) starts AT the origin (`WorldGrid.h`); the old `Terrain` was centred on its position; `TerrainWorld::AdoptFrom` snaps one onto the other | The two conventions fight; the migration code exists only to hide it. |
 | Two height systems | H1 to H5 (metres, tested) are built but not wired in; the old `Terrain` still carries `heightScale` (29 files, 103 hits) and `baseHeight` (12 files, 40 hits) | Every consumer has to know which one it is talking to. |
 
-Not diagnosed yet: the white striped banding along the shore in the video. It may be the sand layer, the shore foam, tile LOD or the skirts. Item S6
-starts with the water's own debug views (Depth, ShoreDepth, Foam) to find out before anything is changed.
+**The white banding along the shore, diagnosed.** In the `ShoreDepth` debug view (red = land, green = depth up to 8 m, blue = surf) the coastline and the depth are
+clean and follow the shore, so the depth map is not the cause. The blue bars are the `breaking` term, and they run in straight lines across the shallows: that is the crests
+of the (at most 16) straight Gerstner waves, made to break by the shallow water. Few components with a narrow spread make straight, evenly spaced crests, and the foam
+follows them. The fix is in the waves and the foam (O1, O5), not in the terrain.
 
 ## 2. What to borrow from Unreal (and what not)
 
@@ -73,8 +75,8 @@ why the water looks wrong.
    have nothing to hold back. Nothing about the ocean is sized by hand.
 5. **Water is shaded, not tinted.** GGX specular with a roughness that comes from wave-slope variance (so it grows with distance and with small waves),
    Schlick Fresnel at F0 = 0.02, sky reflection blurred by roughness, colour from absorption and scattering per metre.
-6. **Hand-sized water bodies (lakes, ponds, rivers, Custom) leave the editor for now.** They return later on the same water info and shading. To confirm:
-   this is the biggest cut in the plan, and git history keeps all of it.
+6. **Lakes, ponds, rivers and swamps are gone (confirmed).** Each is a different kind of water that needs its own design, so each comes back later, one at a time,
+   on the same water info and shading. Git history keeps all of it. The editor offers one thing: **Add > Ocean**.
 
 ---
 
@@ -83,7 +85,7 @@ why the water looks wrong.
 ### M0. Teardown
 Each step is its own commit and leaves the build and `ctest` green. The order matters: the editor is the largest consumer, so it goes first.
 
-Done with this roadmap: `WorldTileFile` (the baked tile file; nothing read it) is deleted with its test.
+Done with this roadmap: `WorldTileFile` (the baked tile file; nothing read it) is deleted with its test, and T2 has landed (below).
 
 - **T1** `[ ]` One terrain only: delete the single terrain
   - What: remove `Scene::GetTerrain` (`Scene.h:43-44`, `Scene.cpp:215`) and its 16 uses in `editor/EditorLayer.cpp`; heightmap load/save, `CarveRiver`, `Sculpt`
@@ -91,12 +93,20 @@ Done with this roadmap: `WorldTileFile` (the baked tile file; nothing read it) i
     `MigrationStats`, `WorldSettingsFromTerrain`, `pictureOffsetX/Z`; `WorldShape`, `WorldPicture` and the tests of all of them. The tile (chunks, LOD, skirts, walls,
     splat) stays and is renamed `TerrainTile` if it no longer is a whole terrain.
   - Acceptance: builds; a search for `GetTerrain`, `heightScale`, `baseHeight`, `AdoptFrom`, `MigrationStats`, `WorldPicture`, `WorldShape` finds nothing.
-- **T2** `[ ]` Water: delete the patches and the hand-sized bodies
-  - What: remove `autoWaveScale`, `waveScale`, the `Spectrum` and `Classic` styles (only the wind sea stays), the settings the Sea model ignores (`waveAmplitude`,
-    `waveFrequency`, `waveSpeed`, `waveRoughness`, `waveCount`), `WavePreset`, `WaterLook`, `WaterShape`, `size` / `sizeZ` / `kSizeMax`, per-body `meshDetail` and
-    `lodDistance`, `shoreWaves = 0` ("the old look"), the body types other than Ocean and everything river (`WaterRiver`, `WaterFlow`, `RiverPath`, `RiverCarve`,
-    `WorldRivers`, `WaterTypeUi`, `WaterSelect`), and the per-body depth map. `Buoyancy` keeps working: it asks the sea for a height.
-  - Acceptance: builds; the editor offers one ocean; `buoyancy_test` and `sea_state_test` are green; a search for the removed names finds nothing.
+- **T2** `[~]` Water: one ocean, no patches, no other kinds of water
+  - Done: `WaterBodyType`, `WaterTypeUi`, `WaterRiver`, `WaterFlow` and `WaterSelect` are deleted. `WaterSettings` is the ocean: its defaults ARE the ocean (sea level 0,
+    2000 x 2000), with no type, shape, river, preset look (`WavePreset`, `WaterLook`), `autoWaveScale`, wave style (only the wind sea is left), or the amplitude /
+    frequency / speed / roughness the sea ignored. `Water` lost the river flow map, the ellipse, the per-type switches and `SampleFlow`; `SeaState::ChordLength` (the
+    fetch of a hand-sized lake) is gone. The editor: **Add > Ocean** is the only water, the river-drawing tools (about 520 lines) and the Type, Shape and Current
+    sections are gone, and the Waves section shows only what the wind sea uses. Saved look presets (`.waterpreset`) stay: a look is a user's file, not a patch.
+  - Kept on purpose, because they are REPLACED later rather than deleted: `size` / `sizeZ` / `kSizeMax` and the plane mesh (S5), `meshDetail` / `lodDistance`
+    (S5), the per-body depth map (S1). `waveScale` stays too: for the wind sea it is only an exaggeration of the wave HEIGHT.
+  - Not touched, and why: the water shader (`water_ps.hlsl`, `water_vs.hlsl`, `water_material.hlsli`) still has its river branches, and the constant buffer still has the
+    river fields (the C++ sends zeros), plus the unused slot `kSrvWaterFlow`. I could not compile HLSL here, and a wrong edit would give an invisible sea; they go with the
+    shader rewrite (O2 to O4). The terrain's own river code (`RiverPath`, `RiverCarve`, `WorldRivers`, `CarveRiver`, `river_test`) goes with T1.
+  - Tests: `tests/water_test.cpp`, `tests/water_settings_test.cpp`, `tests/sea_state_test.cpp`, `tests/buoyancy_test.cpp`, `tests/water_preset_test.cpp`
+  - Acceptance (for `[x]`): in the editor, Add shows only Ocean; an ocean can be added, saved, re-opened and edited; its Waves section follows the scene's wind; boats still
+    float on it.
 - **T3** `[ ]` Scene files start again
   - What: a scene format version; a scene without it (or with an older one) fails to open with one message. Delete every "only ever ADD to the end" enum
     constraint, every field kept only so old scenes load, and the migration code in `SceneJson.h`.
@@ -164,7 +174,7 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - Tests: `tests/ocean_ring_test.cpp`
   - Acceptance: a 20 km world shows the same sea near the camera as a 200 m one; no seam where the ring meets the far mesh; no visible edge of the sea at any camera height.
 - **S6** `[ ]` Editor check of the water contract
-  - What: first, with the debug views, find the cause of the white banding along the shore (section 1) and write it here.
+  - What: check that the shore banding (section 1) is gone once O1 and O5 are in; if it is not, the `Foam` and `ShoreDepth` debug views are where to look next.
   - Acceptance: the contract in section 6 holds while tiles stream in, at the world edge, and while sculpting.
 
 ### M3. An ocean that looks like water
@@ -178,7 +188,7 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - Tests: `tests/sea_state_test.cpp`
   - Editor check to do: Weather > Wind > Speed from 3 to 25 m/s makes the open sea taller, longer and faster (the Waves panel shows the numbers); a lake in the
     same wind stays small; moving a body or changing its size never changes its waves (an ocean) or only its fetch (a lake).
-- **O1** `[ ]` No visible repetition
+- **O1** `[ ]` No visible repetition (also what ends the straight surf bars along the shore)
   - What: the wind sea is a spectrum of at least 32 components (raise `kMaxWaves` and `WATER_MAX_WAVES` together, or move the waves out of the constant buffer into a
     structured buffer) with a directional spread, random phases per component, and no two components with the same direction and wavelength. Far bands fade by pixel footprint (already so).
   - Tests: `tests/sea_pattern_test.cpp`
@@ -199,7 +209,8 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - Tests: `tests/water_optics_test.cpp`
   - Acceptance: transmittance falls as exp(-a d); doubling the depth squares the transmittance; clear shallow water shows the bottom, deep water shows none.
 - **O5** `[ ]` Shore from the world water info
-  - What: shoaling (waves grow in shallow water), breaking foam and the swash line read S1 instead of a per-body map.
+  - What: shoaling (waves grow in shallow water), breaking foam and the swash line read S1 instead of a per-body map. The breaking foam gets its break-up from depth and noise,
+    not only from the phase of a few straight crests, which is what draws the straight bars now.
   - Acceptance: no foam over deep water; foam follows the shoreline of the island at every LOD.
 - **O6** `[ ]` Editor check of the look
   - Acceptance: from the island's cliff and from the air the sea does not look like plastic, no pattern slides past, and the horizon has no edge.
@@ -219,7 +230,7 @@ camera-relative rendering, cascaded shadows, GPU heights. Each returns to this f
 
 | Patch | Why it is a patch |
 |---|---|
-| `autoWaveScale`, `waveScale` | stretches the waves until the mesh can show them; a sea does not depend on its mesh (W6) |
+| `autoWaveScale` (`waveScale` stays: for the wind sea it is only a height exaggeration) | stretches the waves until the mesh can show them; a sea does not depend on its mesh (W6) |
 | `Spectrum` and `Classic` wave styles | older models kept next to the wind sea |
 | `waveAmplitude`, `waveFrequency`, `waveSpeed`, `waveRoughness`, `waveCount` | the wind sea ignores them |
 | `WavePreset`, `WaterLook` | presets that set many numbers; a look is data, not an enum |

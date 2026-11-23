@@ -190,22 +190,4 @@ inline Summary Describe(double windSpeed, double fetchMetres, double depth = 0.0
 	return s;
 }
 
-// ---- The fetch of a body of water -----------------------------------------------------------------------------------------
-// How far the wind can blow across a body of water: its length along the wind. `localDirX/Z` is the wind's direction in the body's
-// own frame (x across its width, z along its length; it need not be a unit vector). A rectangle and an ellipse of the same size
-// differ in the corners. A lake is a small fetch, so its waves are small and short however hard the wind blows: that is what a lake is.
-inline double ChordLength(double sizeX, double sizeZ, bool ellipse, double localDirX, double localDirZ)
-{
-	const double length = std::sqrt(localDirX * localDirX + localDirZ * localDirZ);
-	if (length < 1e-9) return std::max(sizeX, sizeZ);
-	const double dx = std::fabs(localDirX) / length, dz = std::fabs(localDirZ) / length;
-	if (ellipse) {
-		const double a = std::max(0.5 * sizeX, 1e-6), b = std::max(0.5 * sizeZ, 1e-6);
-		return 2.0 / std::sqrt((dx / a) * (dx / a) + (dz / b) * (dz / b));
-	}
-	const double alongX = dx > 1e-9 ? sizeX / dx : 1e30;
-	const double alongZ = dz > 1e-9 ? sizeZ / dz : 1e30;
-	return std::min(alongX, alongZ);
-}
-
 }   // namespace SeaState

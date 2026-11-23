@@ -4,11 +4,9 @@
 //  - the tile grid chosen for a body's proportions
 //  - the wave table: the height-at-a-position inversion, no folding at full choppiness, and the exact normal/Jacobian the
 //    pixel shader uses against a finite-difference normal of the real displaced surface
-#include "WaterFlow.h"
 #include "WaterMesh.h"
 #include "WaterShore.h"
 #include "WaterWaves.h"
-#include "WaterTypeUi.h"
 #include "Weather.h"
 #include <algorithm>
 #include <cmath>
@@ -110,7 +108,7 @@ static void TestWaves()
 {
 	std::uint32_t seed = 12345;
 	WaterWaves::Params p;
-	p.choppiness = 0.9f; p.amplitude = 0.6f; p.count = 8;
+	p.choppiness = 0.9f; p.count = 8;
 	WaterWaves::Table table = WaterWaves::Build(p);
 
 	// HeightAt: the point that ends up at (x, z) started elsewhere; the fixed-point inversion must find it (within 2 cm here).
@@ -172,45 +170,6 @@ static void TestWaves()
 	}
 }
 
-// A river is a current: every wave travels the same way, at the speed of the current, and turning the body turns the flow.
-static void TestRiverFlow()
-{
-	const float pi = 3.14159265f;
-	for (float yaw : { 0.0f, 0.5f, 1.5707963f, 2.4f, -1.1f, 3.9f }) {
-		for (float flowAngle : { 0.0f, 90.0f, 180.0f, -45.0f }) {
-			// What the world matrix does to the body's own direction (sin a, cos a): XMMatrixRotationY, row-vector convention.
-			const float a = flowAngle * pi / 180.0f;
-			const float localX = std::sin(a), localZ = std::cos(a);
-			const float worldX = localX * std::cos(yaw) + localZ * std::sin(yaw);
-			const float worldZ = -localX * std::sin(yaw) + localZ * std::cos(yaw);
-
-			const float degrees = WaterWaves::RiverTravelDegrees(flowAngle, yaw);
-			CHECK(degrees >= 0.0f && degrees < 360.0f);
-			CHECK(std::fabs(std::cos(degrees * pi / 180.0f) - worldX) < 1e-4f);   // the angle IS that world direction
-			CHECK(std::fabs(std::sin(degrees * pi / 180.0f) - worldZ) < 1e-4f);
-
-			WaterWaves::Params p;
-			p.windDegrees = degrees;
-			p.spread = 0.1f;
-			p.flowSpeed = 2.5f;
-			p.count = 6;
-			const WaterWaves::Table table = WaterWaves::Build(p);
-			for (int i = 0; i < table.count; ++i) {
-				const WaterWaves::Wave& w = table.waves[i];
-				CHECK(std::fabs(w.omega / w.k - 2.5f) < 1e-4f);   // every wave rides the current at the same speed
-				// A wave sin(k * dir . x + omega * t) moves toward -dir. That must be within the (small) spread of the flow.
-				const float along = -(w.dirX * worldX + w.dirZ * worldZ);
-				CHECK(along > std::cos(0.1f * 110.0f * pi / 180.0f) - 1e-3f);   // nothing runs upstream or sideways
-			}
-		}
-	}
-	// Without a flow speed the old deep-water dispersion is untouched: long waves outrun short ones.
-	WaterWaves::Params open;
-	const WaterWaves::Table swell = WaterWaves::Build(open);
-	CHECK(swell.waves[0].omega / swell.waves[0].k > swell.waves[3].omega / swell.waves[3].k);
-}
-
-// Waves near a shore: they grow in shallow water, never exceed a fraction of the depth, and are untouched when off.
 static void TestShoaling()
 {
 	const float k = 0.6f, a = 0.35f;
@@ -335,28 +294,27 @@ static void TestMaxDepthIn()
 	CHECK(WaterShore::DepthField().MaxDepthIn(-1.0f, 1.0f, -1.0f, 1.0f) == WaterShore::kDeepWater);   // no map: deep
 }
 
-// The spectrum sea (lesson 34): whatever the settings, the table must be safe (no fold-over, bounds that hold), repeatable,
+// The sea table (lessons 34, 63): whatever the settings, the table must be safe (no fold-over, bounds that hold), repeatable,
 // and shaped as promised (wind waves first, swell longer, groups only turn waves down).
-static void TestSpectrum()
+static void TestSeaTable()
 {
 	std::uint32_t seed = 777;
 	for (int round = 0; round < 300; ++round) {
 		WaterWaves::Params p;
-		p.amplitude = 0.02f + Random01(seed) * 1.5f;
-		p.frequency = 0.2f + Random01(seed) * 1.6f;
-		p.speed = 0.3f + Random01(seed) * 2.0f;
+		p.windSpeed = Random01(seed) * 30.0f;
+		p.fetch = Random01(seed) < 0.4f ? 0.0f : 200.0f + Random01(seed) * 20000.0f;
+		p.depth = Random01(seed) < 0.7f ? 0.0f : 2.0f + Random01(seed) * 200.0f;
+		p.heightScale = 0.25f + Random01(seed) * 3.0f;
 		p.windDegrees = Random01(seed) * 360.0f;
 		p.spread = Random01(seed);
 		p.choppiness = Random01(seed);
 		p.count = 2 + static_cast<int>(Random01(seed) * 10.99f);
-		p.roughness = Random01(seed);
 		p.swell = Random01(seed) < 0.3f ? 0.0f : Random01(seed);
 		p.swellAngle = Random01(seed) * 180.0f - 90.0f;
 		p.swellLength = 1.5f + Random01(seed) * 4.0f;
 		p.groups = Random01(seed) < 0.3f ? 0.0f : Random01(seed) * 0.9f;
 		p.seed = static_cast<std::uint32_t>(Random01(seed) * 1000.0f);
 		p.shoreWaves = Random01(seed) < 0.5f ? 0.0f : Random01(seed);
-		if (Random01(seed) < 0.2f) p.flowSpeed = 0.5f + Random01(seed) * 4.0f;   // a river
 		const WaterWaves::Table t = WaterWaves::Build(p);
 
 		CHECK(t.count == std::clamp(p.count, 1, WaterWaves::kMaxWaves));
@@ -367,7 +325,6 @@ static void TestSpectrum()
 			CHECK(std::fabs(w.dirX * w.dirX + w.dirZ * w.dirZ - 1.0f) < 1e-4f);
 			CHECK(w.k > 0.0f && w.amplitude > 0.0f && w.omega > 0.0f);
 			CHECK(w.steepness >= 0.0f && w.steepness <= 1.0f + 1e-6f);
-			if (p.flowSpeed > 0.0f) CHECK(std::fabs(w.omega / w.k - p.flowSpeed) < 1e-3f);   // a river carries every wave at the current's speed
 			sumQKA += w.steepness * w.k * w.amplitude;
 			tallest += w.amplitude;
 		}
@@ -387,29 +344,11 @@ static void TestSpectrum()
 		// Repeatable: the same settings make the same sea; another seed makes another one (unless there is a single wave).
 		const WaterWaves::Table again = WaterWaves::Build(p);
 		CHECK(again.count == t.count && again.waves[0].k == t.waves[0].k && again.waves[t.count - 1].phase0 == t.waves[t.count - 1].phase0);
-		// Shape: wind waves come first and get finer and lower; the swell (if any) comes after and is longer than the biggest wind wave.
-		const bool hasSwell = p.swell > 0.0f && p.flowSpeed <= 0.0f && t.count >= 2;
-		int longer = 0;
-		for (int i = 0; i < t.count; ++i) if (t.waves[i].k < p.frequency * 0.9999f) ++longer;
-		CHECK(hasSwell ? (longer >= 1 && longer <= 3) : longer == 0);
-		CHECK(std::fabs(t.waves[0].k - p.frequency) < 1e-5f);
-		const float boost = 1.0f / (1.0f - 0.5f * std::clamp(p.groups, 0.0f, 0.9f));
-		CHECK(std::fabs(t.waves[0].amplitude - p.amplitude * boost) < 1e-4f * std::max(1.0f, p.amplitude));
 	}
 	{
 		WaterWaves::Params a, b;
 		b.seed = 2;
 		CHECK(WaterWaves::Build(a).waves[1].phase0 != WaterWaves::Build(b).waves[1].phase0);
-	}
-	// Wind waves: finer and lower, one after another.
-	{
-		WaterWaves::Params p;
-		p.count = 6;
-		const WaterWaves::Table t = WaterWaves::Build(p);
-		for (int i = 1; i < t.count; ++i) {
-			CHECK(t.waves[i].k > t.waves[i - 1].k * 1.1f);
-			CHECK(t.waves[i].amplitude < t.waves[i - 1].amplitude);
-		}
 	}
 	// Wave groups: with the strength at 0 the factor is exactly 1; otherwise it averages about 1 - strength / 2.
 	{
@@ -423,21 +362,10 @@ static void TestSpectrum()
 		p.groups = 0.0f;
 		CHECK(WaterWaves::GroupFactor(WaterWaves::Build(p), 12.0f, 34.0f, 5.0f) == 1.0f);
 	}
-	// The classic table is exactly the original one.
-	{
-		WaterWaves::Params p;
-		p.style = WaterWaves::Style::Classic;
-		p.groups = 0.5f; p.swell = 1.0f;   // ignored by Classic
-		const WaterWaves::Table t = WaterWaves::Build(p);
-		CHECK(t.groupStrength == 0.0f);
-		CHECK(std::fabs(t.waves[1].k - p.frequency * 1.7f) < 1e-6f);
-		CHECK(std::fabs(t.waves[1].amplitude - p.amplitude * 0.55f) < 1e-6f);
-		CHECK(std::fabs(t.waves[3].phase0 - 4.1f) < 1e-6f);
-	}
 	// The CPU height still inverts correctly with groups and a swell on, at the sharpest choppiness.
 	{
 		WaterWaves::Params p;
-		p.choppiness = 0.9f; p.amplitude = 0.6f; p.count = 8; p.swell = 0.7f; p.groups = 0.5f;
+		p.choppiness = 0.9f; p.count = 8; p.swell = 0.7f; p.groups = 0.5f;
 		const WaterWaves::Table t = WaterWaves::Build(p);
 		for (int n = 0; n < 1000; ++n) {
 			const float x = Random01(seed) * 200.0f - 100.0f, z = Random01(seed) * 200.0f - 100.0f, time = Random01(seed) * 100.0f;
@@ -463,7 +391,7 @@ static void TestTileGrowth()
 	g = WaterMesh::ChooseTileGrid(2000, 2000, -1, 32);          CHECK(g.x == 20 && g.z == 20);
 	// Finer tiles (64 cells) allow fewer of them: this stays at the base grid.
 	g = WaterMesh::ChooseTileGrid(1000, 1000, -1, 64);          CHECK(g.x == 8 && g.z == 8);
-	// A long river grows along its length only.
+	// A long thin body grows along its length only.
 	g = WaterMesh::ChooseTileGrid(2000, 50, -1, 32);            CHECK(g.x == 24 && g.z == 2);
 	// Without cellsPerTile nothing changes (the old table).
 	g = WaterMesh::ChooseTileGrid(2000, 2000);                  CHECK(g.x == 8 && g.z == 8);
@@ -557,7 +485,7 @@ static void TestShelter()
 {
 	WaterWaves::Params p;
 	p.windDegrees = 0.0f;   // the waves travel toward +x
-	p.count = 6; p.choppiness = 0.6f; p.amplitude = 0.4f; p.spread = 0.5f;
+	p.count = 6; p.choppiness = 0.6f; p.spread = 0.5f;
 	const WaterWaves::Table table = WaterWaves::Build(p);
 	std::uint32_t seed = 31337;
 	auto rms = [&](float towardX, float shelter, float depth) {
@@ -618,41 +546,9 @@ static void TestShelter()
 	}
 }
 
-// Which settings each kind of water shows (lesson 35), and the scene wind's limits.
-static void TestTypeUiAndWeather()
+// The scene wind's limits.
+static void TestWeather()
 {
-	using WaterTypeUi::Control;
-	using WaterTypeUi::IsShown;
-	const WaterBodyType types[] = { WaterBodyType::Ocean, WaterBodyType::Lake, WaterBodyType::River, WaterBodyType::Pond, WaterBodyType::Custom };
-	// Custom shows everything; so does "show all" for any type.
-	for (int c = 0; c < static_cast<int>(Control::Count); ++c) {
-		CHECK(IsShown(WaterBodyType::Custom, static_cast<Control>(c)));
-		for (WaterBodyType type : types) CHECK(IsShown(type, static_cast<Control>(c), true));
-		// Every control is shown by at least one real type (a control nobody sees would be dead code).
-		bool anyone = false;
-		for (WaterBodyType type : types) anyone = anyone || IsShown(type, static_cast<Control>(c));
-		CHECK(anyone);
-	}
-	// A river has a current, not a swell; an ocean has a swell. Nobody has a wind of their own any more (lesson 63): the scene's wind makes the sea.
-	CHECK(!IsShown(WaterBodyType::River, Control::Swell));
-	CHECK(!IsShown(WaterBodyType::River, Control::ShoreSection));
-	CHECK(IsShown(WaterBodyType::River, Control::Current) && !IsShown(WaterBodyType::Ocean, Control::Current) && !IsShown(WaterBodyType::Lake, Control::Current));
-	CHECK(IsShown(WaterBodyType::Ocean, Control::Swell));
-	CHECK(IsShown(WaterBodyType::Ocean, Control::WaveModel));
-	// The wave model (Sea, Spectrum, Classic) is a choice for every still water; a river is always the artist's model, a current carries its waves.
-	CHECK(IsShown(WaterBodyType::Lake, Control::WaveModel) && IsShown(WaterBodyType::Pond, Control::WaveModel) && !IsShown(WaterBodyType::River, Control::WaveModel));
-	// A lake is chop: no swell. A pond shows almost nothing.
-	CHECK(!IsShown(WaterBodyType::Lake, Control::Swell));
-	CHECK(!IsShown(WaterBodyType::Pond, Control::Swell) && !IsShown(WaterBodyType::Pond, Control::WavePresets));
-	// Each ordinary type shows strictly fewer settings than Custom.
-	for (WaterBodyType type : { WaterBodyType::Ocean, WaterBodyType::Lake, WaterBodyType::River, WaterBodyType::Pond }) {
-		int shown = 0;
-		for (int c = 0; c < static_cast<int>(Control::Count); ++c) if (IsShown(type, static_cast<Control>(c))) ++shown;
-		CHECK(shown < static_cast<int>(Control::Count));
-	}
-	// The saved value of the first four types never moves (scene files); Custom is new, at the end.
-	CHECK(static_cast<int>(WaterBodyType::Ocean) == 0 && static_cast<int>(WaterBodyType::Pond) == 3 && static_cast<int>(WaterBodyType::Custom) == 4);
-
 	// Wind: the direction wraps, the speed (m/s) clamps. The default is a fresh breeze.
 	WindSettings wind;
 	wind.direction = -90.0f; wind.speed = 70.0f;
@@ -664,226 +560,19 @@ static void TestTypeUiAndWeather()
 	CHECK(WindSettings{}.speed == 8.0f && SeaState::Beaufort(WindSettings{}.speed) == 5);
 }
 
-// ---- Lesson 37: how a river runs, and the trail of crest foam --------------------------------------------------------
-
-static void TestCurrentProfile()
-{
-	// Deep water in the middle of the plane is the full speed, whatever the drag settings.
-	for (float drag : { 0.0f, 0.5f, 1.0f })
-		for (float profile : { 0.0f, 0.5f, 1.0f })
-			CHECK(std::abs(WaterFlow::SpeedFactor(0.0f, 10.0f, drag, profile) - 1.0f) < 1e-6f);
-
-	// No drag and no profile: one speed everywhere (the old look).
-	for (float across : { -1.0f, -0.4f, 0.0f, 0.7f, 1.0f })
-		for (float depth : { -1.0f, 0.0f, 0.5f, 3.0f })
-			CHECK(std::abs(WaterFlow::SpeedFactor(across, depth, 0.0f, 0.0f) - 1.0f) < 1e-6f);
-
-	// A dry or shallow bank at full drag crawls, but never stops.
-	CHECK(std::abs(WaterFlow::SpeedFactor(0.0f, 0.0f, 1.0f, 0.0f) - WaterFlow::kMinSpeedFactor) < 1e-6f);
-	CHECK(WaterFlow::SpeedFactor(1.0f, -2.0f, 1.0f, 1.0f) >= WaterFlow::kMinSpeedFactor);
-
-	// Always in range, symmetric across the river, never faster for being shallower or nearer the side.
-	std::uint32_t state = 7;
-	for (int i = 0; i < 2000; ++i) {
-		const float across = Random01(state) * 2.0f - 1.0f;
-		const float depth = Random01(state) * 4.0f - 0.5f;
-		const float drag = Random01(state), profile = Random01(state);
-		const float v = WaterFlow::SpeedFactor(across, depth, drag, profile);
-		CHECK(v >= WaterFlow::kMinSpeedFactor - 1e-6f && v <= 1.0f + 1e-6f);
-		CHECK(std::abs(v - WaterFlow::SpeedFactor(-across, depth, drag, profile)) < 1e-6f);
-		CHECK(WaterFlow::SpeedFactor(across, depth + 0.3f, drag, profile) >= v - 1e-6f);
-		const float nearer = across >= 0.0f ? std::min(across + 0.1f, 1.0f) : std::max(across - 0.1f, -1.0f);
-		CHECK(WaterFlow::SpeedFactor(nearer, depth, drag, profile) <= v + 1e-6f);
-	}
-}
-
-static void TestFlowingLayers()
-{
-	// The two layers always add up to a whole (one fades in exactly as the other fades out), and a layer is invisible at the
-	// very moment it is reset to its start: that is what hides the jump.
-	std::uint32_t state = 11;
-	for (int i = 0; i < 2000; ++i) {
-		const float time = Random01(state) * 500.0f;
-		float f0, w0, f1, w1;
-		WaterFlow::PhaseWeight(time, 0, f0, w0);
-		WaterFlow::PhaseWeight(time, 1, f1, w1);
-		CHECK(f0 >= 0.0f && f0 < 1.0f && f1 >= 0.0f && f1 < 1.0f);
-		CHECK(w0 >= 0.0f && w0 <= 1.0f && w1 >= 0.0f && w1 <= 1.0f);
-		CHECK(std::abs(w0 + w1 - 1.0f) < 1e-4f);
-	}
-	for (int cycle = 0; cycle < 5; ++cycle) {
-		float f, w;
-		WaterFlow::PhaseWeight(WaterFlow::kPhaseCycle * static_cast<float>(cycle), 0, f, w);   // layer 0 starts over
-		CHECK(f < 1e-5f && w < 1e-5f);
-		WaterFlow::PhaseWeight(WaterFlow::kPhaseCycle * (static_cast<float>(cycle) + 0.5f), 1, f, w);   // layer 1 starts over
-		CHECK(f < 1e-4f && w < 1e-4f);
-	}
-	{   // just before the reset the layer is nearly invisible too: no jump on either side
-		float f, w;
-		WaterFlow::PhaseWeight(WaterFlow::kPhaseCycle * 0.999f, 0, f, w);
-		CHECK(f > 0.99f && w < 0.01f);
-	}
-	// The contrast restore: 1 when one layer is alone, the biggest when the two are equal; blended unrelated unit-variance
-	// layers come out with unit variance again.
-	CHECK(std::abs(WaterFlow::ContrastRestore(1.0f, 0.0f) - 1.0f) < 1e-6f);
-	CHECK(std::abs(WaterFlow::ContrastRestore(0.5f, 0.5f) - std::sqrt(2.0f)) < 1e-5f);
-	for (float w0 : { 0.1f, 0.3f, 0.5f, 0.8f }) {
-		const float w1 = 1.0f - w0;
-		double sum = 0.0, sumSquares = 0.0;
-		const int n = 20000;
-		for (int i = 0; i < n; ++i) {
-			const double a = Random01(state) * 2.0 - 1.0, b = Random01(state) * 2.0 - 1.0;
-			const double blended = (w0 * a + w1 * b) * WaterFlow::ContrastRestore(w0, w1);
-			sum += blended;
-			sumSquares += blended * blended;
-		}
-		const double variance = sumSquares / n - (sum / n) * (sum / n);
-		CHECK(std::abs(variance - 1.0 / 3.0) < 0.02);   // uniform -1..1 has variance 1/3: the restore keeps it, whatever the weights
-	}
-}
-
-// How squeezed the surface is at a REST position (the shader's Jacobian), from finite differences of the real displacement.
-static float FoldAt(const WaterWaves::Table& t, float x, float z, float time)
-{
-	const float e = 0.01f;
-	float dx0, dy, dz0, dx1, dz1, dx2, dz2, dx3, dz3;
-	WaterWaves::Displacement(t, x + e, z, time, dx0, dy, dz0);
-	WaterWaves::Displacement(t, x - e, z, time, dx1, dy, dz1);
-	WaterWaves::Displacement(t, x, z + e, time, dx2, dy, dz2);
-	WaterWaves::Displacement(t, x, z - e, time, dx3, dy, dz3);
-	const float a = 1.0f + (dx0 - dx1) / (2.0f * e), b = (dx2 - dx3) / (2.0f * e);
-	const float c = (dz0 - dz1) / (2.0f * e), d = 1.0f + (dz2 - dz3) / (2.0f * e);
-	return a * d - b * c;
-}
-
-static void TestFoamTrail()
-{
-	CHECK(WaterFlow::kTrailSamples == 3);
-	float previous = 1.0f;
-	for (int k = 1; k <= WaterFlow::kTrailSamples; ++k) {
-		const float w = WaterFlow::TrailWeight(k);
-		CHECK(w > 0.0f && w < previous);   // older foam is thinner
-		previous = w;
-	}
-	CHECK(std::abs(WaterFlow::TrailWeight(WaterFlow::kTrailSamples) - 0.15f) < 0.01f);
-	CHECK(std::abs(WaterFlow::TrailTime(10.0f, 1.5f, WaterFlow::kTrailSamples) - 8.5f) < 1e-5f);   // the last sample is a whole trail ago
-	CHECK(WaterFlow::TrailTime(10.0f, 1.5f, 1) < 10.0f);
-
-	// The idea itself: waves are written in REST positions, which label a parcel of water, so "was this parcel squeezed a moment
-	// ago?" is the squeeze at an EARLIER time at the same rest position. One sharp wave, one parcel.
-	WaterWaves::Params p;
-	p.count = 1; p.style = WaterWaves::Style::Classic; p.choppiness = 1.0f; p.amplitude = 1.5f; p.frequency = 0.6f;   // k * a = 0.9: the crest squeezes the surface by up to 0.9
-	const WaterWaves::Table table = WaterWaves::Build(p);
-	const float x = 3.0f, z = 1.0f, threshold = 0.5f;
-	auto foam = [&](float time) { return std::clamp(((1.0f - FoldAt(table, x, z, time)) - threshold) * 5.0f, 0.0f, 1.0f); };
-
-	// The moment this parcel is squeezed the most, within one wave period.
-	const float period = 6.2831853f / table.waves[0].omega;
-	float tCrest = 0.0f, worst = 1.0f;
-	for (float time = 0.0f; time < period; time += 0.01f) {
-		const float fold = FoldAt(table, x, z, time);
-		if (fold < worst) { worst = fold; tCrest = time; }
-	}
-	CHECK(1.0f - worst > threshold);                      // the parcel does fold at its crest...
-	CHECK(foam(tCrest) > 0.5f);
-
-	// ...a second later the crest has moved on and the instant squeeze is gone, but the trail still sees it.
-	const float later = tCrest + 1.2f, trail = 1.5f;   // 1.2 s at about 1 rad/s: 1.2 rad past the crest
-	CHECK(foam(later) < 1e-4f);
-	float seen = 0.0f;
-	for (int k = 1; k <= WaterFlow::kTrailSamples; ++k)
-		seen = std::max(seen, foam(WaterFlow::TrailTime(later, trail, k)) * WaterFlow::TrailWeight(k));
-	CHECK(seen > 0.1f);
-	// A trail of 0 looks only at the present: nothing left behind.
-	float none = 0.0f;
-	for (int k = 1; k <= WaterFlow::kTrailSamples; ++k) none = std::max(none, foam(WaterFlow::TrailTime(later, 0.0f, k)));
-	CHECK(none < 1e-4f);
-	// And the trail fades out: long after the crest nothing is left within one trail length.
-	const float muchLater = tCrest + 1.2f + trail + 0.5f;
-	float gone = foam(muchLater);
-	for (int k = 1; k <= WaterFlow::kTrailSamples; ++k) gone = std::max(gone, foam(WaterFlow::TrailTime(muchLater, trail, k)));
-	CHECK(gone < 1e-4f);
-}
-
-// Lesson 44: waves the mesh can show. A big body has big grid cells, and the vertex shader fades every wave a cell cannot follow.
-static void TestResolvableWaves()
-{
-	// VertexFade is the shader's rule (waves.hlsli): full at six spacings per wavelength, nothing at three.
-	const float spacing = 2.0f;
-	CHECK(std::abs(WaterWaves::VertexFade(6.2831853f / (6.0f * spacing), spacing) - 1.0f) < 1e-5f);   // wavelength 6 spacings
-	CHECK(std::abs(WaterWaves::VertexFade(6.2831853f / (3.0f * spacing), spacing)) < 1e-5f);          // wavelength 3 spacings
-	CHECK(std::abs(WaterWaves::VertexFade(6.2831853f / (4.0f * spacing), spacing) - 0.5f) < 1e-4f);   // four spacings: half (2 - 2 * 0.75)
-	CHECK(WaterWaves::VertexFade(0.01f, spacing) == 1.0f && WaterWaves::VertexFade(100.0f, spacing) == 0.0f);
-
-	// Scaling a sea: every wavelength and every height by the same factor, so every wave keeps its steepness.
-	WaterWaves::Params p;
-	p.amplitude = 0.6f; p.frequency = 0.5f; p.count = 7; p.style = WaterWaves::Style::Spectrum;
-	const WaterWaves::Table base = WaterWaves::Build(p);
-	const WaterWaves::Table big = WaterWaves::Build(WaterWaves::ScaledBy(p, 2.5f));
-	CHECK(base.count == big.count && base.count > 3);
-	for (int i = 0; i < base.count; ++i) {
-		CHECK(std::abs(big.waves[i].k * 2.5f - base.waves[i].k) < 1e-4f * base.waves[i].k);                        // 2.5 times longer
-		CHECK(std::abs(big.waves[i].amplitude - base.waves[i].amplitude * 2.5f) < 1e-4f * (1.0f + base.waves[i].amplitude));   // and taller
-		CHECK(std::abs(big.waves[i].amplitude * big.waves[i].k - base.waves[i].amplitude * base.waves[i].k) < 1e-4f);     // the same steepness
-	}
-	// Classic style scales the same way.
-	WaterWaves::Params classic = p;
-	classic.style = WaterWaves::Style::Classic;
-	CHECK(std::abs(WaterWaves::Build(WaterWaves::ScaledBy(classic, 2.0f)).waves[0].k * 2.0f - WaterWaves::Build(classic).waves[0].k) < 1e-4f);
-
-	// A fine mesh shows everything and does not touch the sea; a coarser one needs a bigger sea, never a smaller one.
-	CHECK(WaterWaves::ShownShare(base, 0.3f) > 0.99f);
-	CHECK(WaterWaves::ResolvableScale(p, 0.3f) == 1.0f);
-	float previous = 1.0f;
-	for (float cell : { 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f }) {
-		const float scale = WaterWaves::ResolvableScale(p, cell);
-		CHECK(scale >= previous - 1e-4f);                                                   // coarser cells never need LESS scale
-		previous = scale;
-		if (scale < WaterWaves::kWaveScaleMax - 1e-3f)                                      // and it really does the job...
-			CHECK(WaterWaves::ShownShare(WaterWaves::Build(WaterWaves::ScaledBy(p, scale)), cell) >= WaterWaves::kShownShareWanted - 1e-3f);
-		if (scale > 1.0f + 1e-3f)                                                           // ...with no more than it needs
-			CHECK(WaterWaves::ShownShare(WaterWaves::Build(WaterWaves::ScaledBy(p, scale * 0.97f)), cell) < WaterWaves::kShownShareWanted);
-	}
-	CHECK(WaterWaves::ResolvableScale(p, 1000.0f) == WaterWaves::kWaveScaleMax);            // hopeless: capped, not infinite
-	CHECK(WaterWaves::ResolvableScale(p, 0.0f) == 1.0f && WaterWaves::ResolvableScale(p, -1.0f) == 1.0f);
-
-	// The bug that was reported: on the real tile grid, the finest cell of a big body outgrows the waves. Without the scale a
-	// 2000-unit sea keeps a fraction of its height; with it, it keeps what a small one does.
-	for (float amplitude : { 0.12f, 0.35f, 0.6f }) {
-		WaterWaves::Params sea = p;
-		sea.amplitude = amplitude;
-		for (float size : { 100.0f, 500.0f, 1000.0f, 2000.0f }) {
-			const WaterMesh::TileGrid grid = WaterMesh::ChooseTileGrid(size, size, -1, 32, 1.5f);
-			const float cell = size / static_cast<float>(grid.x * 32);
-			const float scale = WaterWaves::ResolvableScale(sea, cell);
-			CHECK(WaterWaves::ShownShare(WaterWaves::Build(WaterWaves::ScaledBy(sea, scale)), cell) >= WaterWaves::kShownShareWanted - 1e-3f);
-			if (size <= 100.0f) CHECK(scale == 1.0f);                                       // a small body's sea is left alone
-			if (size >= 2000.0f) {
-				CHECK(WaterWaves::ShownShare(WaterWaves::Build(sea), cell) < 0.6f);          // the bug: more than 40% of the height gone...
-				CHECK(scale > 1.5f);                                                         // ...and what it takes to bring it back
-			}
-		}
-	}
-}
-
 int main()
 {
 	TestTileIndices();
 	TestTileGrid();
 	TestWaves();
-	TestRiverFlow();
 	TestShoaling();
 	TestShoreMap();
-	TestSpectrum();
+	TestSeaTable();
 	TestTileGrowth();
 	TestShoreDirections();
 	TestShelter();
-	TestTypeUiAndWeather();
+	TestWeather();
 	TestMaxDepthIn();
-	TestCurrentProfile();
-	TestFlowingLayers();
-	TestFoamTrail();
-	TestResolvableWaves();
 	if (g_failures == 0) std::printf("water tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;
 }

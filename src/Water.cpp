@@ -6,8 +6,6 @@
 #include "Terrain.h"
 #include "TerrainWorld.h"
 #include "WaterMesh.h"
-#include "WaterRiver.h"
-#include "WaterSelect.h"
 #include <DirectXMath.h>
 #include <algorithm>
 #include <cmath>
@@ -38,7 +36,7 @@ struct WaterMaterialCB {
 };
 static_assert(sizeof(WaterMaterialCB) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
-// The water is a grid of TILES (8 x 8 for a square body; fewer, longer rows for a river: see WaterMesh::ChooseTileGrid).
+// The water is a grid of TILES (see WaterMesh::ChooseTileGrid).
 // Each tile is its own mesh, so it can be skipped when the camera cannot see it and drawn with fewer triangles when it is
 // far away (see ChooseTiles). The grid is finest right under the camera and coarse at the horizon, instead of one uniform
 // grid that is too coarse up close and wasteful far away.
@@ -94,17 +92,6 @@ bool Water::GetBoundingSphere(XMFLOAT3& center, float& radius) const
 Water::~Water()
 {
 	ReleaseShoreMap();
-	ReleaseRiverFlow();
-}
-
-void Water::ReleaseRiverFlow()
-{
-	if (flowView_) { flowView_->Release(); flowView_ = nullptr; }
-	if (flowTexture_) { flowTexture_->Release(); flowTexture_ = nullptr; }
-	riverWorld_.clear();
-	riverKey_.clear();
-	tileOffRiver_.clear();   // no curve: every tile counts again
-	if (!riverLevels_.empty()) { riverLevels_.clear(); ++riverLevelRevision_; }   // ...and the surface is level again
 }
 
 void Water::ReleaseShoreMap()
@@ -176,13 +163,13 @@ void Water::SetSettings(const WaterSettings& settings)
 	UploadMaterial(false);
 }
 
-// The grid depends on the body's proportions (a river needs long rows of tiles, a pond square ones) and on the mesh detail
+// The grid depends on the body's proportions and on the mesh detail
 // setting. Both change rarely: only then is the mesh rebuilt.
 void Water::EnsureMesh()
 {
 	// The finest cell should be small enough to show waves up to about 2.5 times the base frequency (3 cells per wavelength),
 	// or the shader fades them out: so a bigger body gets more tiles, not bigger cells (WaterMesh::ChooseTileGrid).
-	const float targetCell = std::clamp(6.2831853f / (3.0f * 2.5f * (std::max)(settings_.waveFrequency, 0.05f)), 0.5f, 2.0f);
+	const float targetCell = std::clamp(6.2831853f / (3.0f * 2.5f * WaterWaves::kBaseFrequency), 0.5f, 2.0f);
 	const WaterMesh::TileGrid grid = WaterMesh::ChooseTileGrid(ExtentX(), ExtentZ(), gridBuilt_ ? builtGrid_.shapeClass : -1,
 																			   kCellsPerTile[std::clamp(settings_.meshDetail, 0, 2)], targetCell);
 	if (gridBuilt_ && grid == builtGrid_ && settings_.meshDetail == builtMeshDetail_ && renderable_) return;
@@ -245,16 +232,11 @@ void Water::RebuildMesh(const WaterMesh::TileGrid& grid)
 	tileLod_.assign(tiles_.size(), Model::kSkipMesh);   // "no level chosen yet": the first frame picks without hysteresis
 	tileDry_.clear();
 	UpdateDryTiles();
-	tileOffRiver_.assign(tiles_.size(), 0);   // new tiles: show all until RefreshRiverFlow measures them (its key includes the grid)
 }
 
 float Water::GetTravelDegrees() const
 {
-	if (!settings_.HasCurrent()) return sceneWind_.direction;   // the scene's wind (a body has none of its own since lesson 63)
-	// The flow is stored in the body's OWN space: flowAngle 0 = along its +Z. The world matrix turns that direction by the
-	// yaw (rotation about Y), so a local (sin a, cos a) becomes the world direction (sin(a + yaw), cos(a + yaw)).
-	// The editor's angle runs 0 = +X, 90 = +Z, which makes that direction 90 - (a + yaw) degrees.
-	return WaterWaves::RiverTravelDegrees(settings_.flowAngle, rotation_.y);
+	return sceneWind_.direction;   // the scene's wind (a body has none of its own since lesson 63)
 }
 
 WaterWaves::Params Water::CurrentWaveParams() const
@@ -262,26 +244,9 @@ WaterWaves::Params Water::CurrentWaveParams() const
 	WaterWaves::Params p = settings_.WaveParams();
 	p.windDegrees = GetTravelDegrees();
 	p.shoreWaves = settings_.shoreWaves;   // waves can grow near a shore: the table's height bound must have room for that
-	if (settings_.HasCurrent()) {
-		p.flowSpeed = settings_.flowSpeed;
-		p.spread = (std::min)(p.spread, 0.25f);   // a current has one direction: a wide spread would send waves sideways or upstream
-	}
-	if (WavesFollowWind()) {   // the wind makes the sea (lesson 63): how hard, and over how much water. No scale: a sea is not made bigger to fit a mesh.
-		p.windSpeed = sceneWind_.speed;
-		p.fetch = WindFetch();
-		return p;
-	}
-	return WaterWaves::ScaledBy(p, autoWaveScale_);   // a big body's mesh cannot show small waves: the same sea, bigger (lesson 44)
-}
-
-float Water::WindFetch() const
-{
-	if (settings_.bodyType == WaterBodyType::Ocean) return 0.0f;   // the open sea: no shore upwind, so nothing limits the waves but the wind
-	// The wind's direction in the body's own frame. A body turned by `yaw` about Y sends its local +X to the world direction -yaw
-	// (XMMatrixRotationY), so a world direction at angle a is at angle a + yaw in the body's frame.
-	const float angle = XMConvertToRadians(GetTravelDegrees()) + rotation_.y;
-	const double chord = SeaState::ChordLength(ExtentX(), ExtentZ(), settings_.shape == WaterShape::Ellipse, std::cos(angle), std::sin(angle));
-	return static_cast<float>((std::max)(chord, 1.0));
+	p.windSpeed = sceneWind_.speed;        // the wind makes the sea: how hard it blows. The open sea has no fetch limit, and a sea is not made bigger to fit a mesh.
+	p.fetch = 0.0f;
+	return p;
 }
 
 float Water::FinestCell() const
@@ -293,13 +258,8 @@ float Water::FinestCell() const
 
 void Water::RebuildWaves()
 {
-	// The automatic scale is found for the sea as the author set it (so with the scale of 1), then applied by CurrentWaveParams.
-	autoWaveScale_ = 1.0f;
-	if (settings_.autoWaveScale && gridBuilt_ && !settings_.HasCurrent() && !WavesFollowWind()) {   // (a river keeps its waves as set: the current carries its look, and its grid is long and thin, not coarse; the wind's sea is never made bigger to fit the mesh)
-		autoWaveScale_ = WaterWaves::ResolvableScale(CurrentWaveParams(), FinestCell());
-	}
 	waves_ = WaterWaves::Build(CurrentWaveParams());
-	seaSummary_ = SeaState::Describe(sceneWind_.speed, WindFetch());
+	seaSummary_ = SeaState::Describe(sceneWind_.speed, 0.0);
 	UpdateDryTiles();   // how high the surface can reach decides which tiles are safely under the ground
 }
 
@@ -309,11 +269,9 @@ void Water::UploadMaterial(bool mirrored) const
 	// Colours are picked as sRGB, the shader wants linear.
 	const XMFLOAT3 deep = SrgbToLinear(settings_.color);
 	const XMFLOAT3 shallow = SrgbToLinear(settings_.shallowColor);
-	const bool river = settings_.HasCurrent();
 	const float windRadians = XMConvertToRadians(GetTravelDegrees());
 	// One grid cell of the finest level, in world units (the cells are square: the tiles are).
 	const float cellSize = FinestCell();
-	const float halfSmallSide = 0.5f * (std::max)((std::min)(ExtentX(), ExtentZ()), 0.01f);
 
 	WaterMaterialCB block{};
 	block.deepColor = { deep.x, deep.y, deep.z, settings_.alpha };
@@ -325,20 +283,15 @@ void Water::UploadMaterial(bool mirrored) const
 					   static_cast<float>(static_cast<int>(settings_.debugView)) };
 	block.meshInfo = { settings_.lodDistance, cellSize, waves_.heightBound, 0.0f };
 	block.wind = { std::cos(windRadians), std::sin(windRadians), 0.0f, 0.0f };
-	// The ripples drift with the wind at a fixed pace (multiplier 1: how it always looked). On a river they ride the current
-	// instead: the shader drifts layer 1 by 0.35 NOISE units per second, and one world unit is `detailScale` noise units,
-	// so asking for flowSpeed world units per second means a multiplier of flowSpeed * detailScale / 0.35.
 	block.shore = { depthView_ ? 1.0f : 0.0f, settings_.shoreWaves, settings_.swash, settings_.shoreShelter };
 	block.groupInfo = { waves_.groupStrength, waves_.groupK, waves_.groupSpeed, 0.0f };
-	// The flow runs along the body's own (sin a, cos a) in (x, z); "across" is turned a quarter: (cos a, -sin a).
-	const float flowRadians = XMConvertToRadians(settings_.flowAngle);
-	block.river = { settings_.bankDrag, settings_.channelProfile, std::cos(flowRadians), -std::sin(flowRadians) };
-	block.river2 = { settings_.rippleStretch, settings_.rapids, flowView_ ? 1.0f : 0.0f, 0.0f };   // z: the river has a curve, read its flow map
 	block.foam2 = { settings_.foamScale, settings_.foamTrail, 0.0f, 0.0f };
-	block.flow = { river ? settings_.flowSpeed * settings_.detailScale / 0.35f : 1.0f, river ? 0.0f : 1.0f,
-				   static_cast<float>(static_cast<int>(settings_.bodyType)), river ? settings_.flowSpeed : 0.0f };
-	// The rim of a round body fades over about 40 cm (as a fraction of its radius; the plane's own space is -1..1).
-	block.shape = { mirrored ? 1.0f : 0.0f, settings_.shape == WaterShape::Ellipse ? 1.0f : 0.0f, 0.4f / halfSmallSide, 0.0f };
+	// The fields the shader still reads for rivers and round bodies stay in the buffer so the layout does not move (they leave with the water shader's
+	// rewrite, roadmap O1 to O4): ripples drift with the wind at the pace they always had, sideways drift on, an ocean, a rectangle.
+	block.flow = { 1.0f, 1.0f, 0.0f, 0.0f };
+	block.river = { 0.0f, 0.0f, 1.0f, 0.0f };
+	block.river2 = { 1.0f, 0.0f, 0.0f, 0.0f };
+	block.shape = { mirrored ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
 	for (int i = 0; i < waves_.count; ++i) {
 		const WaterWaves::Wave& w = waves_.waves[i];
 		block.waveDirK[i] = { w.dirX, w.dirZ, w.k, w.amplitude };
@@ -363,7 +316,6 @@ void Water::ChooseTiles(const RenderView& view) const
 	// The waves lift and push the surface by up to heightBound in every direction: the boxes must include that, or
 	// a tile whose wave crest is still on screen could be skipped.
 	const float margin = waves_.heightBound + 0.25f;
-	const bool round = settings_.shape == WaterShape::Ellipse;
 
 	// To CHANGE level a tile must pass the threshold by 10%, so a tile on a boundary does not flicker as the camera jitters.
 	const float thresholds[kWaterLodCount - 1] = { settings_.lodDistance, settings_.lodDistance * 2.2f, settings_.lodDistance * 4.5f };
@@ -371,12 +323,9 @@ void Water::ChooseTiles(const RenderView& view) const
 
 	drawList_.assign(tiles_.size(), Model::kSkipMesh);
 	const bool dryKnown = tileDry_.size() == tiles_.size();
-	const bool offRiverKnown = tileOffRiver_.size() == tiles_.size();
 	for (size_t i = 0; i < tiles_.size(); ++i) {
 		// Under dry ground: the terrain would hide every pixel of this tile. Skip it before any other work.
 		if (dryKnown && tileDry_[i]) { ++stats.tilesDry; continue; }
-		// A river is only where its curve is: the shader clips the rest, so do not even send the tile.
-		if (offRiverKnown && tileOffRiver_[i]) { ++stats.tilesOffRiver; continue; }
 
 		XMFLOAT3 worldMin, worldMax;
 		TransformBounds(world, tiles_[i].localMin, tiles_[i].localMax, worldMin, worldMax);
@@ -384,9 +333,6 @@ void Water::ChooseTiles(const RenderView& view) const
 		worldMax = { worldMax.x + margin, worldMax.y + margin, worldMax.z + margin };
 
 		if (settings_.frustumCulling && !view.frustum.IntersectsAABB(worldMin, worldMax)) continue;
-
-		// A round body only fills the middle of its square: tiles in the corners lie wholly outside the ellipse.
-		if (round && TileOutsideOutline(i)) continue;
 
 		// Distance is measured from the REAL camera even for the mirror view, so every view draws the same level.
 		const float distance = DistanceToBox(view.lodOrigin, worldMin, worldMax);
@@ -426,8 +372,6 @@ void Water::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 	ID3D11ShaderResourceView* depthMap = depthView_;
 	ctx->VSSetShaderResources(Slots::kSrvWaterDepth, 1, &depthMap);
 	ctx->PSSetShaderResources(Slots::kSrvWaterDepth, 1, &depthMap);
-	ID3D11ShaderResourceView* flowMap = flowView_;   // null for a body with no curve (the shader is told by river2.z)
-	ctx->PSSetShaderResources(Slots::kSrvWaterFlow, 1, &flowMap);
 
 	if (settings_.wireframe && wireMaterial_.HasRasterizerState()) {
 		wireMaterial_.Apply(ctx);
@@ -438,15 +382,6 @@ void Water::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 		renderable_->Render(ctx, &drawList_);
 		ctx->RSSetState(nullptr);   // the next object is not drawn double-sided
 	}
-}
-
-bool Water::TileOutsideOutline(size_t index) const
-{
-	const XMFLOAT3& lo = tiles_[index].localMin;
-	const XMFLOAT3& hi = tiles_[index].localMax;
-	const float nearestX = (lo.x <= 0.0f && hi.x >= 0.0f) ? 0.0f : (std::min)(std::abs(lo.x), std::abs(hi.x));
-	const float nearestZ = (lo.z <= 0.0f && hi.z >= 0.0f) ? 0.0f : (std::min)(std::abs(lo.z), std::abs(hi.z));
-	return nearestX * nearestX + nearestZ * nearestZ > 1.0f;
 }
 
 // A tile is DRY when the ground under all of it (and a little around it, because the waves push the surface sideways too)
@@ -468,35 +403,14 @@ void Water::UpdateDryTiles()
 	}
 }
 
-// A tile is OFF THE RIVER when no part of the river's corridor reaches it (WaterRiver::CorridorReaches; the shader clips the water
-// beyond the corridor, so such a tile could not show a pixel anyway). The waves push the surface sideways, so the tile's reach
-// is grown by the wave margin like the frustum test. Decided when the curve, the body or the mesh changes, not every frame.
-void Water::UpdateRiverTiles()
-{
-	tileOffRiver_.assign(tiles_.size(), 0);
-	if (!settings_.HasRiverPath() || riverWorld_.size() < 2 || tiles_.empty() || !renderable_ || !renderable_->GetModel()) return;
-	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
-	const float margin = waves_.heightBound + 0.25f;
-	for (size_t i = 0; i < tiles_.size(); ++i) {
-		XMFLOAT3 worldMin, worldMax;
-		TransformBounds(world, tiles_[i].localMin, tiles_[i].localMax, worldMin, worldMax);   // (a box in the world, turned or not)
-		const float cx = 0.5f * (worldMin.x + worldMax.x), cz = 0.5f * (worldMin.z + worldMax.z);
-		const float radius = 0.5f * std::hypot(worldMax.x - worldMin.x, worldMax.z - worldMin.z) + margin;
-		tileOffRiver_[i] = WaterRiver::CorridorReaches(riverWorld_, cx, cz, radius) ? 0 : 1;
-	}
-}
-
 bool Water::IsWetVisible(const Frustum& frustum) const
 {
 	if (!IsVisible(frustum)) return false;   // the whole body is off screen: the cheap test first
 	if (tileDry_.size() != tiles_.size()) return true;   // nothing known about the ground: assume the water shows
 	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
 	const float margin = waves_.heightBound + 0.25f;
-	const bool round = settings_.shape == WaterShape::Ellipse;
 	for (size_t i = 0; i < tiles_.size(); ++i) {
 		if (tileDry_[i]) continue;
-		if (tileOffRiver_.size() == tiles_.size() && tileOffRiver_[i]) continue;
-		if (round && TileOutsideOutline(i)) continue;
 		if (!settings_.frustumCulling) return true;
 		XMFLOAT3 worldMin, worldMax;
 		TransformBounds(world, tiles_[i].localMin, tiles_[i].localMax, worldMin, worldMax);
@@ -523,19 +437,14 @@ bool Water::IsVisible(const Frustum& frustum) const
 bool Water::IsOverWater(float x, float z) const
 {
 	if (!renderable_ || !renderable_->GetModel()) return false;
-	// Into the plane's own space (-1..1 across), where both outlines are trivial: this takes rotation and scale into account.
+	// Into the plane's own space (-1..1 across), where the outline is trivial: this takes rotation and scale into account.
 	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
 	XMVECTOR determinant;
 	const XMMATRIX inverse = XMMatrixInverse(&determinant, world);
 	if (std::abs(XMVectorGetX(determinant)) < 1e-12f) return false;
 	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), inverse);
 	const float lx = XMVectorGetX(local), lz = XMVectorGetZ(local);
-	const bool onPlane = settings_.shape == WaterShape::Ellipse ? lx * lx + lz * lz <= 1.0f : (std::abs(lx) <= 1.0f && std::abs(lz) <= 1.0f);
-	if (!onPlane) return false;
-	// A river with a curve is water only inside its corridor (the shader clips the rest): a boat, a wave query or the camera
-	// out beside it is not on water.
-	if (settings_.HasRiverPath() && riverWorld_.size() >= 2) return WaterRiver::InCorridor(riverWorld_, x, z);
-	return true;
+	return std::abs(lx) <= 1.0f && std::abs(lz) <= 1.0f;
 }
 
 float Water::DistanceTo(const XMFLOAT3& point) const
@@ -550,7 +459,7 @@ float Water::DistanceTo(const XMFLOAT3& point) const
 float Water::SampleHeight(float x, float z, float time) const
 {
 	if (!IsOverWater(x, z)) return position_.y;
-	const float level = position_.y + LevelAtWorld(x, z);   // a river that falls: the surface at rest is not at the body's level everywhere
+	const float level = position_.y;
 	if ((settings_.shoreWaves > 0.0f || settings_.shoreShelter > 0.0f) && !depthField_.IsEmpty()) {   // the same shoaled, sheltered waves the shader draws
 		return level + WaterWaves::HeightAtShore(waves_, x, z, time, settings_.shoreWaves, settings_.shoreShelter,
 													   [this](float restX, float restZ) { return ShoreAtWorld(restX, restZ); });
@@ -568,128 +477,6 @@ XMFLOAT3 Water::SampleNormal(float x, float z, float time) const
 	return n;
 }
 
-XMFLOAT2 Water::BodyToWorld(float bodyX, float bodyZ) const
-{
-	// The plane's own space is -1..1; the body's frame is the same thing in world units from its centre.
-	if (!renderable_ || !renderable_->GetModel()) return { position_.x + bodyX, position_.z + bodyZ };
-	const float lx = bodyX / (std::max)(0.5f * ExtentX(), 1e-3f), lz = bodyZ / (std::max)(0.5f * ExtentZ(), 1e-3f);
-	const XMVECTOR p = XMVector3Transform(XMVectorSet(lx, 0.0f, lz, 1.0f), XMLoadFloat4x4(&renderable_->GetModel()->GetWorld()));
-	return { XMVectorGetX(p), XMVectorGetZ(p) };
-}
-
-bool Water::WorldToBody(float worldX, float worldZ, float& bodyX, float& bodyZ) const
-{
-	if (!worldToLocalValid_) return false;
-	const XMVECTOR local = XMVector3Transform(XMVectorSet(worldX, position_.y, worldZ, 1.0f), XMLoadFloat4x4(&worldToLocal_));
-	bodyX = XMVectorGetX(local) * 0.5f * ExtentX();
-	bodyZ = XMVectorGetZ(local) * 0.5f * ExtentZ();
-	return true;
-}
-
-void Water::RefreshRiverFlow()
-{
-	if (!device_ || !renderable_ || !renderable_->GetModel() || !worldToLocalValid_) return;
-	if (!settings_.HasRiverPath()) {
-		if (flowView_ || !riverWorld_.empty() || !riverKey_.empty()) ReleaseRiverFlow();
-		return;
-	}
-	// Measure again only when something that decides the numbers changed: the curve, or where the body is and how big.
-	std::vector<float> key = { position_.x, position_.y, position_.z, rotation_.x, rotation_.y, rotation_.z,
-							   scale_.x, scale_.y, scale_.z, settings_.size, settings_.sizeZ, static_cast<float>(settings_.riverPath.size()),
-							   static_cast<float>(builtGrid_.x), static_cast<float>(builtGrid_.z), static_cast<float>(settings_.meshDetail) };   // (a rebuilt mesh has new tiles to measure)
-	for (const RiverPoint& p : settings_.riverPath) { key.push_back(p.x); key.push_back(p.z); key.push_back(p.width); key.push_back(p.level); }
-	if (key == riverKey_) return;
-	riverKey_ = std::move(key);
-
-	// The curve in the world. A spline is the same curve whether it is built before or after a move, a turn or an even scale.
-	std::vector<RiverPoint> worldPoints;
-	worldPoints.reserve(settings_.riverPath.size());
-	for (const RiverPoint& p : settings_.riverPath) {
-		const XMFLOAT2 w = BodyToWorld(p.x, p.z);
-		worldPoints.push_back({ w.x, w.y, p.width, p.level });
-	}
-	riverWorld_ = RiverPath::Build(worldPoints, 1.0f);
-	UpdateRiverTiles();   // which tiles the corridor reaches: decided here, once per change, not once per frame
-
-	int width = 0, height = 0;
-	WaterShore::ChooseResolution(ExtentX(), ExtentZ(), width, height);   // the same texel grid as the depth map
-	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
-	const XMMATRIX toLocal = XMLoadFloat4x4(&worldToLocal_);
-	const float planeY = position_.y;
-	std::vector<float> levels;
-	const std::vector<float> texels = WaterRiver::Bake(width, height, riverWorld_,
-		[&world](float localX, float localZ, float& worldX, float& worldZ) {
-			const XMVECTOR p = XMVector3Transform(XMVectorSet(localX, 0.0f, localZ, 1.0f), world);
-			worldX = XMVectorGetX(p);
-			worldZ = XMVectorGetZ(p);
-		},
-		[&toLocal, planeY](float worldX, float worldZ, float& localX, float& localZ) {
-			const XMVECTOR p = XMVector3Transform(XMVectorSet(worldX, planeY, worldZ, 1.0f), toLocal);
-			localX = XMVectorGetX(p);
-			localZ = XMVectorGetZ(p);
-		}, &levels);
-
-	// The water's height along the river (lesson 41). A river with no fall bakes all zeros, which equals what was there before,
-	// so the depth map (which includes the levels) is measured again only when they really changed.
-	bool anyFall = false;
-	for (float v : levels) if (v != 0.0f) { anyFall = true; break; }
-	if (!anyFall) levels.clear();
-	if (levels != riverLevels_) { riverLevels_ = std::move(levels); ++riverLevelRevision_; }
-
-	D3D11_TEXTURE2D_DESC desc{};
-	desc.Width = static_cast<UINT>(width);
-	desc.Height = static_cast<UINT>(height);
-	desc.MipLevels = 1;
-	desc.ArraySize = 1;
-	desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;   // s, d, flow direction x, z (WaterRiver.h)
-	desc.SampleDesc.Count = 1;
-	desc.Usage = D3D11_USAGE_IMMUTABLE;             // a new map is made whenever the curve changes
-	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-	D3D11_SUBRESOURCE_DATA data{};
-	data.pSysMem = texels.data();
-	data.SysMemPitch = static_cast<UINT>(width * 4 * sizeof(float));
-	ID3D11Texture2D* texture = nullptr;
-	HRESULT hr = device_->CreateTexture2D(&desc, &data, &texture);
-	if (FAILED(hr)) {
-		LOG_HR(hr, "River flow map creation failed: this river has no curve to follow");
-		if (flowView_) { flowView_->Release(); flowView_ = nullptr; }
-		if (flowTexture_) { flowTexture_->Release(); flowTexture_ = nullptr; }
-		return;   // (the key stays: no retry every frame)
-	}
-	ID3D11ShaderResourceView* view = nullptr;
-	hr = device_->CreateShaderResourceView(texture, nullptr, &view);
-	if (FAILED(hr)) {
-		LOG_HR(hr, "River flow map view creation failed: this river has no curve to follow");
-		texture->Release();
-		if (flowView_) { flowView_->Release(); flowView_ = nullptr; }
-		if (flowTexture_) { flowTexture_->Release(); flowTexture_ = nullptr; }
-		return;
-	}
-	if (flowView_) flowView_->Release();
-	if (flowTexture_) flowTexture_->Release();
-	flowTexture_ = texture;
-	flowView_ = view;
-}
-
-XMFLOAT2 Water::SampleFlow(float x, float z) const
-{
-	if (!settings_.HasCurrent() || !IsOverWater(x, z) || !worldToLocalValid_) return { 0.0f, 0.0f };
-	if (settings_.HasRiverPath() && !riverWorld_.empty()) {
-		// A river with a curve: the water runs along it, fastest in the middle (the same numbers as the shader's flow map).
-		const RiverPath::Hit hit = RiverPath::Closest(riverWorld_, x, z);
-		if (!hit.found) return { 0.0f, 0.0f };
-		const float mask = 1.0f - WaterRiver::Smoothstep(WaterRiver::kCorridorFull, WaterRiver::kCorridorEnd, std::abs(hit.across));
-		const float speed = mask * settings_.flowSpeed * WaterFlow::SpeedFactor(hit.across, DepthAtWorld(x, z), settings_.bankDrag, settings_.channelProfile);
-		return { hit.tx * speed, hit.tz * speed };
-	}
-	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), XMLoadFloat4x4(&worldToLocal_));
-	const float flowRadians = XMConvertToRadians(settings_.flowAngle);
-	const float across = XMVectorGetX(local) * std::cos(flowRadians) - XMVectorGetZ(local) * std::sin(flowRadians);   // the shader's dot(local, river.zw)
-	const float speed = settings_.flowSpeed * WaterFlow::SpeedFactor(across, DepthAtWorld(x, z), settings_.bankDrag, settings_.channelProfile);
-	const float travel = XMConvertToRadians(GetTravelDegrees());
-	return { std::cos(travel) * speed, std::sin(travel) * speed };
-}
-
 bool Water::GetEditorTransform(XMFLOAT3& position, XMFLOAT3& rotation, XMFLOAT3& scale) const
 {
 	position = position_;
@@ -702,14 +489,11 @@ bool Water::SetEditorTransform(const XMFLOAT3& position, const XMFLOAT3& rotatio
 							   const XMFLOAT3& scale)
 {
 	position_ = position;
-	rotation_ = { 0.0f, rotation.y, 0.0f };   // water is level: a body can be turned about the vertical, never tilted (the river's frame, the depth map and IsOverWater all assume it)
+	rotation_ = { 0.0f, rotation.y, 0.0f };   // water is level: a body can be turned about the vertical, never tilted (the depth map and IsOverWater assume it)
 	scale_ = scale;
 	settings_.height = position_.y;   // one source of truth: otherwise the next SetSettings() snaps Y back
-	if (settings_.HasCurrent() || WavesFollowWind()) RebuildWaves();   // a current's flow follows the way the body is turned; a wind sea's fetch follows its size and turn
-	EnsureMesh();                      // scaling can change the body's proportions: a river needs a different grid than a pond
-	if (settings_.autoWaveScale) RebuildWaves();   // ...and the size of its cells, so the waves it can show (lesson 44)
+	EnsureMesh();                      // scaling can change the body's proportions
 	tileDry_.assign(tiles_.size(), 0);   // moving or scaling changes which ground is under each tile: show all until the map is re-measured
-	tileOffRiver_.assign(tiles_.size(), 0);   // ...and where the corridor lies relative to them (RefreshRiverFlow measures again: the key has the placement)
 	UpdateWorldTransform();
 	UploadMaterial(false);             // the grid cell size depends on the scale
 	return true;
@@ -752,28 +536,20 @@ WaterWaves::ShoreSample Water::ShoreAtWorld(float x, float z) const
 
 bool Water::RayHit(const XMFLOAT3& origin, const XMFLOAT3& direction, float& distance) const
 {
-	const float o[3] = { origin.x, origin.y, origin.z };
-	const float d[3] = { direction.x, direction.y, direction.z };
-	return WaterSelect::RayMeetsSurface(
-		o, d, position_.y,
-		[this](float x, float z) { return LevelAtWorld(x, z); },                                        // a river that falls: the surface is not at one height
-		[this](float x, float z) { return IsOverWater(x, z) && DepthAtWorld(x, z) > 0.0f; },            // water here (the corridor), and not the dry beach
-		distance);
-}
-
-float Water::LevelAtWorld(float x, float z) const
-{
-	if (!depthField_.HasLevelOffsets() || !worldToLocalValid_) return 0.0f;
-	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), XMLoadFloat4x4(&worldToLocal_));
-	return depthField_.SampleLevel(XMVectorGetX(local), XMVectorGetZ(local));   // the same blend as the vertex shader's read of the map
+	if (std::abs(direction.y) < 1e-6f) return false;
+	const float t = (position_.y - origin.y) / direction.y;
+	if (t <= 0.0f) return false;
+	const float x = origin.x + direction.x * t, z = origin.z + direction.z * t;
+	if (!IsOverWater(x, z) || DepthAtWorld(x, z) <= 0.0f) return false;   // over the plane, and over water, not the dry beach
+	distance = t;
+	return true;
 }
 
 void Water::SetSceneWind(const WindSettings& wind)
 {
 	if (wind.direction == sceneWind_.direction && wind.speed == sceneWind_.speed) return;
 	sceneWind_ = wind;
-	// A current carries its own waves, and the artist's styles do not listen to the wind: nothing to rebuild for them.
-	if (WavesFollowWind()) RebuildWaves();
+	RebuildWaves();
 }
 
 void Water::RefreshShoreDepth(const std::vector<const Terrain*>& terrains, const std::vector<const TerrainWorld*>& worlds, std::uint64_t groundStamp)
@@ -788,9 +564,8 @@ void Water::RefreshShoreDepth(const std::vector<const Terrain*>& terrains, const
 	// heights or its placement do.)
 	const std::array<float, 12> key = { position_.x, position_.y, position_.z, rotation_.x, rotation_.y, rotation_.z,
 										scale_.x, scale_.y, scale_.z, settings_.size, settings_.sizeZ, settings_.height };
-	if (shoreKeyValid_ && key == shoreKey_ && groundStamp == shoreGroundStamp_ && shoreLevelRevision_ == riverLevelRevision_) return;
+	if (shoreKeyValid_ && key == shoreKey_ && groundStamp == shoreGroundStamp_) return;
 	shoreKey_ = key;
-	shoreLevelRevision_ = riverLevelRevision_;
 	shoreGroundStamp_ = groundStamp;
 	shoreKeyValid_ = true;
 
@@ -835,7 +610,7 @@ void Water::RefreshShoreDepth(const std::vector<const Terrain*>& terrains, const
 			}
 			return found;
 		},
-		riverLevels_.empty() ? nullptr : &riverLevels_);   // a river that falls: depth = its level there - the ground (ignored if it is not this map's size)
+		nullptr);
 
 	D3D11_TEXTURE2D_DESC desc{};
 	desc.Width = static_cast<UINT>(width);

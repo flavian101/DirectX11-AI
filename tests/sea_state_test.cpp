@@ -18,13 +18,11 @@ static int g_failures = 0;
 #define CHECK(condition) do { if (!(condition)) { std::printf("FAIL line %d: %s\n", __LINE__, #condition); ++g_failures; } } while (0)
 
 using WaterWaves::Params;
-using WaterWaves::Style;
 using WaterWaves::Table;
 
 static Params SeaParams(float wind, float fetch = 0.0f)
 {
 	Params p;
-	p.style = Style::Sea;
 	p.windSpeed = wind;
 	p.fetch = fetch;
 	p.count = WaterWaves::kMaxWaves;
@@ -163,12 +161,6 @@ static void TestTableEnergyAndShape()
 		CHECK(ta.waves[i].k == tb.waves[i].k && ta.waves[i].omega == tb.waves[i].omega);
 		CHECK(std::fabs(tb.waves[i].amplitude - 2.0f * ta.waves[i].amplitude) < 1e-5f * std::max(1.0f, ta.waves[i].amplitude));
 	}
-	// The artist's amplitude, frequency and speed are not part of the Sea: changing them changes nothing.
-	Params c = a;
-	c.amplitude = 1.7f; c.frequency = 0.1f; c.speed = 4.0f; c.roughness = 0.1f;
-	const Table tc = WaterWaves::Build(c);
-	for (int i = 0; i < ta.count; ++i) CHECK(ta.waves[i].k == tc.waves[i].k && ta.waves[i].amplitude == tc.waves[i].amplitude && ta.waves[i].omega == tc.waves[i].omega);
-
 	// The tallest wave is first (the shader's swash reads wave 0), and it is near the peak of the spectrum, not at the fine end.
 	const Table big = WaterWaves::Build(SeaParams(10.0f));
 	const double peakK = SeaState::Describe(10.0, 0.0).peakWavenumber;
@@ -336,52 +328,18 @@ static void TestSwellAndGroups()
 	CHECK(TableHeight(tg) > TableHeight(WaterWaves::Build(plain)));
 }
 
-static void TestFetchOfABody()
-{
-	// A 100 x 40 rectangle: along its width 100, along its length 40, across a diagonal the shorter of the two ways out.
-	CHECK(std::fabs(SeaState::ChordLength(100.0, 40.0, false, 1.0, 0.0) - 100.0) < 1e-9);
-	CHECK(std::fabs(SeaState::ChordLength(100.0, 40.0, false, 0.0, -1.0) - 40.0) < 1e-9);
-	CHECK(std::fabs(SeaState::ChordLength(100.0, 40.0, false, 1.0, 1.0) - 40.0 * std::sqrt(2.0)) < 1e-6);
-	// An ellipse of the same size is shorter on the diagonal (no corners), the same along its axes.
-	CHECK(std::fabs(SeaState::ChordLength(100.0, 40.0, true, 1.0, 0.0) - 100.0) < 1e-9);
-	CHECK(std::fabs(SeaState::ChordLength(100.0, 40.0, true, 0.0, 1.0) - 40.0) < 1e-9);
-	CHECK(SeaState::ChordLength(100.0, 40.0, true, 1.0, 1.0) < SeaState::ChordLength(100.0, 40.0, false, 1.0, 1.0) + 1e-9);
-	CHECK(std::fabs(SeaState::ChordLength(60.0, 60.0, true, 3.0, 4.0) - 60.0) < 1e-9);   // a circle: its diameter, any way the wind blows
-	// A wind of zero direction does not divide by zero.
-	CHECK(std::isfinite(SeaState::ChordLength(100.0, 40.0, false, 0.0, 0.0)));
-}
-
 static void TestSettings()
 {
-	// The four still bodies start in the Sea style; a river keeps the artist's model (its current carries the waves).
-	for (WaterBodyType type : { WaterBodyType::Ocean, WaterBodyType::Lake, WaterBodyType::Pond, WaterBodyType::Custom })
-		CHECK(WaterSettings::Defaults(type).waveStyle == Style::Sea);
-	CHECK(WaterSettings::Defaults(WaterBodyType::River).waveStyle == Style::Spectrum);
-	CHECK(WaterSettings{}.waveStyle == Style::Sea);
-	// The ocean uses all the waves it can: a spectrum needs them.
-	CHECK(WaterSettings::Defaults(WaterBodyType::Ocean).waveCount == WaterWaves::kMaxWaves);
-	// A style outside the list is put back; the Sea style (2) survives a clamp.
-	WaterSettings s;
-	s.waveStyle = static_cast<Style>(7);
-	s.Clamp();
-	CHECK(s.waveStyle == Style::Sea);
-	s.waveStyle = Style::Spectrum;
-	s.Clamp();
-	CHECK(s.waveStyle == Style::Spectrum);
-	// In the Sea style the Scale is only a height: it reaches heightScale, and the frequency is not touched.
-	WaterSettings sea = WaterSettings::Defaults(WaterBodyType::Ocean);
+	// There is one sea: the ocean's defaults use all the waves the table can hold (a spectrum needs them).
+	CHECK(WaterSettings::Defaults().waveCount == WaterWaves::kMaxWaves);
+	// The Scale is only a height: it reaches heightScale and nothing else of the table.
+	WaterSettings sea = WaterSettings::Defaults();
 	sea.waveScale = 2.0f;
 	const Params p = sea.WaveParams();
-	CHECK(p.style == Style::Sea && p.heightScale == 2.0f && p.frequency == sea.waveFrequency && p.amplitude == sea.waveAmplitude);
-	// There is no wind in the settings of a body any more: the scene's weather is the only wind (a current is not a wind).
+	CHECK(p.heightScale == 2.0f && p.count == sea.waveCount && p.seed == static_cast<std::uint32_t>(sea.waveSeed));
+	// There is no wind in the settings of the water: the scene's weather is the only wind.
 	WindSettings wind;
 	CHECK(wind.speed == 8.0f && WindSettings::kSpeedMax == 30.0f);
-	// A river's waves still come from the artist's table, carried by the current.
-	Params river;
-	river.style = Style::Sea;
-	river.flowSpeed = 2.0f;
-	const Table rt = WaterWaves::Build(river);
-	for (int i = 0; i < rt.count; ++i) CHECK(std::fabs(rt.waves[i].omega - rt.waves[i].k * 2.0f) < 1e-5f);
 }
 
 int main()
@@ -393,7 +351,6 @@ int main()
 	TestDirections();
 	TestNoFoldAndBounds();
 	TestSwellAndGroups();
-	TestFetchOfABody();
 	TestSettings();
 	if (g_failures) {
 		std::printf("%d check(s) failed\n", g_failures);

@@ -24,9 +24,7 @@ constexpr int kVersion = 1;
 inline const std::vector<const char*>& NotPartOfALook()
 {
 	static const std::vector<const char*> keys = {
-		"bodyType", "height", "size", "sizeZ", "shape",
-		"flowSpeed", "flowAngle", "bankDrag", "channelProfile", "rippleStretch", "rapids",
-		"riverPath", "riverDepth", "riverBank", "riverBankHeight",
+		"height", "size", "sizeZ",
 		"meshDetail", "lodDistance", "frustumCulling" };
 	return keys;
 }

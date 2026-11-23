@@ -1,4 +1,4 @@
-// Unit tests for src/RiverPath.h, src/RiverCarve.cpp and src/WaterRiver.h (lesson 38). No Direct3D, no framework: a failed CHECK
+// Unit tests for src/RiverPath.h and src/RiverCarve.cpp (lesson 38; they leave with the old terrain, roadmap T1). No Direct3D, no framework: a failed CHECK
 // prints and the program exits 1.
 //  - the curve passes through its control points, runs in order, and answers "where am I relative to it?" correctly
 //  - the carve digs a channel that is deepest in the middle, level with the water at its edge, never raises ground, and is
@@ -8,8 +8,6 @@
 //    and the fast bake agrees with the plain per-point question
 #include "RiverCarve.h"
 #include "RiverPath.h"
-#include "WaterRiver.h"
-#include "WaterSelect.h"
 #include "WaterShore.h"
 #include <algorithm>
 #include <cmath>
@@ -172,67 +170,6 @@ static void TestCarve()
 	CHECK(CarveRiver(field, {}, s, nullptr).IsEmpty());
 }
 
-// A square body 64 units wide, centred on the origin: local -1..1 is world -32..32.
-static void ToWorld(float lx, float lz, float& wx, float& wz) { wx = lx * 32.0f; wz = lz * 32.0f; }
-static void ToLocal(float wx, float wz, float& lx, float& lz) { lx = wx / 32.0f; lz = wz / 32.0f; }
-
-static void TestFlowMap()
-{
-	const int n = 64;   // one texel = one world unit
-	const std::vector<RiverPath::Sample> path = RiverPath::Build({ { 0, -30, 8 }, { 0, 30, 8 } }, 1.0f);
-	const std::vector<float> map = WaterRiver::Bake(n, n, path, ToWorld, ToLocal);
-	CHECK(map.size() == static_cast<size_t>(n) * n * 4);
-	auto texel = [&](int x, int z) {   // texel (x, z) has its centre at world (x - 31.5, z - 31.5)
-		WaterRiver::Texel t;
-		const size_t i = (static_cast<size_t>(z) * n + static_cast<size_t>(x)) * 4;
-		t.s = map[i]; t.d = map[i + 1]; t.dirX = map[i + 2]; t.dirZ = map[i + 3];
-		return t;
-	};
-	// The middle of the river: flowing toward +z, at full strength.
-	{
-		const WaterRiver::Read r = WaterRiver::Decode(texel(32, 32));
-		CHECK(r.inRiver && r.dirZ > 0.99f && std::abs(r.dirX) < 0.05f && r.profile > 0.95f);
-	}
-	// Toward the bank the strength falls, the direction stays, and the signed distance changes sign across the middle.
-	{
-		const WaterRiver::Read mid = WaterRiver::Decode(texel(32, 32)), near = WaterRiver::Decode(texel(34, 32)), bank = WaterRiver::Decode(texel(36, 32));
-		CHECK(near.inRiver && bank.inRiver);
-		CHECK(mid.profile > near.profile && near.profile > bank.profile);
-		CHECK(bank.profile < 0.15f && bank.dirZ > 0.99f);   // at the bank the direction is still known
-		CHECK(texel(34, 32).d * texel(29, 32).d < 0.0f);
-	}
-	// Far from the river there is no river, and the data is empty rather than wrong.
-	{
-		const WaterRiver::Read far = WaterRiver::Decode(texel(52, 32));
-		CHECK(!far.inRiver);
-	}
-	// How far along: s grows by one unit per texel downstream.
-	CHECK(std::abs((texel(32, 40).s - texel(32, 30).s) - 10.0f) < 0.01f);
-
-	// A real bend: the flow direction at a texel on the middle line is the curve's own direction there.
-	const std::vector<RiverPath::Sample> bend = RiverPath::Build({ { -25, -20, 8 }, { -5, -5, 8 }, { 8, 5, 8 }, { 25, 22, 8 } }, 0.5f);
-	const std::vector<float> bendMap = WaterRiver::Bake(n, n, bend, ToWorld, ToLocal);
-	std::uint32_t state = 21;
-	int compared = 0;
-	for (int i = 0; i < 3000; ++i) {
-		const int x = static_cast<int>(Random01(state) * n), z = static_cast<int>(Random01(state) * n);
-		const float wx = static_cast<float>(x) - 31.5f, wz = static_cast<float>(z) - 31.5f;
-		const RiverPath::Hit hit = RiverPath::Closest(bend, wx, wz);
-		if (std::abs(hit.across) > 1.5f) continue;   // only where the river's data is fully there
-		const WaterRiver::Texel expected = WaterRiver::MakeTexel(hit);
-		const size_t k = (static_cast<size_t>(z) * n + static_cast<size_t>(x)) * 4;
-		++compared;
-		// The fast bake (one piece of the curve at a time) agrees with the plain question (every piece).
-		CHECK(std::abs(bendMap[k] - expected.s) < 0.01f);
-		CHECK(std::abs(bendMap[k + 1] - expected.d) < 0.01f);
-		CHECK(std::abs(bendMap[k + 2] - expected.dirX) < 1e-3f && std::abs(bendMap[k + 3] - expected.dirZ) < 1e-3f);
-	}
-	CHECK(compared > 200);
-	// Edge cases.
-	CHECK(WaterRiver::Bake(n, n, {}, ToWorld, ToLocal).size() == static_cast<size_t>(n) * n * 4);
-	CHECK(!WaterRiver::Decode(WaterRiver::MakeTexel(RiverPath::Hit{})).inRiver);
-}
-
 
 // Lesson 39: where a click puts a new point, and what is wrong with the curve as drawn.
 static std::vector<RiverPoint> ApplyPlacement(std::vector<RiverPoint> points, const RiverPath::Placement& placement)
@@ -327,47 +264,6 @@ static void TestClickSequence()
 	CHECK(placed.front().x == 5.0f && placed.back().x == -80.0f);
 }
 
-// Lesson 40: the corridor. InCorridor must say exactly what the flow map says (the shader clips by the map); CorridorReaches
-// must never say "no" about a patch that holds a spot of the corridor (a tile skipped on it would hide water).
-static void TestCorridor()
-{
-	// A winding river whose width changes along it.
-	const std::vector<RiverPath::Sample> path = RiverPath::Build({ { -60, 0, 6 }, { -20, 18, 10 }, { 20, 10, 24 }, { 60, -20, 14 }, { 90, -50, 6 } }, 1.0f);
-	std::uint32_t state = 12345u;
-	int disagree = 0;
-	for (int i = 0; i < 4000; ++i) {
-		const float x = -120.0f + 260.0f * Random01(state), z = -110.0f + 200.0f * Random01(state);
-		const RiverPath::Hit hit = RiverPath::Closest(path, x, z);
-		const bool map = WaterRiver::Decode(WaterRiver::MakeTexel(hit)).inRiver;
-		if (map != WaterRiver::InCorridor(path, x, z)) ++disagree;
-	}
-	CHECK(disagree == 0);
-	CHECK(WaterRiver::InCorridor(path, 0.0f, 14.0f) || WaterRiver::InCorridor(path, -20.0f, 18.0f));   // on the river
-	CHECK(!WaterRiver::InCorridor(path, 0.0f, 150.0f));                                                 // far from it
-	// A round end: just past the last point is still corridor (within 1.5 half widths), well past it is not.
-	CHECK(WaterRiver::InCorridor(path, 92.0f, -52.0f));
-	CHECK(!WaterRiver::InCorridor(path, 120.0f, -75.0f));
-
-	// Conservative: whenever some spot of a patch is in the corridor, the patch reaches it.
-	int violations = 0, reached = 0, missed = 0;
-	for (int i = 0; i < 600; ++i) {
-		const float cx = -120.0f + 260.0f * Random01(state), cz = -110.0f + 200.0f * Random01(state);
-		const float radius = 1.0f + 25.0f * Random01(state);
-		bool anyInside = false;
-		for (int k = 0; k < 60 && !anyInside; ++k) {
-			const float angle = 6.2831853f * Random01(state), r = radius * std::sqrt(Random01(state));
-			anyInside = WaterRiver::InCorridor(path, cx + r * std::cos(angle), cz + r * std::sin(angle));
-		}
-		const bool reaches = WaterRiver::CorridorReaches(path, cx, cz, radius);
-		if (anyInside && !reaches) ++violations;
-		if (reaches) ++reached; else ++missed;
-	}
-	CHECK(violations == 0);
-	CHECK(reached > 50 && missed > 50);   // and it does skip things: not a function that always says yes
-	// No curve: nothing is skipped.
-	CHECK(WaterRiver::CorridorReaches({}, 500.0f, 500.0f, 1.0f));
-}
-
 // Lesson 41: the water's level along the river.
 static void TestLevels()
 {
@@ -398,140 +294,6 @@ static void TestLevels()
 	// The wrong number of heights changes nothing.
 	RiverPath::FollowGround(points, { 1.0f }, 0.0f);
 	CHECK(points[4].level == -5.0f);
-}
-
-// Lesson 41, the parts that read the level: the carve, the depth map, and the river's own bake.
-static void TestLevelsInTheWorld()
-{
-	// 1. The carve digs each part of the river to ITS level. A straight river over flat ground at 0.5, the level 0.5 at its start
-	// and 0.3 (a fall of 0.2) at its end: the bed at the far end is lower than at the near end, by about the fall.
-	Heightfield field;
-	HeightfieldLayout layout;
-	layout.cellsX = 100; layout.cellsZ = 100; layout.sizeX = 100.0f; layout.sizeZ = 100.0f; layout.heightScale = 1.0f;
-	CHECK(field.Reset(layout, std::vector<float>(static_cast<size_t>(101) * 101, 0.9f)));
-	RiverCarveSettings carve;
-	carve.level = 0.5f; carve.depth = 0.05f; carve.bankWidth = 4.0f; carve.bankHeight = 0.05f;
-	std::vector<RiverPath::Sample> river = RiverPath::Build({ { -40, 0, 8, 0.0f }, { 40, 0, 8, -0.2f } }, 1.0f);
-	CarveRiver(field, river, carve, nullptr);
-	auto sampleAt = [&](float x, float z) { return field.Samples()[static_cast<size_t>(field.IndexOf(static_cast<int>(std::lround(x + 50.0f)), static_cast<int>(std::lround(z + 50.0f))))]; };
-	const float upstream = sampleAt(-30.0f, 0.0f), downstream = sampleAt(30.0f, 0.0f);
-	CHECK(downstream < upstream - 0.1f);                 // lower at the mouth than at the source...
-	CHECK(std::abs((upstream - downstream) - 0.15f) < 0.03f);   // ...by the fall between 10 units from each end (0.75 of 0.2)
-	CHECK(std::abs(sampleAt(0.0f, 0.0f) - (0.5f - 0.1f - 0.05f)) < 0.02f);   // the middle: level 0.5 - 0.1 (halfway) - the bed depth
-	// A level river (no levels) is carved exactly as before: the same bed all along.
-	Heightfield flat;
-	CHECK(flat.Reset(layout, std::vector<float>(static_cast<size_t>(101) * 101, 0.9f)));
-	CarveRiver(flat, RiverPath::Build({ { -40, 0, 8 }, { 40, 0, 8 } }, 1.0f), carve, nullptr);
-	CHECK(std::abs(flat.Samples()[static_cast<size_t>(flat.IndexOf(20, 50))] - flat.Samples()[static_cast<size_t>(flat.IndexOf(80, 50))]) < 1e-5f);
-
-	// 2. The depth map: depth = level + offset - ground, the offsets come back on the CPU and in the packed texels' fourth float.
-	const int w = 8, h = 8;
-	std::vector<float> offsets(static_cast<size_t>(w) * h);
-	for (int z = 0; z < h; ++z) for (int x = 0; x < w; ++x) offsets[static_cast<size_t>(z) * w + x] = -static_cast<float>(x);   // falls 1 per texel to the right
-	const WaterShore::DepthField sloped = WaterShore::Bake(w, h, 10.0f,
-		[](float lx, float lz, float& wx, float& wz) { wx = lx; wz = lz; },
-		[](float, float, float& ground) { ground = 4.0f; return true; }, &offsets);
-	CHECK(sloped.HasLevelOffsets());
-	CHECK(std::abs(sloped.Data()[0] - 6.0f) < 1e-5f);                 // 10 + 0 - 4
-	CHECK(std::abs(sloped.Data()[5] - 1.0f) < 1e-5f);                 // 10 - 5 - 4
-	CHECK(std::abs(sloped.PackedTexels()[5 * 4 + 3] + 5.0f) < 1e-5f);  // what the vertex shader reads
-	CHECK(std::abs(sloped.SampleLevel(-1.0f, 0.0f) - 0.0f) < 1e-4f);   // clamped at the edge: the first texel's centre
-	CHECK(sloped.SampleLevel(1.0f, 0.0f) < -6.9f);                    // the last texel's
-	// The CPU twin claim: SampleLevel gives what the vertex shader's hand-written bilinear read of the packed texels gives
-	// (SampleWaterShore in water_material.hlsli, channel w), at any spot, edges included.
-	{
-		const std::vector<float> packed = sloped.PackedTexels();
-		std::uint32_t seed = 99u;
-		float worst = 0.0f;
-		for (int i = 0; i < 500; ++i) {
-			const float lx = -1.2f + 2.4f * Random01(seed), lz = -1.2f + 2.4f * Random01(seed);   // a little beyond the edges too
-			const float px = std::clamp(lx * 0.5f + 0.5f, 0.0f, 1.0f) * static_cast<float>(w) - 0.5f;
-			const float pz = std::clamp(lz * 0.5f + 0.5f, 0.0f, 1.0f) * static_cast<float>(h) - 0.5f;
-			const int x0 = static_cast<int>(std::floor(px)), z0 = static_cast<int>(std::floor(pz));
-			const float tx = px - std::floor(px), tz = pz - std::floor(pz);
-			auto texel = [&](int x, int z) { return packed[(static_cast<size_t>(std::clamp(z, 0, h - 1)) * w + static_cast<size_t>(std::clamp(x, 0, w - 1))) * 4 + 3]; };
-			const float a = texel(x0, z0) + (texel(x0 + 1, z0) - texel(x0, z0)) * tx;
-			const float b = texel(x0, z0 + 1) + (texel(x0 + 1, z0 + 1) - texel(x0, z0 + 1)) * tx;
-			worst = std::max(worst, std::abs((a + (b - a) * tz) - sloped.SampleLevel(lx, lz)));
-		}
-		CHECK(worst < 1e-4f);
-	}
-	// No offsets: nothing changes, and the fourth float is 0.
-	const WaterShore::DepthField level = WaterShore::Bake(w, h, 10.0f, [](float lx, float lz, float& wx, float& wz) { wx = lx; wz = lz; },
-		[](float, float, float& ground) { ground = 4.0f; return true; });
-	CHECK(!level.HasLevelOffsets() && level.SampleLevel(0.3f, 0.3f) == 0.0f && level.PackedTexels()[3] == 0.0f);
-	// Offsets of the wrong size are ignored, not misread.
-	const std::vector<float> wrong(5, 1.0f);
-	CHECK(!WaterShore::Bake(w, h, 10.0f, [](float lx, float lz, float& wx, float& wz) { wx = lx; wz = lz; },
-		[](float, float, float& ground) { ground = 4.0f; return true; }, &wrong).HasLevelOffsets());
-
-	// 3. The river's bake gives the level at every texel: the river's own along it, the nearest point's away from it.
-	const std::vector<RiverPath::Sample> fall = RiverPath::Build({ { -6, 0, 4, 0.0f }, { 6, 0, 4, -6.0f } }, 0.5f);
-	std::vector<float> levels;
-	WaterRiver::Bake(32, 32, fall,
-		[](float lx, float lz, float& wx, float& wz) { wx = lx * 16.0f; wz = lz * 16.0f; },
-		[](float wx, float wz, float& lx, float& lz) { lx = wx / 16.0f; lz = wz / 16.0f; }, &levels);
-	CHECK(levels.size() == 32u * 32u);
-	auto levelAt = [&](float wx, float wz) { return levels[static_cast<size_t>(std::floor((wz / 16.0f * 0.5f + 0.5f) * 32.0f)) * 32 + static_cast<size_t>(std::floor((wx / 16.0f * 0.5f + 0.5f) * 32.0f))]; };
-	CHECK(std::abs(levelAt(0.0f, 0.0f) + 3.0f) < 0.7f);   // halfway along: halfway down
-	CHECK(levelAt(-5.5f, 0.0f) > -1.0f && levelAt(5.5f, 0.0f) < -5.0f);
-	// Far from the river (beyond its corridor) the level is the nearest point's, not 0: a texel off the downstream end is at the bottom.
-	CHECK(levelAt(15.0f, 0.0f) < -5.5f);
-	CHECK(levelAt(15.0f, 14.0f) < -5.0f);   // and off to the side of the far end too
-	CHECK(levelAt(-15.0f, -14.0f) > -1.0f); // while the upstream corner is still at the top
-}
-
-// Lesson 42: picking a water body by its surface, and drawing it as selected.
-static void TestWaterSelect()
-{
-	const float down[3] = { 0.0f, -1.0f, 0.0f };
-	const float above[3] = { 0.0f, 10.0f, 0.0f };
-	float t = 0.0f, x = 0.0f, z = 0.0f;
-	CHECK(WaterSelect::RayMeetsHeight(above, down, 0.0f, t, x, z) && std::abs(t - 10.0f) < 1e-5f);
-	const float slant[3] = { 0.6f, -0.8f, 0.0f };
-	CHECK(WaterSelect::RayMeetsHeight(above, slant, 0.0f, t, x, z) && std::abs(t - 12.5f) < 1e-4f && std::abs(x - 7.5f) < 1e-4f);
-	const float up[3] = { 0.0f, 1.0f, 0.0f }, flat[3] = { 1.0f, 0.0f, 0.0f };
-	CHECK(!WaterSelect::RayMeetsHeight(above, up, 0.0f, t, x, z));     // looking away from the plane
-	CHECK(!WaterSelect::RayMeetsHeight(above, flat, 0.0f, t, x, z));   // parallel to it
-	CHECK(!WaterSelect::RayMeetsHeight(above, down, 20.0f, t, x, z));  // the plane is behind the eye
-
-	// A level surface: found, unless the spot is not water (the dry beach, the empty part of a river's rectangle).
-	auto noFall = [](float, float) { return 0.0f; };
-	float distance = 0.0f;
-	CHECK(WaterSelect::RayMeetsSurface(above, down, 0.0f, noFall, [](float, float) { return true; }, distance) && std::abs(distance - 10.0f) < 1e-4f);
-	CHECK(!WaterSelect::RayMeetsSurface(above, down, 0.0f, noFall, [](float, float) { return false; }, distance));
-	// Only the spot that was hit is asked about.
-	float askedX = -1.0f, askedZ = -1.0f;
-	WaterSelect::RayMeetsSurface(above, slant, 0.0f, noFall, [&](float ax, float az) { askedX = ax; askedZ = az; return true; }, distance);
-	CHECK(std::abs(askedX - 7.5f) < 1e-3f && std::abs(askedZ) < 1e-3f);
-
-	// A river that falls: the surface lies at y = -0.5 x. The slanted ray from (0, 20) meets it at t = 40 (x = 24, y = -12).
-	const float high[3] = { 0.0f, 20.0f, 0.0f };
-	CHECK(WaterSelect::RayMeetsSurface(high, slant, 0.0f, [](float ax, float) { return -0.5f * ax; }, [](float, float) { return true; }, distance));
-	CHECK(std::abs(distance - 40.0f) < 0.05f);
-	// ...and it is not the distance to the level plane (t = 25) that a flat test would have given.
-	CHECK(std::abs(distance - 25.0f) > 10.0f);
-
-	// The outline of the plane: a rectangle's corners, an ellipse's points on the ellipse.
-	const std::vector<WaterSelect::Spot> rect = WaterSelect::PlaneOutline(false, 30.0f, 10.0f);
-	CHECK(rect.size() == 4 && rect[0].x == -30.0f && rect[2].x == 30.0f && rect[2].z == 10.0f);
-	const std::vector<WaterSelect::Spot> oval = WaterSelect::PlaneOutline(true, 30.0f, 10.0f, 32);
-	CHECK(oval.size() == 32u);
-	for (const WaterSelect::Spot& s : oval) CHECK(std::abs((s.x / 30.0f) * (s.x / 30.0f) + (s.z / 10.0f) * (s.z / 10.0f) - 1.0f) < 1e-4f);
-
-	// The banks of a river: a half width either side of the middle, on opposite sides, carrying the water's height.
-	const std::vector<RiverPath::Sample> river = RiverPath::Build({ { -40, 0, 8, 0.0f }, { 40, 0, 8, -4.0f } }, 1.0f);
-	std::vector<WaterSelect::BankPoint> left, right;
-	WaterSelect::RiverBanks(river, 1, left, right);
-	CHECK(left.size() == river.size() && right.size() == river.size());
-	CHECK(std::abs(std::abs(left[10].z) - 4.0f) < 1e-3f && std::abs(left[10].z + right[10].z) < 1e-3f);
-	CHECK(left[10].z * right[10].z < 0.0f);
-	CHECK(std::abs(left.back().level + 4.0f) < 1e-4f);
-	std::vector<WaterSelect::BankPoint> sparse, sparseRight;
-	WaterSelect::RiverBanks(river, 25, sparse, sparseRight);
-	CHECK(sparse.size() < left.size() && std::abs(sparse.back().x - river.back().x) < 1e-3f);   // thinned, but it still reaches the end
-	WaterSelect::RiverBanks({}, 1, left, right);
-	CHECK(left.empty() && right.empty());
 }
 
 // Letting the ground draw the river (lesson 45): a walk downhill, then smoothed and thinned into control points.
@@ -712,14 +474,10 @@ int main()
 	TestClosest();
 	TestCarvedHeight();
 	TestCarve();
-	TestFlowMap();
 	TestPlace();
 	TestAnalyse();
 	TestClickSequence();
-	TestCorridor();
 	TestLevels();
-	TestLevelsInTheWorld();
-	TestWaterSelect();
 	TestRoute();
 	if (g_failures == 0) std::printf("river tests: all passed\n");
 	return g_failures == 0 ? 0 : 1;

@@ -209,7 +209,7 @@ void Scene::Update(float dt)
         groundStamp = (groundStamp ^ static_cast<std::uint64_t>(terrain->GetId())) * 1099511628211ull;
         groundStamp = (groundStamp ^ static_cast<std::uint64_t>(terrain->GetRevision())) * 1099511628211ull;
     }
-    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) { water->RefreshShoreDepth(groundTerrains, groundWorlds, groundStamp); water->RefreshRiverFlow(); }
+    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) { water->RefreshShoreDepth(groundTerrains, groundWorlds, groundStamp); }
     // Scatter follows the ground the same way: it regenerates the cells whose ground changed (within a time budget).
     // (It still reads only the FIRST terrain: scatter over a world is a later step.)
     const Terrain* terrain = GetTerrain();
@@ -733,21 +733,12 @@ void Scene::PlanWater(WaterFramePlan& plan) const
     }
 }
 
-Water* Scene::CreateWater(WaterBodyType type)
+Water* Scene::CreateOcean()
 {
     if (!device_) return nullptr;
     Water* water = Add<Water>(device_);
-    WaterSettings settings = water->GetSettings();
-    settings.ApplyBodyType(type);   // look, waves, ripples and foam that suit this kind of water
-    switch (type) {   // and a size that suits it: none of these is a second sea (except the ocean)
-    case WaterBodyType::Ocean: settings.size = 400.0f; settings.sizeZ = 400.0f; settings.shape = WaterShape::Rectangle; break;
-    case WaterBodyType::Lake:  settings.size = 80.0f;  settings.sizeZ = 80.0f;  settings.shape = WaterShape::Ellipse;   break;
-    case WaterBodyType::River: settings.size = 14.0f;  settings.sizeZ = 120.0f; settings.shape = WaterShape::Rectangle; break;
-    case WaterBodyType::Pond:  settings.size = 20.0f;  settings.sizeZ = 20.0f;  settings.shape = WaterShape::Ellipse;   break;
-    case WaterBodyType::Custom: settings.size = 120.0f; settings.sizeZ = 120.0f; settings.shape = WaterShape::Rectangle; break;
-    }
-    water->SetSceneWind(weather_.wind);   // a new body starts with the scene's wind, not for one frame with a default
-    water->SetSettings(settings);
+    water->SetSceneWind(weather_.wind);   // a new ocean starts with the scene's wind, not for one frame with a default
+    water->SetSettings(WaterSettings::Defaults());   // the defaults ARE the ocean
     return water;
 }
 
