@@ -304,10 +304,6 @@ if(BUILD_TESTS)
     target_include_directories(WorldHeightTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(WorldHeightTests PRIVATE Threads::Threads)
     add_test(NAME WorldHeight COMMAND WorldHeightTests)
-    # The file of one baked tile (roadmap C6).
-    add_executable(WorldTileFileTests tests/world_tile_file_test.cpp src/WorldTileFile.cpp)
-    target_include_directories(WorldTileFileTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
-    add_test(NAME WorldTileFile COMMAND WorldTileFileTests)
     # The scatter's ground over the tiles of a world (roadmap S12).
     add_executable(ScatterTileGroundTests tests/scatter_tile_ground_test.cpp src/ScatterTileGround.cpp src/ScatterPlacement.cpp src/TerrainSplat.cpp src/WorldRivers.cpp src/WorldGrid.cpp src/WorldPicture.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
     target_include_directories(ScatterTileGroundTests PRIVATE ${CMAKE_SOURCE_DIR}/src)

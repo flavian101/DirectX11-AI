@@ -1,14 +1,19 @@
-# Roadmap: terrain and water
+# Roadmap: the island scene (ground, sea, and how they fit)
 
-Scope: what the first scene needs, a **heightmap terrain that looks like terrain** and **a sea that fits it cleanly**. This file replaces the
-old roadmap (still readable in git history: `git show fb29681:docs/ROADMAP.md`).
+Scope: **one scene that works end to end: an island in an ocean.** Terrain is the base of everything else (scatter, placement and water all ask the
+ground), so the ground and the sea are laid down as foundations first, and the old drafts are removed rather than patched. The previous roadmap
+is in git history: `git show 1463cb3:docs/ROADMAP.md`.
 
 **Rules**
 1. **Existing code is a draft, not a foundation.** Nothing in it counts as working. A draft that is in the way is deleted, not patched around.
-2. **No backwards compatibility.** Old scenes, old saves and the single `Terrain` are not supported. Re-author instead of migrating.
-3. States, one per item: `[ ]` open, `[~]` code and unit tests landed but **not yet checked in the editor**, `[x]` checked in the editor
+2. **No backwards compatibility, anywhere.** No old scenes, saves, presets or enum values are carried. An old scene fails to open with one clear message
+   and is re-authored. Code whose only job is to keep an old scene looking the same is deleted.
+3. **No parallel systems.** A new module replaces the old one in the same milestone. Two height systems or two wave models at once is a bug in the plan.
+4. **A setting is a physical quantity or an artistic intent that survives moving to another scene.** A setting that exists to compensate for another
+   setting (an "auto" scale, a size cap, a switch that turns an old look back on) is a patch and is deleted (list: section 5).
+5. States, one per item: `[ ]` open, `[~]` code and unit tests landed but **not yet checked in the editor**, `[x]` checked in the editor
    (needs an `Editor:` line with the date and what was seen), `[!]` known bug. Unit tests alone never make an item `[x]`.
-4. A commit that changes an item's state edits this file in the same commit and says so in its message (see Tracking).
+6. A commit that changes an item's state edits this file in the same commit and says so in its message (see Tracking).
 
 ## Tracking
 
@@ -26,34 +31,79 @@ When an item reaches `[x]`, the `Editor:` line is the record of what was seen.
 
 ---
 
-## 1. Why the terrain looks wrong (measured)
+## 1. What is wrong now (from the code and the video)
 
-Measured on `assets/dark alien/Height Map.png` (2048 x 2048, 16-bit):
+| Seen | Cause in the code | Consequence |
+|---|---|---|
+| The sea is a rectangle that stops in the open water | `WaterSettings::size` / `sizeZ` (at most 2000, `kSizeMax`); every body has its own plane, mesh budget and shore depth map | A sea cannot cover an island scene. The 2000 cap is the "patch" that stops working when the world is big. |
+| The sea looks like plastic | the sun highlight is one Blinn-Phong lobe, `pow(dot(N,H), glintSharpness)` with a fixed exponent (default 128), in `shaders/water_ps.hlsl`; no roughness, nothing changes with distance | A single sharp lobe on every wave at every distance reads as a hard, glossy plastic. |
+| The surface looks like a sheet sliding past | the small ripples are two layers of `ValueNoiseD`, both drifting along the one wind direction (`RippleSlope`) | Every ripple travels the same way at the same speed: one rigid texture, not water. |
+| Waves look like a structure drifting | the sea is at most 16 Gerstner waves, one per spectrum band (`WaterWaves::kMaxWaves`, mirrored by `WATER_MAX_WAVES` in the shader's constant buffer), on a plane that also ends | Sixteen components can repeat visibly. A real sea has far more, spread over many directions. |
+| The ocean fills the middle of the island | water is sized by hand; shore depth is baked per body | Nothing says "the ground decides where the sea is". |
+| The world starts at 0.0 and the old terrain was centred | tile (0,0) starts AT the origin (`WorldGrid.h`); the old `Terrain` was centred on its position; `TerrainWorld::AdoptFrom` snaps one onto the other | The two conventions fight; the migration code exists only to hide it. |
+| Two height systems | H1 to H5 (metres, tested) are built but not wired in; the old `Terrain` still carries `heightScale` (29 files, 103 hits) and `baseHeight` (12 files, 40 hits) | Every consumer has to know which one it is talking to. |
 
-| Fact | Consequence |
+Not diagnosed yet: the white striped banding along the shore in the video. It may be the sand layer, the shore foam, tile LOD or the skirts. Item S6
+starts with the water's own debug views (Depth, ShoreDepth, Foam) to find out before anything is changed.
+
+## 2. What to borrow from Unreal (and what not)
+
+Checked against Epic's documentation for the Water plugin:
+
+| Unreal does | We do |
 |---|---|
-| Levels 0 to 6475 of 65535 are used (0 .. 0.0988) | At the old `heightScale` of 240 m the terrain would be 23.7 m tall. This is why "levels" were added. |
-| Auto-levels (0.5% / 99.5%) put white at level 5178 | Everything above is clamped flat: 20,954 pixels with 1,246 distinct heights become one value, and the top 20.0% of the range is gone. The clamp is permanent. |
-| 12.436% of pixels sit exactly at the minimum (521,605 pixels) | A real flat floor in the file. The levels clamp adds to it. |
-| Heights are stored 0..1 and clamped at every stage (levels, source, detail) | Any stage can silently flatten the ground, and `heightScale` / `baseHeight` have to be applied by every consumer. |
+| A **Water Zone** defines the region; the surface is meshed as tiles and only what the camera can see is drawn. A cheap **far-distance mesh** fills the gap to the horizon, sits just under the base height so it cannot clip or show seams. | One **camera-centred ring mesh** with a constant vertex count at any world size, plus a far mesh to the horizon (S5). The sea has no `size`. |
+| Water bodies are **splines**, and an **Island** body exists only to keep land above the water (applied after the other bodies). | The ground owns the sea (decision D3). We do not copy splines: the island is the ground; connectivity decides what is ocean. |
+| A **water info texture** is built from the water bodies and the landscape height; the landscape height is part of the depth the surface sees. | One **world water info raster** (depth, ocean flag, direction to shore), built from the ground function (S1). Replaces the per-body depth map. |
+| **Single Layer Water**: a physically based shading model with scattering and absorption coefficients, roughness, specular and a normal; the usual water material blends **two tiled normal maps panning in different directions**. | GGX specular with roughness, absorption and scattering as coefficients, two scrolling normal maps (O2 to O4). |
 
-## 2. Decisions
+Waves "bashing the island" are **not simulated**. Engines fake it from the depth: waves grow in shallow water, break, and a swash line slides on the beach.
+Your `shoreWaves` / `swash` / `shoreShelter` already follow that idea; they move onto the world water info (O5). Particles are for spray, later. They are not
+why the water looks wrong.
 
-1. **Heights are metres (world Y), end to end.** No 0..1 values past the importer. No `heightScale`, no `baseHeight`.
-2. **Import never clips.** The picture's true minimum becomes `lowestY` and its true maximum becomes `lowestY + relief`. The original file is kept
-   untouched; changing relief or lowest Y re-imports from the file.
-3. **Ground is a function of world (x, z) in metres:** `base raster -> detail -> edits -> rivers`. Tiles, water, collision and scatter ask that
-   function, never a loaded mesh.
-4. **Edits are deltas in metres** on the world lattice, per tile.
-5. **One terrain system:** the world. There is no single `Terrain`.
-6. **The sea is a property of the world** (`seaLevel`, covering the world bounds). No hand-sized sea bodies.
+## 3. Decisions
+
+1. **One ground, in metres, end to end** (unchanged): `base raster -> detail -> edits`. No `heightScale`, no `baseHeight`. Import never clips.
+2. **A new world is centred.** The grid maths stays as it is (tile (0,0) starts at the origin, integer tiles, exact in 64 bits), but New World makes bounds
+   that are symmetric around (0, 0): tiles `-N .. N-1`. The island's middle is at the origin. **Sea level is Y = 0** by default and the sea floor is negative.
+3. **The ground owns the sea.** A point is ocean when (a) the ground surface there is below `seaLevel`, (b) it is connected to the open sea (a flood fill on a
+   coarse raster, seeded from outside the world), and (c) it is not in an exclusion box. A hollow below sea level in the middle of the island is **dry** unless it
+   is joined to the sea. This is a design choice of ours, not Unreal's; Unreal answers the same question with spline bodies and Island bodies.
+4. **The sea is infinite.** Outside the world bounds the ground is a constant depth (default -200 m), so the sea runs to the horizon and the world edge walls
+   have nothing to hold back. Nothing about the ocean is sized by hand.
+5. **Water is shaded, not tinted.** GGX specular with a roughness that comes from wave-slope variance (so it grows with distance and with small waves),
+   Schlick Fresnel at F0 = 0.02, sky reflection blurred by roughness, colour from absorption and scattering per metre.
+6. **Hand-sized water bodies (lakes, ponds, rivers, Custom) leave the editor for now.** They return later on the same water info and shading. To confirm:
+   this is the biggest cut in the plan, and git history keeps all of it.
 
 ---
 
-## 3. Milestones
+## 4. Milestones
 
-### M1. Rewrite the height system
-Pure logic first (no Direct3D, built and tested on any compiler), then wired into the editor in H7.
+### M0. Teardown
+Each step is its own commit and leaves the build and `ctest` green. The order matters: the editor is the largest consumer, so it goes first.
+
+Done with this roadmap: `WorldTileFile` (the baked tile file; nothing read it) is deleted with its test.
+
+- **T1** `[ ]` One terrain only: delete the single terrain
+  - What: remove `Scene::GetTerrain` (`Scene.h:43-44`, `Scene.cpp:215`) and its 16 uses in `editor/EditorLayer.cpp`; heightmap load/save, `CarveRiver`, `Sculpt`
+    and the paint map from `Terrain`; the heightmap fields of `TerrainSettings` (`width`, `heightScale`, noise, picture); `TerrainWorld::AdoptFrom`,
+    `MigrationStats`, `WorldSettingsFromTerrain`, `pictureOffsetX/Z`; `WorldShape`, `WorldPicture` and the tests of all of them. The tile (chunks, LOD, skirts, walls,
+    splat) stays and is renamed `TerrainTile` if it no longer is a whole terrain.
+  - Acceptance: builds; a search for `GetTerrain`, `heightScale`, `baseHeight`, `AdoptFrom`, `MigrationStats`, `WorldPicture`, `WorldShape` finds nothing.
+- **T2** `[ ]` Water: delete the patches and the hand-sized bodies
+  - What: remove `autoWaveScale`, `waveScale`, the `Spectrum` and `Classic` styles (only the wind sea stays), the settings the Sea model ignores (`waveAmplitude`,
+    `waveFrequency`, `waveSpeed`, `waveRoughness`, `waveCount`), `WavePreset`, `WaterLook`, `WaterShape`, `size` / `sizeZ` / `kSizeMax`, per-body `meshDetail` and
+    `lodDistance`, `shoreWaves = 0` ("the old look"), the body types other than Ocean and everything river (`WaterRiver`, `WaterFlow`, `RiverPath`, `RiverCarve`,
+    `WorldRivers`, `WaterTypeUi`, `WaterSelect`), and the per-body depth map. `Buoyancy` keeps working: it asks the sea for a height.
+  - Acceptance: builds; the editor offers one ocean; `buoyancy_test` and `sea_state_test` are green; a search for the removed names finds nothing.
+- **T3** `[ ]` Scene files start again
+  - What: a scene format version; a scene without it (or with an older one) fails to open with one message. Delete every "only ever ADD to the end" enum
+    constraint, every field kept only so old scenes load, and the migration code in `SceneJson.h`.
+  - Acceptance: an old scene gives the one message and does not crash; a new scene round-trips.
+
+### M1. One ground
+Pure logic first (no Direct3D, built and tested on any compiler), then wired into the editor.
 
 - **H1** `[~]` HeightPicture and HeightRaster: import without clipping
   - What: `HeightPicture` reads an 8- or 16-bit PNG as integer levels. `ImportHeightRaster` maps it linearly to metres (`lowestY`, `relief`).
@@ -75,32 +125,50 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - What: strength, wavelength, octaves, seed, ridged. Band-limited, unclamped, deterministic in world coordinates. The valley mask is not carried over.
   - Tests: `tests/height_detail_test.cpp`
   - Acceptance: strength 0 (or a negative or NaN one) adds exactly 0; the detail never goes beyond plus or minus the strength, in either style and at 1 to 8 octaves, and really uses it; over a 3 km square its mean is under 5% of the strength (a ridged layer had a mean of 0.2423 of its strength until that was measured and removed); the slope never exceeds the bound that follows from the octave sizes (a finer octave than promised breaks it); no jump across x = 0 or z = 0; the same position gives the same value anywhere in the world. Four deliberate mutants (ridged mean left in, octaves too fine, truncating instead of flooring, no normalisation) fail the tests.
-- **H6** `[ ]` Edits and rivers in metres
-  - What: brush deltas and river `level`, `depth`, `bankHeight` in metres, on the new ground function.
+- **H6** `[ ]` Edits in metres
+  - What: brush deltas in metres on the world lattice, per tile, on the new ground function. (Rivers are gone: T2.)
   - Tests: `tests/height_edits_test.cpp`
-  - Acceptance: after re-importing with another `lowestY`, a river's water level in world Y is unchanged.
-- **H7** `[ ]` Wire in the new ground and delete the single terrain
-  - What: `Terrain` is split. The tile (chunks, LOD, skirts, walls, splat) stays. Removed: heightmap load/save, `CarveRiver`, `Sculpt`, the paint map, the heightmap fields of `TerrainSettings`, `Scene::GetTerrain()` and its callers, migration, and the old shape code (`WorldShape`, `WorldPicture`).
-  - Acceptance: it builds; a search for `GetTerrain`, `heightScale`, `baseHeight` and `AdoptFrom` finds nothing; tests of deleted code are deleted with it.
-- **H8** `[ ]` Editor check of the whole height system
-  - What: import the dark-alien picture, fit it, fly around.
-  - Acceptance: flat areas appear only where the file is flat; peaks are rounded and complete; no stairs. Then H1 to H6 can become `[x]`.
+  - Acceptance: after re-importing with another `lowestY`, an edit keeps its height in world Y; an edit across a tile border is continuous.
+- **H7** `[ ]` Wire the new ground into the world
+  - What: `TerrainWorld` takes its heights from H1 to H6 and nothing else; the editor's import panel is "picture, lowest Y, relief, metres per cell".
+  - Acceptance: it builds; scatter and placement ask the same ground function the tiles are built from.
+- **H8** `[ ]` A new world is centred (decision D2)
+  - What: New World makes symmetric bounds; the world's picture is centred on the origin; sea level defaults to 0.
+  - Tests: `tests/world_grid_test.cpp` (extended)
+  - Acceptance: the middle of the island is at (0, 0); moving the picture never moves the grid.
+- **H9** `[ ]` Editor check of the whole ground
+  - What: import the dark-alien picture, fit it, fly around, sculpt, scatter.
+  - Acceptance: flat areas appear only where the file is flat; peaks are rounded and complete; no stairs. Then H1 to H8 can become `[x]`.
 
-### M2. Water that fits the world
+### M2. The world owns the sea
 
-- **W1** `[ ]` Sea level on the world
-  - What: `seaLevel` in metres plus an on/off flag. The sea covers the world bounds exactly and nothing beyond them. The default level is a chosen percentile of the ground, shown in the UI.
-  - Tests: `tests/sea_level_test.cpp`
-- **W2** `[ ]` Shore depth from the ground function
-  - What: never from loaded meshes, and never "100 m deep" for a tile that is not loaded.
-  - Tests: `tests/water_visibility_test.cpp`
-- **W3** `[ ]` Shore tiles at full detail
+- **S1** `[ ]` World water info
+  - What: one raster over the world bounds, built from the ground function: depth (`seaLevel` - ground), ocean flag, unit direction toward the nearest land. Streamed
+    with the tiles. A tile that is not loaded is never deep ocean inside the world (it is "unknown", and the sea waits).
+  - Tests: `tests/world_sea_test.cpp`
+  - Acceptance: the depth equals the ground the player sees at every tile LOD, within the wave margin.
+- **S2** `[ ]` Where the sea is, and where it is not (decision D3)
+  - What: connectivity from the open sea (flood fill on the coarse raster) and exclusion boxes. An inland hollow below sea level stays dry; cutting a channel to the sea
+    floods it when the stroke ends.
+  - Tests: `tests/world_sea_test.cpp` (shared with S1)
+  - Acceptance: a test island with a hollow below sea level has no ocean in the hollow; opening a channel puts ocean in it; a box excludes a coast basin.
+- **S3** `[ ]` Shore tiles at full detail
   - What: a tile whose bounds are within the wave margin of the sea level is drawn at LOD 0, so a coarse mesh cannot dip below the sea over dry land.
-  - Acceptance: editor check first: force all tiles to LOD 0 and see whether the ocean-through-land artefact disappears. If it does not, the cause is elsewhere (skirts or the depth map) and this item changes.
-- **W4** `[ ]` Seams: skirts and walls out of the water's depth
-  - Acceptance: no foam band along tile seams.
-- **W5** `[ ]` Editor check of the water contract
-  - Acceptance: the contract below holds while tiles stream in, at the world edge, and while sculpting.
+  - Acceptance: editor check first: force all tiles to LOD 0 and see whether the ocean-through-land artefact disappears. If it does not, the cause is elsewhere
+    (skirts or the depth map) and this item changes.
+- **S4** `[ ]` Seams: skirts and walls out of the water's depth
+  - Acceptance: no foam band along tile seams; no walls at the world edge (decision D4).
+- **S5** `[ ]` One ocean for the whole world
+  - What: a camera-centred ring mesh with a constant vertex count at any world size, a far-distance mesh to the horizon just under the sea level, and a wave phase kept
+    relative to the camera in double so it stays exact far from the origin.
+  - Tests: `tests/ocean_ring_test.cpp`
+  - Acceptance: a 20 km world shows the same sea near the camera as a 200 m one; no seam where the ring meets the far mesh; no visible edge of the sea at any camera height.
+- **S6** `[ ]` Editor check of the water contract
+  - What: first, with the debug views, find the cause of the white banding along the shore (section 1) and write it here.
+  - Acceptance: the contract in section 6 holds while tiles stream in, at the world edge, and while sculpting.
+
+### M3. An ocean that looks like water
+
 - **W6** `[~]` A sea from the wind
   - What: the weather's wind is a real wind (a speed in m/s and a direction) and is the only wind: a water body has none of its own. The sea is a
     JONSWAP spectrum of that wind over the body's fetch (an ocean: unlimited; a lake: its own length along the wind), cut into bands, one Gerstner wave
@@ -109,39 +177,64 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
     short and low in the same wind; every wave of the table has the speed its length asks for; no crest folds over.
   - Tests: `tests/sea_state_test.cpp`
   - Editor check to do: Weather > Wind > Speed from 3 to 25 m/s makes the open sea taller, longer and faster (the Waves panel shows the numbers); a lake in the
-    same wind stays small; an old Ocean body needs Wave model set to Sea; moving a body or changing its size never changes its waves (an ocean) or only its fetch (a lake).
-- **W7** `[ ]` Where the sea is not
-  - What: the world's sea (W1) is water only where the ground SURFACE is below `seaLevel` and the spot is not inside an exclusion zone (a box in world x, z that the
-    world owns). Space under dry ground (a cave, a dungeon) never gets a sea, and a basin that is below sea level but should stay dry (a drained dock, a cave mouth) can be excluded.
-  - Tests: `tests/sea_level_test.cpp` (shared with W1)
-- **W8** `[ ]` One sea for the whole world
-  - What: W1's sea as a camera-centred ring mesh with a constant vertex count at any world size, and a wave phase kept relative to the camera in double so it stays exact far from
-    the origin. Replaces the 2000-unit limit and the per-body vertex budget of `Water`.
-  - Acceptance: a 20 km world shows the same sea near the camera as a 200 m one, and the sea has no seams where tiles meet.
+    same wind stays small; moving a body or changing its size never changes its waves (an ocean) or only its fetch (a lake).
+- **O1** `[ ]` No visible repetition
+  - What: the wind sea is a spectrum of at least 32 components (raise `kMaxWaves` and `WATER_MAX_WAVES` together, or move the waves out of the constant buffer into a
+    structured buffer) with a directional spread, random phases per component, and no two components with the same direction and wavelength. Far bands fade by pixel footprint (already so).
+  - Tests: `tests/sea_pattern_test.cpp`
+  - Acceptance: over 4 km the height field has no autocorrelation peak other than at zero; the significant height and peak wavelength of W6 do not change.
+- **O2** `[ ]` GGX specular and roughness from slope variance
+  - What: replace the Blinn-Phong glint. `WaterBrdf.h` (pure maths, mirrored in the shader): GGX distribution, Smith visibility, Schlick Fresnel (F0 = 0.02), and a
+    roughness that rises with the variance of the wave slope inside one pixel (distance, small waves).
+  - Tests: `tests/water_brdf_test.cpp`
+  - Acceptance: the GGX distribution integrates to 1 over the hemisphere; head-on Fresnel is 0.02 and 1 at grazing; roughness never falls with distance; sun glint energy
+    does not grow when the roughness goes up.
+- **O3** `[ ]` Ripples from two normal maps
+  - What: replace `RippleSlope` (`ValueNoiseD`). Two tileable normal maps (made on start-up from the noise code, no asset needed) at different scales, scrolling in
+    different directions and speeds, blended with reoriented normal blending, faded by distance into the roughness of O2.
+  - Tests: `tests/water_normal_map_test.cpp`
+  - Acceptance: the map is tileable (the left and right edges agree); the two layers never move the same way; the blended normal is unit length.
+- **O4** `[ ]` Colour from absorption and scattering
+  - What: water colour from coefficients per metre (absorption, scattering), replacing colour + alpha + shallow colour + fade distance. The look is a few numbers with units.
+  - Tests: `tests/water_optics_test.cpp`
+  - Acceptance: transmittance falls as exp(-a d); doubling the depth squares the transmittance; clear shallow water shows the bottom, deep water shows none.
+- **O5** `[ ]` Shore from the world water info
+  - What: shoaling (waves grow in shallow water), breaking foam and the swash line read S1 instead of a per-body map.
+  - Acceptance: no foam over deep water; foam follows the shoreline of the island at every LOD.
+- **O6** `[ ]` Editor check of the look
+  - Acceptance: from the island's cliff and from the air the sea does not look like plastic, no pattern slides past, and the horizon has no edge.
+
+### M4. The first island scene
+- **I1** `[ ]` Build the scene
+  - What: a heightmap island, the sea, a sun and a sky; one scene file; scatter on the island.
+  - Acceptance: every contract rule in section 6 holds in the saved and re-opened scene.
 
 ### Not planned yet
-Scatter on the world, biomes, rivers across tiles, lakes and swamps, erosion and generators, camera-relative rendering, cascaded shadows, GPU
-heights, water shading and effects. Each returns to this file only when the scene needs it.
+Lakes, ponds, rivers and swamps (they return on the same water info), FFT wave cascades, caustics, spray particles, biomes, erosion and generators,
+camera-relative rendering, cascaded shadows, GPU heights. Each returns to this file only when the scene needs it.
 
 ---
 
-## 4. Water-terrain contract
+## 5. Patches to delete (the list T2 works from)
 
-1. Ground below `seaLevel` has water above it.
-2. Ground above `seaLevel` plus the wave margin has no water pixel.
+| Patch | Why it is a patch |
+|---|---|
+| `autoWaveScale`, `waveScale` | stretches the waves until the mesh can show them; a sea does not depend on its mesh (W6) |
+| `Spectrum` and `Classic` wave styles | older models kept next to the wind sea |
+| `waveAmplitude`, `waveFrequency`, `waveSpeed`, `waveRoughness`, `waveCount` | the wind sea ignores them |
+| `WavePreset`, `WaterLook` | presets that set many numbers; a look is data, not an enum |
+| `size`, `sizeZ`, `kSizeMax = 2000`, `WaterShape` | hand-sized planes; the sea covers the world (S5) |
+| `meshDetail`, `lodDistance` per body | per-plane mesh budgets; one ring has one budget |
+| per-body shore depth map | replaced by the world water info (S1) |
+| `shoreWaves = 0` "the old look" | a switch back to an old look |
+| `heightScale`, `baseHeight`, `AdoptFrom`, `MigrationStats` | the two-heights problem and its migration |
+
+## 6. Water-terrain contract
+
+1. Ground below `seaLevel` that is joined to the open sea has water above it.
+2. Ground above `seaLevel` plus the wave margin has no water pixel; a hollow below sea level that is not joined to the sea has none either.
 3. A tile that is not loaded never means deep ocean inside the world.
 4. The depth the water uses equals the ground the player sees at every LOD, within the wave margin.
 5. Moving or resizing the world never changes where the shoreline is.
 6. Sculpting updates the shoreline when the stroke ends.
-
-## 5. Removed from the old roadmap
-
-| Removed | Why |
-|---|---|
-| Levels, auto-levels, curve, invert, valley mask, `smoothing`, `bicubic` toggle, `prefilter` | They clamp data or patch around the clamp. Replaced by H1 to H5. |
-| `heightScale`, `baseHeight`, old H1, F11, F12 | The two-heights problem exists only because heights are 0..1. Gone with decision 1. |
-| Mip pyramid (`HeightPyramid`) | Replaced by H3. |
-| Migration (`AdoptFrom`) and its tests | No backwards compatibility. |
-| Tile file format | Nothing reads it, and it stores 0..1 heights. Revisit with a real streaming need, in metres. |
-| Old `[x]` and `[~]` statuses | Reset; nothing was verified as a working whole. |
-| Biomes, density brushes, GPU culling, erosion, old W2 to W5, camera-relative rendering, F2 to F10, F13 | Not needed for the first scene. |
+7. The sea has no visible edge: it runs to the horizon at any camera height.
