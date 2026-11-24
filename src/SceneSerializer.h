@@ -6,10 +6,9 @@
 // and editing the model in another program is picked up the next time the scene loads. Shipping the game
 // then means copying the scene file together with the files it points to.
 #include "Scene.h"
+#include "SceneVersion.h"
 #include <string>
 #include <vector>
-
-constexpr int kSceneFileVersion = 2;   // 2: lights are objects ("Light"), and the weather has fog; a version-1 file still loads
 
 // Writes `scene` to `path` (JSON). `warnings` receives things worth telling the user that did not stop the
 // save (for example a model that lives outside the scene's folder and will not travel with it).

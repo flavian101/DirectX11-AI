@@ -377,8 +377,9 @@ bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std:
         error = "This is not a scene file written by this editor.";
         return false;
     }
-    if (root.value("version", 0) > kSceneFileVersion) {
-        warnings.push_back("This scene was saved by a newer version of the editor; anything it does not understand is ignored.");
+    if (const std::string problem = SceneVersionProblem(root.value("version", 0)); !problem.empty()) {   // exactly one version reads (roadmap T3)
+        error = problem;
+        return false;
     }
 
     // Step 2: replace the contents. From here a problem affects one section or one object, never the whole load.
@@ -433,33 +434,6 @@ bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std:
             ApplyObject(*created, entry, &sceneFolder, warnings);   // settings, images, materials, transform
         });
     }
-
-    // A version-1 file kept its sun and lamps in the global "lights" block. They become ordinary light objects, so an old
-    // scene looks the same and its lights can now be selected, moved and deleted. (A file that already has Light objects
-    // never carries those keys: the editor stopped writing them.)
-    attempt("old lights", [&] {
-        const json lights = root.value("lights", json::object());
-        if (lights.contains("directional") && lights["directional"].is_object()) {
-            const DirectionalLight sun = lights["directional"].get<DirectionalLight>();
-            auto* light = scene.Add<LightObject>(LightKind::Directional);
-            light->SetName("Sun");
-            light->SetColor(sun.color);
-            light->SetIntensity(sun.intensity);
-            float azimuth = 0.0f, elevation = 0.0f;
-            LightAngles::FromTravel({ sun.direction.x, sun.direction.y, sun.direction.z }, azimuth, elevation);
-            light->SetAngles(azimuth, elevation);
-        }
-        int count = 0;
-        for (const json& entry : lights.value("points", json::array())) {
-            const PointLight point = entry.get<PointLight>();
-            auto* light = scene.Add<LightObject>(LightKind::Point);
-            light->SetName("Point light " + std::to_string(++count));
-            light->SetColor(point.color);
-            light->SetIntensity(point.intensity);
-            light->SetRange(point.range);
-            light->SetEditorTransform(point.position, DirectX::XMFLOAT3(0.0f, 0.0f, 0.0f), DirectX::XMFLOAT3(1.0f, 1.0f, 1.0f));
-        }
-    });
     return true;
 }
 

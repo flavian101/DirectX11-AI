@@ -266,6 +266,10 @@ if(BUILD_TESTS)
     target_include_directories(DepthMathTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME DepthMath COMMAND DepthMathTests)
     # The world as a grid of tiles (lesson 47): tile maths, shared edges, the apron, seamless normals. Pure maths: no GPU.
+    # The scene file is read at exactly one version (roadmap T3).
+    add_executable(SceneVersionTests tests/scene_version_test.cpp)
+    target_include_directories(SceneVersionTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME SceneVersion COMMAND SceneVersionTests)
     add_executable(WorldGridTests tests/world_grid_test.cpp src/WorldGrid.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
     target_include_directories(WorldGridTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME WorldGrid COMMAND WorldGridTests)

@@ -116,10 +116,16 @@ Done with this roadmap: `WorldTileFile` (the baked tile file; nothing read it) i
   - Tests: `tests/water_test.cpp`, `tests/water_settings_test.cpp`, `tests/sea_state_test.cpp`, `tests/buoyancy_test.cpp`, `tests/water_preset_test.cpp`
   - Acceptance (for `[x]`): in the editor, Add shows only Ocean; an ocean can be added, saved, re-opened and edited; its Waves section follows the scene's wind; boats still
     float on it.
-- **T3** `[ ]` Scene files start again
-  - What: a scene format version; a scene without it (or with an older one) fails to open with one message. Delete every "only ever ADD to the end" enum
-    constraint, every field kept only so old scenes load, and the migration code in `SceneJson.h`.
-  - Acceptance: an old scene gives the one message and does not crash; a new scene round-trips.
+- **T3** `[~]` Scene files start again
+  - Done: `src/SceneVersion.h` holds the file version (now 3) and the one rule: a scene is read at exactly that version. An older file (or one with no version) and a newer
+    one each fail to open with one message that says which way it is wrong; nothing is converted and nothing is read "as far as it goes". The version-1 migration (global lights
+    into light objects) is deleted. Bump the version, and say why in that header, whenever a scene file's meaning changes: the bump is the migration.
+  - Consequence: every scene you saved before this commit stops opening. Rebuild the island scene (a world, an ocean, a sun, a sky). If you want to keep one, change `"version": 2`
+    to `3` in the file by hand and delete its `Terrain` entry: objects of a kind that no longer exists are skipped with a warning and the rest loads.
+  - Not done: the "only ever ADD to the end" comments on saved enums in `SceneJson.h` are still there. They are true of a format that keeps old files readable, which this one does not,
+    so each enum can be renumbered freely once its owner is rewritten (the water ones already were).
+  - Tests: `tests/scene_version_test.cpp`
+  - Acceptance (for `[x]`): opening a version-2 scene in the editor shows the message and changes nothing; a scene saved now opens again.
 
 ### M1. One ground
 Pure logic first (no Direct3D, built and tested on any compiler), then wired into the editor.
