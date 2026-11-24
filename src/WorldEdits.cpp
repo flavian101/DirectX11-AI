@@ -328,67 +328,6 @@ WorldPatchExtent ApplyWorldEditPatch(WorldEdits& edits, const WorldEditPatch& pa
     return extent;
 }
 
-MigrationStats MigrateHeightsIntoEdits(const std::vector<float>& heights, const OldTerrainPlacement& placement, const WorldHeightSource& base,
-                                       double metresPerCell, WorldEdits& edits, float threshold)
-{
-    MigrationStats stats;
-    const int cx = placement.cellsX, cz = placement.cellsZ;
-    if (cx < 1 || cz < 1 || !(placement.sizeX > 0.0) || !(placement.sizeZ > 0.0) || !(metresPerCell > 0.0)) return stats;
-    if (heights.size() < static_cast<size_t>(cx + 1) * static_cast<size_t>(cz + 1)) return stats;
-    const double minX = placement.centerX - 0.5 * placement.sizeX, minZ = placement.centerZ - 0.5 * placement.sizeZ;
-    const double eps = 1e-6;
-    const LatticeIndex gx0 = static_cast<LatticeIndex>(std::ceil((minX) / metresPerCell - eps)), gx1 = static_cast<LatticeIndex>(std::floor((minX + placement.sizeX) / metresPerCell + eps));
-    const LatticeIndex gz0 = static_cast<LatticeIndex>(std::ceil((minZ) / metresPerCell - eps)), gz1 = static_cast<LatticeIndex>(std::floor((minZ + placement.sizeZ) / metresPerCell + eps));
-    auto at = [&](int x, int z) { return heights[static_cast<size_t>(z) * (cx + 1) + x]; };
-    for (LatticeIndex gz = gz0; gz <= gz1; ++gz) {
-        for (LatticeIndex gx = gx0; gx <= gx1; ++gx) {
-            const double wx = static_cast<double>(gx) * metresPerCell, wz = static_cast<double>(gz) * metresPerCell;
-            const double fx = std::clamp((wx - minX) / placement.sizeX * cx, 0.0, static_cast<double>(cx));
-            const double fz = std::clamp((wz - minZ) / placement.sizeZ * cz, 0.0, static_cast<double>(cz));
-            // Where the lattice meets the old grid (the usual case) this is the old sample itself; otherwise a bilinear blend.
-            const double rx = std::round(fx), rz = std::round(fz);
-            float old;
-            if (std::fabs(fx - rx) < 1e-6 && std::fabs(fz - rz) < 1e-6) {
-                old = at(static_cast<int>(rx), static_cast<int>(rz));
-            } else {
-                const int ix = (std::min)(static_cast<int>(fx), cx - 1), iz = (std::min)(static_cast<int>(fz), cz - 1);
-                const float tx = static_cast<float>(fx - ix), tz = static_cast<float>(fz - iz);
-                const float top = at(ix, iz) + (at(ix + 1, iz) - at(ix, iz)) * tx;
-                const float bottom = at(ix, iz + 1) + (at(ix + 1, iz + 1) - at(ix, iz + 1)) * tx;
-                old = top + (bottom - top) * tz;
-            }
-            const float delta = std::clamp(old, 0.0f, 1.0f) - base.Height01(wx, wz);
-            if (std::fabs(delta) <= threshold) continue;
-            edits.SetHeightDelta(gx, gz, delta);
-            ++stats.heightSamples;
-        }
-    }
-    return stats;
-}
-
-MigrationStats MigratePaintIntoEdits(const PaintMap& paint, const OldTerrainPlacement& placement, double metresPerCell, WorldEdits& edits)
-{
-    MigrationStats stats;
-    if (paint.IsEmpty() || paint.width < 1 || paint.height < 1 || !(placement.sizeX > 0.0) || !(placement.sizeZ > 0.0) || !(metresPerCell > 0.0)) return stats;
-    const double minX = placement.centerX - 0.5 * placement.sizeX, minZ = placement.centerZ - 0.5 * placement.sizeZ;
-    const LatticeIndex cx0 = static_cast<LatticeIndex>(std::floor(minX / metresPerCell + 1e-6)), cx1 = static_cast<LatticeIndex>(std::ceil((minX + placement.sizeX) / metresPerCell - 1e-6)) - 1;
-    const LatticeIndex cz0 = static_cast<LatticeIndex>(std::floor(minZ / metresPerCell + 1e-6)), cz1 = static_cast<LatticeIndex>(std::ceil((minZ + placement.sizeZ) / metresPerCell - 1e-6)) - 1;
-    for (LatticeIndex cz = cz0; cz <= cz1; ++cz) {
-        for (LatticeIndex cx = cx0; cx <= cx1; ++cx) {
-            const double centreX = (static_cast<double>(cx) + 0.5) * metresPerCell, centreZ = (static_cast<double>(cz) + 0.5) * metresPerCell;
-            const double u = (centreX - minX) / placement.sizeX, v = (centreZ - minZ) / placement.sizeZ;
-            if (u < 0.0 || u >= 1.0 || v < 0.0 || v >= 1.0) continue;
-            const int tx = (std::min)(static_cast<int>(u * paint.width), paint.width - 1), tz = (std::min)(static_cast<int>(v * paint.height), paint.height - 1);
-            const size_t base = paint.TexelIndex(tx, tz) * kSplatChannels;
-            const float w[4] = { paint.weights[base], paint.weights[base + 1], paint.weights[base + 2], paint.weights[base + 3] };
-            if (w[0] + w[1] + w[2] + w[3] < 1e-4f) continue;
-            edits.SetPaint(cx, cz, w);
-            ++stats.paintCells;
-        }
-    }
-    return stats;
-}
-
 namespace {
 constexpr char kMagic[4] = { 'W', 'E', 'D', 'T' };
 constexpr std::uint32_t kVersion = 1;

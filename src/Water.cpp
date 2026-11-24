@@ -552,16 +552,15 @@ void Water::SetSceneWind(const WindSettings& wind)
 	RebuildWaves();
 }
 
-void Water::RefreshShoreDepth(const std::vector<const Terrain*>& terrains, const std::vector<const TerrainWorld*>& worlds, std::uint64_t groundStamp)
+void Water::RefreshShoreDepth(const std::vector<const TerrainWorld*>& worlds, std::uint64_t groundStamp)
 {
 	if (!device_ || !renderable_ || !renderable_->GetModel()) return;
-	if (terrains.empty() && worlds.empty()) {
+	if (worlds.empty()) {
 		if (depthView_ || shoreKeyValid_) { ReleaseShoreMap(); shoreKeyValid_ = false; }
 		return;
 	}
 
-	// Measure again only when something that decides the numbers changed. (The terrain's revision moves whenever its
-	// heights or its placement do.)
+	// Measure again only when something that decides the numbers changed. (The ground stamp moves whenever a world's ground does.)
 	const std::array<float, 12> key = { position_.x, position_.y, position_.z, rotation_.x, rotation_.y, rotation_.z,
 										scale_.x, scale_.y, scale_.z, settings_.size, settings_.sizeZ, settings_.height };
 	if (shoreKeyValid_ && key == shoreKey_ && groundStamp == shoreGroundStamp_) return;
@@ -576,7 +575,7 @@ void Water::RefreshShoreDepth(const std::vector<const Terrain*>& terrains, const
 	// The ground of every world under this body, from the world's ground function over the body's footprint (roadmap W1): no tile
 	// has to be loaded, so a tile that is still streaming in is not "100 m of open ocean", and the numbers do not depend on the mesh's level of detail.
 	std::vector<WorldGroundGrid> worldGrounds;
-	if (!worlds.empty()) {
+	{
 		double minX = 1.0e30, maxX = -1.0e30, minZ = 1.0e30, maxZ = -1.0e30;
 		for (int corner = 0; corner < 4; ++corner) {
 			const XMVECTOR p = XMVector3Transform(XMVectorSet((corner & 1) ? 1.0f : -1.0f, 0.0f, (corner & 2) ? 1.0f : -1.0f, 1.0f), world);
@@ -594,17 +593,11 @@ void Water::RefreshShoreDepth(const std::vector<const Terrain*>& terrains, const
 			worldX = XMVectorGetX(p);
 			worldZ = XMVectorGetZ(p);
 		},
-		[&terrains, &worldGrounds](float worldX, float worldZ, float& groundY) {   // the highest ground of the terrains and worlds that cover this point
+		[&worldGrounds](float worldX, float worldZ, float& groundY) {   // the highest ground of the worlds that cover this point
 			bool found = false;
 			for (const WorldGroundGrid& grid : worldGrounds) {
 				float height = 0.0f;
 				if (!grid.Sample(worldX, worldZ, height)) continue;
-				if (!found || height > groundY) groundY = height;
-				found = true;
-			}
-			for (const Terrain* terrain : terrains) {
-				float height = 0.0f;
-				if (!terrain->GetHeightAt(worldX, worldZ, height)) continue;
 				if (!found || height > groundY) groundY = height;
 				found = true;
 			}

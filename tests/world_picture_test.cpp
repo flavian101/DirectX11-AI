@@ -170,43 +170,6 @@ static void TestBoundedStreaming()
     CHECK(!Contains(drop.toLoad, { 5, 5 }));   // and the tile outside the bounds is not asked for again
 }
 
-// The old terrain's height at grid sample (x, z): the picture sampled at u = x / cells, v = z / cells (Terrain.cpp, GenerateHeights).
-static void TestRebuildOldTerrain()
-{
-    const auto image = MakeImage(64, 64);
-    for (size_t i = 0; i < image->values.size(); ++i) image->values[i] = std::fmod(static_cast<float>(i) * 0.7548777f, 1.0f);
-
-    const float width = 240.0f;
-    const int maxCells = 512;
-    const WorldGridSettings grid = WorldGridForTerrain(width, maxCells);
-    CHECK(grid.chunksPerTile == 16 && grid.TileCells() == 512);
-    CHECK(Near(grid.TileSize(), 240.0, 1e-3));             // one tile as wide as the terrain
-    CHECK(Near(grid.metresPerCell, 240.0 / 512.0, 1e-6));  // with the same cell size
-
-    const PictureHeightSource source(image, 0.0, 0.0, width, PictureDepth(width, image->width, image->height));
-    const std::vector<float> tile = GenerateTileSamples(source, grid, { 0, 0 });
-    const int cells = grid.TileCells();
-    double worst = 0.0;
-    for (int z = 0; z <= cells; ++z) {
-        for (int x = 0; x <= cells; ++x) {
-            const float old = SampleHeightImage(*image, static_cast<float>(x) / cells, static_cast<float>(z) / cells);
-            worst = (std::max)(worst, static_cast<double>(std::fabs(old - tile[static_cast<size_t>(z) * (cells + 1) + x])));
-        }
-    }
-    CHECK(worst < 1e-4);   // float vs double rounding only
-
-    const WorldBounds bounds = WorldBounds::Covering(grid, 0.0, 0.0, width, PictureDepth(width, image->width, image->height));
-    CHECK(bounds.TilesAcrossX() == 1 && bounds.TilesAcrossZ() == 1);
-
-    // A terrain wider than the finest cell allows becomes a tile that is bigger than the picture, never a failure.
-    const WorldGridSettings tiny = WorldGridForTerrain(40.0f, 1024);
-    CHECK(Near(tiny.metresPerCell, WorldGridSettings::kMetresPerCellMin) && Near(tiny.TileSize(), 256.0, 1e-3));
-    const WorldGridSettings huge = WorldGridForTerrain(1000.0f, 32);
-    CHECK(huge.chunksPerTile == 1 && Near(huge.TileSize(), 32.0 * huge.metresPerCell, 1e-6));
-    // A mesh resolution that is not a whole number of chunks is rounded to the nearest one.
-    CHECK(WorldGridForTerrain(240.0f, 500).chunksPerTile == 16);
-}
-
 static void TestLoadImage()
 {
     namespace fs = std::filesystem;
@@ -309,7 +272,6 @@ int main()
     TestTilesShareEdges();
     TestBounds();
     TestBoundedStreaming();
-    TestRebuildOldTerrain();
     TestLoadImage();
     TestPrefilter();
     if (g_failures == 0) std::printf("All world picture tests passed.\n");

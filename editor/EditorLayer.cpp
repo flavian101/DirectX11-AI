@@ -36,14 +36,6 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 using namespace DirectX;
 
 namespace {
-// An old-style terrain (not a tile of a terrain world), if the scene has one: the brush works on it unless the world is selected.
-Terrain* FindSingleTerrain(Scene& scene)
-{
-    for (const auto& object : scene.GetObjects()) {
-        if (auto* terrain = dynamic_cast<Terrain*>(object.get()); terrain && !terrain->IsTile()) return terrain;
-    }
-    return nullptr;
-}
 // An undoable action made of two small functions. Everything an editor action needs (an id, a snapshot, the object
 // itself) is captured by the lambdas, so one class covers every kind of command.
 class LambdaCommand final : public UndoCommand {
@@ -342,7 +334,6 @@ void EditorLayer::OnFrame(LayerContext& ctx)
         NewProject(ctx);
     }
     HandleSceneFileRequests(ctx);   // File > Open / Save, also before the UI frame starts
-    HandleTerrainFileRequest(ctx);  // Terrain > Texture files
     HandleWorldPictureRequest(ctx); // Terrain world > Picture
     ProcessPendingActions(ctx);     // add / duplicate / delete asked for by the previous frame's UI
 
@@ -495,14 +486,6 @@ void EditorLayer::DrawMenuBar()
         if (ImGui::MenuItem("Model from file...")) importRequested_ = true;
         if (ImGui::MenuItem("Terrain world (streaming tiles)", nullptr, false, scene_ && !scene_->FindFirst<TerrainWorld>())) addTerrainWorldRequested_ = true;
         ImGui::SetItemTooltip("A world of 1 km terrain tiles whose heights come from one world function, so the tiles meet without seams.\nTiles load and unload around the camera. Select the world in the Hierarchy to change its seed, hills,\nheight and view distance. Sculpt and paint with the brush (4): strokes are stored in the world and cross tile borders.");
-        {
-            const Terrain* single = scene_ ? scene_->GetTerrain() : nullptr;
-            const bool canRebuild = scene_ && single && !single->IsTile() && !scene_->FindFirst<TerrainWorld>();
-            if (ImGui::MenuItem("Terrain world from this terrain (migrate)", nullptr, false, canRebuild)) addWorldFromTerrainRequested_ = true;
-            ImGui::SetItemTooltip("Replaces the terrain with a small BOUNDED world standing where it stands: one tile as wide as the terrain, with the same\nheightmap, height, cell size, look and layer textures. Sculpting, noise and painting are carried over as the world's edits.\nThe old terrain stays in the scene until you delete it; rivers carved into it are part of its heights and come along.");
-        }
-        if (ImGui::MenuItem("Scatter on terrain (trees, rocks)", nullptr, false, scene_ && scene_->GetTerrain())) addScatterRequested_ = true;
-        ImGui::SetItemTooltip("Grows trees and rocks over the terrain by rules (which layer, how steep, how high),\ndrawn with instancing, frustum culling and levels of detail. Needs a terrain.");
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
@@ -629,7 +612,7 @@ void EditorLayer::DrawViewportToolbar()
     if (EditorIcons::Button("##toolSpace", gizmoLocal_ ? Icon::Local : Icon::World, false,
                             gizmoLocal_ ? "Local: handles follow the object  (G)" : "World: handles follow the world axes  (G)")) gizmoLocal_ = !gizmoLocal_;
 
-    if (scene_ && scene_->GetTerrain()) {
+    if (scene_ && scene_->FindFirst<TerrainWorld>()) {
         groupGap();
         // Read the mode ONCE, before the click. The click flips sculptMode_, and a push and its pop must agree on it.
         if (EditorIcons::Button("##toolBrush", Icon::Brush, sculptMode_, "Sculpt and paint the terrain  (4)")) ToggleSculptMode();
@@ -692,25 +675,13 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
     const XMFLOAT4X4 view = camera.GetViewMatrix();
     const XMFLOAT4X4 projection = camera.GetProjectionMatrix();
 
-    // Sculpt mode needs the terrain: if it is gone (deleted, or a scene without one was opened) the mode simply ends.
-    // The brush works on a terrain WORLD when the world (or one of its tiles) is selected or when it is the only terrain; strokes are then stored in
-    // the world and carry on across tile borders. Otherwise it works on the old single terrain.
-    TerrainWorld* sculptWorld = nullptr;
-    Terrain* sculptTerrain = nullptr;
-    if (sculptMode_) {
-        TerrainWorld* anyWorld = ctx.scene.FindFirst<TerrainWorld>();
-        Terrain* single = FindSingleTerrain(ctx.scene);
-        const SceneObject* chosen = SelectedObject();
-        const auto* chosenTerrain = dynamic_cast<const Terrain*>(chosen);
-        const bool worldChosen = dynamic_cast<const TerrainWorld*>(chosen) != nullptr || (chosenTerrain && chosenTerrain->IsTile());
-        if (anyWorld && (!single || worldChosen)) sculptWorld = anyWorld;
-        else sculptTerrain = single;
-    }
-    const bool sculpting = sculptTerrain != nullptr || sculptWorld != nullptr;
+    // Sculpt mode needs a terrain world: if it is gone (deleted, or a scene without one was opened) the mode simply ends. Strokes are stored in
+    // the world and carry on across tile borders.
+    TerrainWorld* sculptWorld = sculptMode_ ? ctx.scene.FindFirst<TerrainWorld>() : nullptr;
+    const bool sculpting = sculptWorld != nullptr;
     if (sculptMode_ && !sculpting) sculptMode_ = false;
     if (sculptStroking_ && !sculpting) {   // mode left in mid-stroke
-        if (TerrainWorld* anyWorld = ctx.scene.FindFirst<TerrainWorld>(); anyWorld && strokeOnWorld_) FinishWorldStroke(anyWorld);
-        else FinishSculptStroke(FindSingleTerrain(ctx.scene));
+        if (TerrainWorld* anyWorld = ctx.scene.FindFirst<TerrainWorld>()) FinishWorldStroke(anyWorld);
     }
 
     ImGuizmo::SetOrthographic(false);
@@ -788,72 +759,17 @@ void EditorLayer::DrawSelectionAndGizmo(LayerContext& ctx, float x, float y, flo
     // Where is the ground under the mouse? The terrain answers from its kept height grid (lesson 25). This is also
     // the first thing the sculpt brushes will need: a point on the ground to work around.
     if (viewportHovered_ && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
-        if (const Terrain* terrain = ctx.scene.GetTerrain()) {
+        {
             const ImVec2 mouse = ImGui::GetMousePos();
             const float ndcX = ((mouse.x - x) / width) * 2.0f - 1.0f;
             const float ndcY = 1.0f - ((mouse.y - y) / height) * 2.0f;
             float distance = 0.0f;
             XMFLOAT3 point;
-            if (terrain->Raycast(MakePickRay(view, projection, ndcX, ndcY), distance, &point)) {
+            if (ctx.scene.RaycastGround(MakePickRay(view, projection, ndcX, ndcY), distance, &point)) {
                 char text[96];
                 std::snprintf(text, sizeof(text), "Ground: %.1f, %.1f, %.1f", point.x, point.y, point.z);
                 ImGui::GetWindowDrawList()->AddText(ImVec2(x + 8.0f, y + height - 40.0f), IM_COL32(255, 255, 255, 200), text);
             }
-        }
-    }
-
-    // ---- Sculpting (lesson 27): press = begin a stroke, hold = brush each frame, release = one undo step ----
-    if (sculptTerrain) {
-        const ImGuiIO& io = ImGui::GetIO();
-        const float ndcX = ((io.MousePos.x - x) / width) * 2.0f - 1.0f;
-        const float ndcY = 1.0f - ((io.MousePos.y - y) / height) * 2.0f;
-        float distance = 0.0f;
-        XMFLOAT3 point(0.0f, 0.0f, 0.0f);
-        const bool onGround = (viewportHovered_ || sculptStroking_) &&
-                              sculptTerrain->Raycast(MakePickRay(view, projection, ndcX, ndcY), distance, &point);
-
-        if (viewportHovered_ && onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            strokeIsPaint_ = (brushTarget_ == 1);   // fixed for the whole stroke, even if the target is changed meanwhile
-            strokeOnWorld_ = false;
-            if (strokeIsPaint_) {
-                sculptTerrain->BeginPaintStroke();
-            } else {
-                sculptTerrain->BeginSculptStroke();
-                float level = 0.0f;   // Flatten levels the ground towards the height where the stroke began
-                if (sculptTerrain->SampleNormalizedHeight(point.x, point.z, level)) brush_.targetHeight = level;
-            }
-            sculptStroking_ = true;
-        }
-        if (sculptStroking_) {
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                if (onGround) {
-                    // A long frame (a hitch, a breakpoint) must not make the ground lurch: cap the step.
-                    const float seconds = (std::min)(io.DeltaTime, 0.05f);
-                    if (strokeIsPaint_) {
-                        PaintBrush paint;
-                        paint.layer = brushLayer_;
-                        paint.erase = (brushErase_ != io.KeyShift);   // Shift flips paint and erase
-                        paint.radius = brush_.radius;
-                        paint.strength = brush_.strength;
-                        paint.falloff = brush_.falloff;
-                        sculptTerrain->Paint(paint, point.x, point.z, seconds);
-                    } else {
-                        BrushSettings step = brush_;
-                        if (io.KeyShift && step.mode == BrushMode::Raise) step.mode = BrushMode::Lower;
-                        else if (io.KeyShift && step.mode == BrushMode::Lower) step.mode = BrushMode::Raise;
-                        sculptTerrain->Sculpt(step, point.x, point.z, seconds);
-                    }
-                }
-            } else {
-                FinishSculptStroke(sculptTerrain);
-            }
-        }
-        if (onGround) {
-            ImGui::GetWindowDrawList()->PushClipRect(ImVec2(x, y), ImVec2(x + width, y + height), true);
-            const bool paintBrush = sculptStroking_ ? strokeIsPaint_ : (brushTarget_ == 1);   // yellow = shape, blue = paint
-            DrawBrushRing(ImGui::GetWindowDrawList(), *sculptTerrain, point.x, point.z, brush_.radius, view, projection,
-                          x, y, width, height, paintBrush ? IM_COL32(90, 200, 255, 255) : IM_COL32(255, 220, 80, 255));
-            ImGui::GetWindowDrawList()->PopClipRect();
         }
     }
 
@@ -928,9 +844,9 @@ SceneObjectId EditorLayer::PickObject(const Ray& ray) const
     // Water (lesson 42) has no box: it is picked where its SURFACE is, and only where that spot is really water. The terrain cannot
     // be clicked itself, but it can stand in front of the water: a hill between you and a lake hides it.
     float terrainDistance = bestDistance;
-    if (const Terrain* terrain = scene_->GetTerrain()) {
+    {
         float hit = 0.0f;
-        if (terrain->Raycast(ray, hit) && hit < terrainDistance) terrainDistance = hit;
+        if (scene_->RaycastGround(ray, hit, nullptr) && hit < terrainDistance) terrainDistance = hit;
     }
     for (const auto& object : scene_->GetObjects()) {
         const Water* water = dynamic_cast<const Water*>(object.get());
@@ -1013,37 +929,6 @@ void EditorLayer::ProcessPendingActions(LayerContext& ctx)
             // Only the world is added (and undoable): its tiles are streamed in around the camera by Scene::Update.
             TerrainWorld* world = ctx.scene.Add<TerrainWorld>(ctx.renderer.GetDevice());
             if (world) { RecordAdded(world, "Add terrain world"); Select(world); }
-        }
-    }
-    if (addWorldFromTerrainRequested_) {
-        addWorldFromTerrainRequested_ = false;
-        Terrain* single = FindSingleTerrain(ctx.scene);
-        if (single && !ctx.scene.FindFirst<TerrainWorld>()) {
-            TerrainWorld* world = ctx.scene.Add<TerrainWorld>(ctx.renderer.GetDevice());
-            if (world) {
-                world->SetSettings(WorldSettingsFromTerrain(*single));
-                MigrationStats stats;
-                const bool carried = world->AdoptFrom(*single, &stats);
-                world->SetName("Terrain world (from terrain)");
-                RecordAdded(world, "Migrate terrain to world");
-                Select(world);
-                if (carried) {
-                    ShowMessage("Terrain migrated",
-                                "The world stands where the terrain stood. " + std::to_string(stats.heightSamples) + " height samples and " + std::to_string(stats.paintCells) +
-                                " painted cells were carried over as edits.\n\nThe old terrain is still in the scene: when the world looks right, select the old terrain and delete it (Delete key).\nUntil then both are drawn.");
-                } else {
-                    ShowMessage("Terrain migrated, with a warning", "The world was made, but its ground could not be built (see the Terrain world's status in the inspector), so the sculpting was not carried over.");
-                }
-            }
-        }
-    }
-    if (addScatterRequested_) {
-        addScatterRequested_ = false;
-        if (ctx.scene.GetTerrain()) {
-            ScatterObject* scatter = ctx.scene.Add<ScatterObject>(ctx.renderer.GetDevice());
-            scatter->SetSettings(ScatterSettings::Starter());
-            Select(scatter);
-            RecordAdded(scatter, "Add scatter");
         }
     }
     if (addOceanRequested_) {
@@ -1374,7 +1259,6 @@ void EditorLayer::DrawHierarchyPanel()
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Add model from file...")) importRequested_ = true;
-        if (ImGui::MenuItem("Add scatter on terrain", nullptr, false, scene_ && scene_->GetTerrain())) addScatterRequested_ = true;
         if (ImGui::BeginMenu("Add sky")) {
             EnsureSkyboxScan();
             for (const SkyboxChoice& choice : skyboxFolders_) {
@@ -1414,7 +1298,9 @@ void EditorLayer::DrawObjectInspector(SceneObject* object)
     ImGui::Separator();
     if (!dynamic_cast<Skybox*>(object)) DrawTransformEditor(object);   // a sky has no position: it is always around you
 
-    if (auto* terrain = dynamic_cast<Terrain*>(object)) DrawTerrainInspector(terrain);
+    if (const auto* tile = dynamic_cast<const Terrain*>(object)) {
+        ImGui::TextWrapped("Tile (%d, %d) of a terrain world. Its heights, size and look come from the world: select the Terrain world in the Hierarchy to change them.", tile->GetTile().coord.x, tile->GetTile().coord.z);
+    }
     if (auto* world = dynamic_cast<TerrainWorld*>(object)) DrawTerrainWorldInspector(world);
     if (auto* water = dynamic_cast<Water*>(object)) DrawWaterInspector(water);
     if (auto* light = dynamic_cast<LightObject*>(object)) DrawLightInspector(light);
@@ -1436,28 +1322,6 @@ bool IsInsideAssets(const std::string& path, const std::string& assetsRoot)
     const std::filesystem::path relative = std::filesystem::weakly_canonical(path, error).lexically_relative(std::filesystem::weakly_canonical(assetsRoot, error));
     return !relative.empty() && *relative.begin() != "..";
 }
-}
-
-void EditorLayer::HandleTerrainFileRequest(LayerContext& ctx)
-{
-    if (terrainFileRequest_.kind == 0) return;
-    const TerrainFileRequest request = terrainFileRequest_;
-    terrainFileRequest_ = TerrainFileRequest{};
-    Terrain* terrain = ctx.scene.GetTerrain();
-    if (!terrain) return;
-
-    const std::string path = PickImageFile(hwnd_);
-    if (path.empty()) return;   // cancelled
-
-    bool ok = false;
-    if (request.kind == 1) ok = terrain->SetLayerMap(request.layer, static_cast<TerrainLayerMap>(request.map), path);
-    else if (request.kind == 2) ok = terrain->SetHeightmap(path);
-
-    if (!ok) {
-        ShowMessage("Could not use that image", "The image could not be read (or the terrain could not be rebuilt with it):\n" + path);
-    } else if (!IsInsideAssets(path, AssetsRootText())) {
-        ShowMessage("Image applied, with a warning", "That image is outside the assets folder, so it will not be shipped with the game.\nCopy it into assets/ (for example assets/Terrain/<Layer>/) and choose it again from there.");
-    }
 }
 
 void EditorLayer::HandleWorldPictureRequest(LayerContext& ctx)
@@ -2302,41 +2166,10 @@ void EditorLayer::DrawShadowInspector()
 void EditorLayer::ToggleSculptMode()
 {
     TerrainWorld* world = scene_ ? scene_->FindFirst<TerrainWorld>() : nullptr;
-    Terrain* single = scene_ ? FindSingleTerrain(*scene_) : nullptr;
-    if (!world && !single) { sculptMode_ = false; return; }
+    if (!world) { sculptMode_ = false; return; }
     sculptMode_ = !sculptMode_;
     if (!sculptMode_) return;
-    // The brush settings live in the inspector of what is sculpted: the world's, or the old terrain's. If something of the world is already
-    // selected, or there is no old terrain, it is the world.
-    const SceneObject* chosen = SelectedObject();
-    const auto* chosenTerrain = dynamic_cast<const Terrain*>(chosen);
-    const bool worldChosen = dynamic_cast<const TerrainWorld*>(chosen) != nullptr || (chosenTerrain && chosenTerrain->IsTile());
-    if (world && (!single || worldChosen)) Select(world); else Select(single);
-}
-
-// The mouse button came up (or the mode ended): what the stroke changed becomes ONE undo step.
-void EditorLayer::FinishSculptStroke(Terrain* terrain)
-{
-    sculptStroking_ = false;
-    if (!terrain) return;
-    if (strokeIsPaint_) {
-        HeightfieldPatch patch = terrain->EndPaintStroke();
-        if (!patch.IsEmpty()) RecordPaintStroke(terrain->GetId(), std::move(patch));
-    } else {
-        HeightfieldPatch patch = terrain->EndSculptStroke();
-        if (!patch.IsEmpty()) RecordSculptStroke(terrain->GetId(), std::move(patch));
-    }
-}
-
-void EditorLayer::RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch patch, const char* name)
-{
-    // The command holds the patch (not the terrain, which may be rebuilt or reloaded) and looks the terrain up by id.
-    const auto shared = std::make_shared<HeightfieldPatch>(std::move(patch));
-    auto run = [this, terrainId, shared](bool redo) {
-        if (!scene_) return;
-        if (auto* terrain = dynamic_cast<Terrain*>(scene_->Find(terrainId))) terrain->ApplyPatch(*shared, redo);
-    };
-    history_.Push(std::make_unique<LambdaCommand>(name, [run]() { run(false); }, [run]() { run(true); }));
+    Select(world);   // the brush settings live in the world's inspector
 }
 
 void EditorLayer::FinishWorldStroke(TerrainWorld* world)
@@ -2373,53 +2206,9 @@ void EditorLayer::ClearWorldEdits(TerrainWorld* world, bool heights, bool paint)
                                                   [replace, before]() { replace(before); }, [replace, after]() { replace(after); }));
 }
 
-void EditorLayer::DiscardSculpt(Terrain* terrain)
+void EditorLayer::DrawSculptSection(TerrainWorld* world)
 {
-    std::vector<float> original;
-    if (!terrain || !terrain->GenerateOriginalHeights(original)) return;
-    const auto before = std::make_shared<std::vector<float>>(terrain->GetHeightfield().Samples());
-    const auto after = std::make_shared<std::vector<float>>(std::move(original));
-    if (!terrain->ReplaceHeights(*after, false)) return;
-
-    const SceneObjectId id = terrain->GetId();
-    auto replace = [this, id](const std::shared_ptr<std::vector<float>>& samples, bool sculpted) {
-        if (!scene_) return;
-        if (auto* target = dynamic_cast<Terrain*>(scene_->Find(id))) target->ReplaceHeights(*samples, sculpted);
-    };
-    history_.Push(std::make_unique<LambdaCommand>("Discard sculpting", [replace, before]() { replace(before, true); },
-                                                  [replace, after]() { replace(after, false); }));
-}
-
-void EditorLayer::RecordPaintStroke(SceneObjectId terrainId, HeightfieldPatch patch)
-{
-    // Same shape as a sculpt stroke: the command holds the patch and finds the terrain by id.
-    const auto shared = std::make_shared<HeightfieldPatch>(std::move(patch));
-    auto run = [this, terrainId, shared](bool redo) {
-        if (!scene_) return;
-        if (auto* terrain = dynamic_cast<Terrain*>(scene_->Find(terrainId))) terrain->ApplyPaintPatch(*shared, redo);
-    };
-    history_.Push(std::make_unique<LambdaCommand>("Paint terrain", [run]() { run(false); }, [run]() { run(true); }));
-}
-
-void EditorLayer::ClearPaint(Terrain* terrain)
-{
-    if (!terrain || terrain->GetPaintMap().IsEmpty()) return;
-    const auto before = std::make_shared<std::vector<float>>(terrain->GetPaintMap().weights);
-    const auto after = std::make_shared<std::vector<float>>(before->size(), 0.0f);   // nothing painted: the rules rule again
-    if (!terrain->ReplacePaint(*after, false)) return;
-
-    const SceneObjectId id = terrain->GetId();
-    auto replace = [this, id](const std::shared_ptr<std::vector<float>>& weights, bool painted) {
-        if (!scene_) return;
-        if (auto* target = dynamic_cast<Terrain*>(scene_->Find(id))) target->ReplacePaint(*weights, painted);
-    };
-    history_.Push(std::make_unique<LambdaCommand>("Clear painting", [replace, before]() { replace(before, true); },
-                                                  [replace, after]() { replace(after, false); }));
-}
-
-void EditorLayer::DrawSculptSection(Terrain* terrain, TerrainWorld* world)
-{
-    // ImGui tells widgets apart by their label, and the noise section below also has a "Strength" slider. Without
+    // ImGui tells widgets apart by their label, and the world's sections below also have a "Strength" slider. Without
     // its own ID scope the two would be ONE widget: dragging either would move both.
     ImGui::PushID("sculpt");
     ImGui::SeparatorText("Brush");
@@ -2461,7 +2250,7 @@ void EditorLayer::DrawSculptSection(Terrain* terrain, TerrainWorld* world)
     ImGui::SliderFloat("Falloff", &brush_.falloff, 0.0f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("0 = full strength right to the edge of the brush, 1 = fades out from the centre.");
 
-    if (world) {
+    {
         // A terrain world keeps what the brush did PER TILE (src/WorldEdits.h) in one file beside the scene.
         if (world->HasEdits()) {
             ImGui::TextDisabled("%d tiles carry hand-made edits. Saved next to the scene file (.worldedits).", static_cast<int>(world->Edits().BlockCount()));
@@ -2477,24 +2266,12 @@ void EditorLayer::DrawSculptSection(Terrain* terrain, TerrainWorld* world)
             ImGui::SetItemTooltip("Back to the automatic rules everywhere. Undo brings the painting back.");
         }
     }
-    if (terrain && terrain->IsSculpted()) {
-        ImGui::TextDisabled("Shaped by hand. Saved next to the scene file as a 16-bit PNG.");
-        ImGui::TextDisabled("Mesh resolution, noise and the heightmap are locked until you discard.");
-        if (ImGui::Button("Discard sculpting")) DiscardSculpt(terrain);
-        ImGui::SetItemTooltip("Go back to the heightmap and noise. Undo brings the sculpting back.");
-    }
-    if (terrain && terrain->IsPainted()) {
-        ImGui::TextDisabled("Painted by hand. Saved next to the scene file as a PNG.");
-        ImGui::TextDisabled("Mesh resolution and the heightmap are locked until you clear the painting.");
-        if (ImGui::Button("Clear painting")) ClearPaint(terrain);
-        ImGui::SetItemTooltip("Back to the automatic rules everywhere. Undo brings the painting back.");
-    }
     ImGui::PopID();
 }
 
 void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
 {
-    DrawSculptSection(nullptr, world);
+    DrawSculptSection(world);
     ImGui::SeparatorText("Terrain world");
     // Changing the world rebuilds every tile, so a value is applied when you RELEASE its control, not on every frame of a drag.
     // While a control is being edited we keep our own copy (re-reading the world every frame would throw the edit away before it is
@@ -2516,7 +2293,7 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
     ImGui::SetItemTooltip("Fractal hills: endless noise, the same everywhere. Heightmap picture: the ground is an image placed in the world,\nand the world ends where the picture does. Either way the tiles meet without seams.");
 
     if (s.source == WorldSourceKind::Picture) {
-        const std::string shownPath = s.picturePath.empty() ? std::string(Terrain::DefaultHeightmapPath()) + " (default)" : s.picturePath;
+        const std::string shownPath = s.picturePath.empty() ? std::string(TerrainWorldSettings::kDefaultPicturePath) + " (default)" : s.picturePath;
         ImGui::TextUnformatted("Picture");
         ImGui::SameLine(90.0f);
         if (ImGui::Button("Browse...")) worldPictureRequested_ = true;
@@ -2666,12 +2443,6 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
         ImGui::InputInt("Detail seed", &s.shape.detailSeed);
         commitOnRelease();
     }
-    if (s.customMaterial) {
-        ImGui::SeparatorText("Look");
-        ImGui::TextDisabled("The slope and height rules, tints and layer images carried over from the terrain this world came from.");
-        if (ImGui::Button("Use the automatic look")) { s.customMaterial = false; commit = true; }
-        ImGui::SetItemTooltip("The automatic rules, scaled to this world's height. Layer textures are the default ones.");
-    }
     if (commit) world->SetSettings(s);   // every tile is rebuilt from the new settings
 
     // Beyond the view distance there is no land at all. Fog is what makes that look like distance instead of an edge.
@@ -2682,229 +2453,6 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
         fog.Clamp();
     }
     ImGui::SetItemTooltip("Turns the scene's fog on and sets its visibility to 80%% of the view distance, so the far tiles fade out before the\nworld ends. You can tune it in the Weather panel; the world never changes the fog by itself.");
-}
-
-void EditorLayer::DrawTerrainInspector(Terrain* terrain)
-{
-    // Mesh-shaping values rebuild ~half a million vertices, so they are applied when you
-    // RELEASE the control, not on every frame of a drag. While a control is being edited we keep
-    // our own copy; otherwise we follow the terrain so changes made elsewhere show up.
-    if (!ImGui::IsAnyItemActive()) pendingTerrainSettings_ = terrain->GetSettings();
-    TerrainSettings& s = pendingTerrainSettings_;
-
-    bool commit = false;
-    auto commitOnRelease = [&commit] { if (ImGui::IsItemDeactivatedAfterEdit()) commit = true; };
-
-    if (terrain->IsTile()) {
-        ImGui::SeparatorText("Terrain world");
-        ImGui::TextWrapped("Tile (%d, %d) of a terrain world. Its heights, size and resolution come from the world (select the Terrain world in the Hierarchy to change them). Sculpt and paint it with the brush (4): strokes are stored in the world, carry on across tile borders and survive the tile being unloaded. The layer settings below change this tile only.",
-                           terrain->GetTile().coord.x, terrain->GetTile().coord.z);
-    } else {
-        DrawSculptSection(terrain);
-    }
-
-    ImGui::BeginDisabled(terrain->IsTile());   // the world decides these
-    ImGui::SeparatorText("Shape");
-    // One world unit is one metre. Width is shown in kilometres; height in metres. Both are ABSOLUTE sizes: a wider terrain with
-    // the same height scale is simply flatter (the same heightmap picture is stretched over more ground), which is how every
-    // engine behaves, so "Keep proportions" offers to raise the height scale together with the width.
-    {
-        const TerrainSettings& committed = terrain->GetSettings();   // unchanged until the drag is released
-        float widthKm = s.width / 1000.0f;
-        if (ImGui::SliderFloat("Width", &widthKm, TerrainSettings::kWidthMin / 1000.0f, TerrainSettings::kWidthMax / 1000.0f, "%.3f km",
-                               ImGuiSliderFlags_Logarithmic)) {
-            s.width = widthKm * 1000.0f;
-            if (terrainKeepProportions_ && committed.width > 0.0f) {
-                s.heightScale = std::clamp(committed.heightScale * s.width / committed.width, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax);
-            }
-        }
-        commitOnRelease();
-        ImGui::SetItemTooltip("Along X, in kilometres (1 world unit = 1 metre). The depth follows the heightmap's shape.");
-        ImGui::Checkbox("Keep proportions", &terrainKeepProportions_);
-        ImGui::SetItemTooltip("On: changing the width changes the height scale by the same factor, so the terrain keeps its look.\nOff: the height stays the same, so a wider terrain is flatter.");
-    }
-    ImGui::SliderFloat("Height scale", &s.heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax, "%.0f m");
-    commitOnRelease();
-    ImGui::SetItemTooltip("How tall a white heightmap pixel is, in metres.");
-    // A different grid would lose both a sculpt and a painting, so the grid-defining controls lock for either.
-    ImGui::BeginDisabled(terrain->IsSculpted() || terrain->IsPainted());
-    ImGui::SliderInt("Mesh resolution", &s.maxCells, TerrainSettings::kCellsMin, TerrainSettings::kCellsMax);
-    commitOnRelease();
-    ImGui::SetItemTooltip("Grid cells across the terrain. Higher = smoother and slower to rebuild.");
-    ImGui::EndDisabled();
-    {
-        const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();   // includes the transform's scale
-        const int cellsX = terrain->GetHeightfield().GetLayout().cellsX;
-        ImGui::TextDisabled("World size %.3f x %.3f km, %.2f m per cell", extent.x / 1000.0f, extent.y / 1000.0f,
-                            cellsX > 0 ? extent.x / static_cast<float>(cellsX) : 0.0f);
-    }
-
-    ImGui::SeparatorText("Noise");
-    ImGui::BeginDisabled(terrain->IsSculpted());   // noise makes the heights, which a sculpt replaces (a painting does not mind)
-    ImGui::SliderFloat("Strength", &s.noiseStrength, 0.0f, 1.0f, "%.3f");
-    commitOnRelease();
-    ImGui::SliderFloat("Scale", &s.noiseScale, TerrainSettings::kNoiseScaleMin, TerrainSettings::kNoiseScaleMax, "%.2f");
-    commitOnRelease();
-    ImGui::SliderInt("Octaves", &s.noiseOctaves, TerrainSettings::kOctavesMin, TerrainSettings::kOctavesMax);
-    commitOnRelease();
-    ImGui::SetItemTooltip("Layers of detail. Each octave doubles the frequency and halves the amplitude.");
-    ImGui::InputInt("Seed", &s.noiseSeed);
-    commitOnRelease();
-    ImGui::SameLine();
-    if (ImGui::Button("Random")) {
-        s.noiseSeed = static_cast<int>(ImGui::GetTime() * 1000.0) & 0xffff;
-        commit = true;
-    }
-
-    ImGui::EndDisabled();
-
-    ImGui::EndDisabled();   // (end of the world-decided Shape and Noise sections)
-
-    ImGui::SeparatorText("Material");
-    // Tiling is just a shader constant, so it applies live while you drag.
-    if (ImGui::SliderFloat("Texture tiling", &s.uvTiling, TerrainSettings::kTilingMin,
-                           TerrainSettings::kTilingMax, "%.2f", ImGuiSliderFlags_Logarithmic)) {
-        terrain->ApplySettings(s);
-    }
-
-    ImGui::SeparatorText("Texture files");
-    ImGui::TextDisabled("Click a button to choose an image. Right-click it to go back to the default.");
-    {
-        // The label is the file name ("default" for the stock file); the tooltip shows the whole path.
-        // Returns 0 = nothing, 1 = clicked, 2 = right-clicked.
-        auto fileButton = [](const char* id, const std::string& current, const std::string& standard, float width) -> int {
-            std::string label = (current == standard) ? std::string("default") : std::filesystem::path(current).filename().string();
-            if (label.size() > 14) label = label.substr(0, 11) + "...";
-            label += "##";
-            label += id;
-            const bool clicked = ImGui::Button(label.c_str(), ImVec2(width, 0.0f));
-            ImGui::SetItemTooltip("%s", current.c_str());
-            if (clicked) return 1;
-            return ImGui::IsItemClicked(ImGuiMouseButton_Right) ? 2 : 0;
-        };
-
-        if (ImGui::BeginTable("terrainTextureFiles", 4, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 48.0f);
-            ImGui::TableSetupColumn("Albedo");
-            ImGui::TableSetupColumn("Normal");
-            ImGui::TableSetupColumn("ORM");
-            ImGui::TableHeadersRow();
-            for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(kTerrainLayerNames[layer]);
-                for (int map = 0; map < 3; ++map) {
-                    ImGui::TableNextColumn();
-                    const auto kind = static_cast<TerrainLayerMap>(map);
-                    char id[32];
-                    std::snprintf(id, sizeof(id), "layer%d_%d", layer, map);
-                    const int result = fileButton(id, terrain->GetLayerMapPath(layer, kind), Terrain::DefaultLayerMapPath(layer, kind), -FLT_MIN);
-                    if (result == 1) terrainFileRequest_ = { 1, layer, map };
-                    else if (result == 2) terrain->SetLayerMap(layer, kind, "");
-                }
-            }
-            ImGui::EndTable();
-        }
-        ImGui::BeginDisabled(terrain->IsSculpted() || terrain->IsPainted());   // a new heightmap could change the grid, losing a sculpt or a painting
-        ImGui::TextUnformatted("Heightmap");
-        ImGui::SameLine(90.0f);
-        const int heightResult = fileButton("heightmap", terrain->GetHeightmapPath(), Terrain::DefaultHeightmapPath(), 160.0f);
-        if (heightResult == 1) terrainFileRequest_ = { 2, 0, 0 };
-        else if (heightResult == 2) terrain->SetHeightmap("");
-        ImGui::SetItemTooltip("%s\nA 16-bit greyscale image gives much smoother slopes than 8-bit.", terrain->GetHeightmapPath().c_str());
-        ImGui::EndDisabled();
-    }
-
-    ImGui::SeparatorText("Layers");
-    // Layer settings are only shader constants, so they apply live while you drag.
-    bool layersChanged = false;
-    {
-        int albedoFiles = 0, normalFiles = 0, ormFiles = 0;
-        terrain->GetLayerFileCounts(albedoFiles, normalFiles, ormFiles);
-        ImGui::TextDisabled("Layer files found (of 4): albedo %d, normal %d, ORM %d", albedoFiles, normalFiles, ormFiles);
-        ImGui::SetItemTooltip("Looked up as assets/Terrain/<Grass|Rock|Sand|Snow>/albedo.png, normal.png, orm.png.\nA missing file falls back to a neutral map, so the layer is plain tinted colour.");
-    }
-    layersChanged |= ImGui::Checkbox("Show layer weights", &s.showLayers);
-    ImGui::SetItemTooltip("Paints rock as red, snow as green and shore sand as blue - use it to tune the thresholds.");
-    layersChanged |= ImGui::SliderFloat("Rock starts at slope", &s.slopeStart, 0.0f, 1.0f, "%.2f");
-    ImGui::SetItemTooltip("0 = flat, 1 = vertical. About 0.3 is a 45 degree slope.");
-    layersChanged |= ImGui::SliderFloat("Rock blend", &s.slopeFade, 0.01f, 1.0f, "%.2f");
-    layersChanged |= ImGui::SliderFloat("Rock tiling", &s.rockTiling, TerrainSettings::kRockTilingMin,
-                                        TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
-    layersChanged |= ImGui::SliderFloat("Rock brightness", &s.rockDarkness, 0.1f, 1.5f, "%.2f");
-    layersChanged |= ImGui::SliderFloat("Shore height", &s.shoreHeight, TerrainSettings::kBandMin, TerrainSettings::kBandMax, "%.1f");
-    if (Water* water = scene_->GetWater()) {
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Match water")) { s.shoreHeight = water->GetSettings().height + 1.0f; layersChanged = true; }
-    }
-    layersChanged |= ImGui::SliderFloat("Shore blend", &s.shoreWidth, 0.1f, 30.0f, "%.1f");
-    layersChanged |= ImGui::SliderFloat("Snow height", &s.snowHeight, TerrainSettings::kBandMin, TerrainSettings::kBandMax, "%.1f");
-    layersChanged |= ImGui::SliderFloat("Snow blend", &s.snowFade, 0.1f, 50.0f, "%.1f");
-    layersChanged |= ImGui::SliderFloat("Edge breakup", &s.breakupAmount, 0.0f, 1.0f, "%.2f");
-    layersChanged |= ImGui::SliderFloat("Breakup scale", &s.breakupScale, TerrainSettings::kBreakupScaleMin,
-                                        TerrainSettings::kBreakupScaleMax, "%.3f", ImGuiSliderFlags_Logarithmic);
-    layersChanged |= ImGui::SliderFloat("Ground tiling", &s.groundTiling, TerrainSettings::kRockTilingMin,
-                                        TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
-    layersChanged |= ImGui::SliderFloat("Sand tiling", &s.sandTiling, TerrainSettings::kRockTilingMin,
-                                        TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
-    layersChanged |= ImGui::SliderFloat("Snow tiling", &s.snowTiling, TerrainSettings::kRockTilingMin,
-                                        TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
-    layersChanged |= ImGui::SliderFloat("Height blend", &s.heightBlend, 0.0f, 1.0f, "%.2f");
-    ImGui::SetItemTooltip("0 = layers fade into each other like a double exposure.\nHigher = the taller bumps of each layer win, so stones poke through sand.");
-    layersChanged |= ImGui::SliderFloat("Normal strength", &s.normalStrength, 0.0f, 3.0f, "%.2f");
-    layersChanged |= ImGui::Checkbox("Flip green (OpenGL maps)", &s.flipGreen);
-    layersChanged |= ImGui::SliderFloat("AO strength", &s.aoStrength, 0.0f, 1.0f, "%.2f");
-    layersChanged |= ImGui::SliderFloat("Roughness scale", &s.roughnessScale, 0.0f, 2.0f, "%.2f");
-    if (ImGui::Button("Use original colours")) {
-        const XMFLOAT3 white(1.0f, 1.0f, 1.0f);
-        s.groundTint = white; s.rockTint = white; s.shoreColor = white; s.snowColor = white;
-        layersChanged = true;
-    }
-    ImGui::SetItemTooltip("Tints MULTIPLY the layer textures.\nThis resets them to white, so every layer shows exactly the colours of its image.");
-    float groundRgb[3] = { s.groundTint.x, s.groundTint.y, s.groundTint.z };
-    if (ImGui::ColorEdit3("Ground tint", groundRgb)) { s.groundTint = { groundRgb[0], groundRgb[1], groundRgb[2] }; layersChanged = true; }
-    float rockRgb[3] = { s.rockTint.x, s.rockTint.y, s.rockTint.z };
-    if (ImGui::ColorEdit3("Rock tint", rockRgb)) { s.rockTint = { rockRgb[0], rockRgb[1], rockRgb[2] }; layersChanged = true; }
-    float sand[3] = { s.shoreColor.x, s.shoreColor.y, s.shoreColor.z };
-    if (ImGui::ColorEdit3("Sand tint", sand)) { s.shoreColor = { sand[0], sand[1], sand[2] }; layersChanged = true; }
-    float snowRgb[3] = { s.snowColor.x, s.snowColor.y, s.snowColor.z };
-    if (ImGui::ColorEdit3("Snow tint", snowRgb)) { s.snowColor = { snowRgb[0], snowRgb[1], snowRgb[2] }; layersChanged = true; }
-    if (ImGui::Button("Reset layers")) { s.ResetLayers(); layersChanged = true; }
-    if (layersChanged) terrain->ApplySettings(s);
-
-    ImGui::SeparatorText("Chunks, culling and detail");
-    // These are all cheap switches, so they apply live.
-    bool detailChanged = false;
-    detailChanged |= ImGui::Checkbox("Frustum culling", &s.frustumCulling);
-    ImGui::SetItemTooltip("Skip terrain tiles that cannot be seen. Turn it off to compare the triangle counts.");
-    detailChanged |= ImGui::Checkbox("Level of detail", &s.lodEnabled);
-    ImGui::SetItemTooltip("Distant tiles use fewer triangles.");
-    detailChanged |= ImGui::SliderFloat("Full detail until", &s.lodDistance0, TerrainSettings::kLodDistanceMin,
-                                        TerrainSettings::kLodDistanceMax, "%.0f", ImGuiSliderFlags_Logarithmic);
-    detailChanged |= ImGui::SliderFloat("Half detail until", &s.lodDistance1, TerrainSettings::kLodDistanceMin,
-                                        TerrainSettings::kLodDistanceMax * 2.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
-    detailChanged |= ImGui::Checkbox("Wireframe", &s.wireframe);
-    ImGui::SetItemTooltip("Draws the terrain as wires so you can SEE the detail levels (and the skirts at tile edges).");
-    if (detailChanged) terrain->ApplySettings(s);
-    static const char* const kViewNames[] = { "Camera", "Mirror", "Sun" };
-    for (int i = 0; i < kViewKindCount; ++i) {
-        const TerrainViewStats& stats = terrain->GetStats(static_cast<ViewKind>(i));
-        ImGui::TextDisabled("%-6s %3d/%3d chunks  LOD %d/%d/%d  %d tris", kViewNames[i],
-                            stats.chunksDrawn, stats.chunksTotal, stats.chunksPerLod[0], stats.chunksPerLod[1],
-                            stats.chunksPerLod[2], stats.trianglesDrawn);
-    }
-
-    ImGui::Separator();
-    if (ImGui::Button("Reset terrain")) {
-        s = TerrainSettings{};
-        commit = true;
-    }
-    if (commit) lastTerrainGenerationSucceeded_ = terrain->ApplySettings(s);
-    if (!lastTerrainGenerationSucceeded_) ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Terrain rebuild failed");
-
-    float minY = 0.0f, maxY = 0.0f;
-    terrain->GetHeightRange(minY, maxY);
-    ImGui::TextDisabled("Surface spans Y %.1f to %.1f", minY, maxY);
 }
 
 void EditorLayer::DrawWaterInspector(Water* water)
@@ -3050,18 +2598,6 @@ void EditorLayer::DrawWaterInspector(Water* water)
         ImGui::TextDisabled("Level  %.1f   (the transform's Position Y: move the water with the gizmo)", s.height);
         changed |= ImGui::SliderFloat("Width (X)", &s.size, WaterSettings::kSizeMin, WaterSettings::kSizeMax, "%.0f", ImGuiSliderFlags_Logarithmic);
         changed |= ImGui::SliderFloat("Length (Z)", &s.sizeZ, WaterSettings::kSizeMin, WaterSettings::kSizeMax, "%.0f", ImGuiSliderFlags_Logarithmic);
-        if (Terrain* terrain = scene_->GetTerrain()) {
-            if (ImGui::Button("Fit size to terrain")) {
-                const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();
-                s.size = (std::max)(extent.x, extent.y) * 1.2f;   // a little larger: no gap at the shore
-                s.sizeZ = s.size;
-                changed = true;
-            }
-            float minY = 0.0f, maxY = 0.0f;
-            terrain->GetHeightRange(minY, maxY);
-            ImGui::SameLine();
-            ImGui::TextDisabled("terrain Y %.1f to %.1f", minY, maxY);
-        }
         ImGui::PopID();
     }
 

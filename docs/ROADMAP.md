@@ -85,14 +85,23 @@ why the water looks wrong.
 ### M0. Teardown
 Each step is its own commit and leaves the build and `ctest` green. The order matters: the editor is the largest consumer, so it goes first.
 
-Done with this roadmap: `WorldTileFile` (the baked tile file; nothing read it) is deleted with its test, and T2 has landed (below).
+Done with this roadmap: `WorldTileFile` (the baked tile file; nothing read it) is deleted with its test, and T1 and T2 have landed (below).
 
-- **T1** `[ ]` One terrain only: delete the single terrain
-  - What: remove `Scene::GetTerrain` (`Scene.h:43-44`, `Scene.cpp:215`) and its 16 uses in `editor/EditorLayer.cpp`; heightmap load/save, `CarveRiver`, `Sculpt`
-    and the paint map from `Terrain`; the heightmap fields of `TerrainSettings` (`width`, `heightScale`, noise, picture); `TerrainWorld::AdoptFrom`,
-    `MigrationStats`, `WorldSettingsFromTerrain`, `pictureOffsetX/Z`; `WorldShape`, `WorldPicture` and the tests of all of them. The tile (chunks, LOD, skirts, walls,
-    splat) stays and is renamed `TerrainTile` if it no longer is a whole terrain.
-  - Acceptance: builds; a search for `GetTerrain`, `heightScale`, `baseHeight`, `AdoptFrom`, `MigrationStats`, `WorldPicture`, `WorldShape` finds nothing.
+- **T1** `[~]` One terrain only: the world. The single terrain is gone
+  - Done: `Terrain` is only a TILE of a world (no heightmap, noise, sculpt, river carving or stroke painting of its own; its public constructor is gone).
+    `Scene::GetTerrain` is gone: the scene's ground queries (`GetGroundHeight`, `GetGroundNormal`, `RaycastGround`, `HasGround`) and the water's depth map ask the worlds.
+    All migration is deleted: `AdoptFrom`, `MigrationStats`, `WorldSettingsFromTerrain`, `MigrateHeightsIntoEdits`, `MigratePaintIntoEdits`, `WorldGridForTerrain`,
+    `HeightFrameOfOldTerrain`, the world's `customMaterial` / `material` / `layerPaths`, and the "Terrain world from this terrain" menu item. The scene file no longer
+    reads or writes a standalone terrain or its sculpt and paint images. The editor's single-terrain inspector, its sculpt and paint plumbing, the terrain texture picker,
+    `AddRiver` / `RemoveRiver` and the water's "Fit size to terrain" button are deleted; the brush works on the world only. The default scene is a world, an ocean, a cube
+    and a sky. The terrain noise settings are gone (`noiseSeed` became `breakupSeed`: it only seeds the layer rules).
+  - Kept on purpose: the world's ground is still made from `WorldPicture`, `WorldShape`, `heightScale`, `baseHeight` and `pictureOffsetX/Z`, and its rivers still go through
+    the ground functions (`WorldRivers`, `RiverCarve`, `RiverPath`, `TerrainWorldSettings::rivers`). They cannot be created any more. H7 replaces the whole ground and deletes
+    them; deleting them first would leave the world without ground.
+  - Consequences you will see: **scatter is off** (it read "the first terrain"; the Add scatter items are gone and an existing scatter object shows nothing) until X1 puts it
+    on the world, and **the world has no panel for its look** (layer rules, tints, textures) because that lived in the old terrain inspector: H10.
+  - Tests: `tests/world_edits_test.cpp`, `tests/world_picture_test.cpp`, `tests/world_base_height_test.cpp`, `tests/world_grid_test.cpp`
+  - Acceptance (for `[x]`): in the editor, a new scene has a world; Add shows no single terrain; sculpt and paint work on the world and undo; the water sees the shore.
 - **T2** `[~]` Water: one ocean, no patches, no other kinds of water
   - Done: `WaterBodyType`, `WaterTypeUi`, `WaterRiver`, `WaterFlow` and `WaterSelect` are deleted. `WaterSettings` is the ocean: its defaults ARE the ocean (sea level 0,
     2000 x 2000), with no type, shape, river, preset look (`WavePreset`, `WaterLook`), `autoWaveScale`, wave style (only the wind sea is left), or the amplitude /
@@ -140,7 +149,9 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - Tests: `tests/height_edits_test.cpp`
   - Acceptance: after re-importing with another `lowestY`, an edit keeps its height in world Y; an edit across a tile border is continuous.
 - **H7** `[ ]` Wire the new ground into the world
-  - What: `TerrainWorld` takes its heights from H1 to H6 and nothing else; the editor's import panel is "picture, lowest Y, relief, metres per cell".
+  - What: `TerrainWorld` takes its heights from H1 to H6 and nothing else; the editor's import panel is "picture, lowest Y, relief, metres per cell". The old ground goes in the same
+    commit: `WorldPicture`, `WorldShape`, `heightScale`, `baseHeight`, `pictureOffsetX/Z` and the world rivers (`WorldRivers`, `RiverCarve`, `RiverPath`, `TerrainWorldSettings::rivers`,
+    `TerrainTile::rivers`, `river_test`, `world_rivers_test`), with the ground functions that carve them (`GenerateTileHeights`, `GenerateTileBlock`, `BuildWorldGroundGrid`).
   - Acceptance: it builds; scatter and placement ask the same ground function the tiles are built from.
 - **H8** `[ ]` A new world is centred (decision D2)
   - What: New World makes symmetric bounds; the world's picture is centred on the origin; sea level defaults to 0.
@@ -149,6 +160,12 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
 - **H9** `[ ]` Editor check of the whole ground
   - What: import the dark-alien picture, fit it, fly around, sculpt, scatter.
   - Acceptance: flat areas appear only where the file is flat; peaks are rounded and complete; no stairs. Then H1 to H8 can become `[x]`.
+
+- **H10** `[ ]` The world's look
+  - What: a panel on the world for what the old terrain inspector held: the layer rules (slope, height, shore and snow bands), tints and the layer textures, applied to every tile.
+    (`MakeWorldMaterial` makes the automatic look from the world's height today; there is no way to change it.)
+  - Tests: `tests/world_material_test.cpp`
+  - Acceptance: the beach sand follows sea level, not a fixed Y; changing a layer image changes every tile, and survives streaming.
 
 ### M2. The world owns the sea
 
@@ -174,7 +191,8 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - Tests: `tests/ocean_ring_test.cpp`
   - Acceptance: a 20 km world shows the same sea near the camera as a 200 m one; no seam where the ring meets the far mesh; no visible edge of the sea at any camera height.
 - **S6** `[ ]` Editor check of the water contract
-  - What: check that the shore banding (section 1) is gone once O1 and O5 are in; if it is not, the `Foam` and `ShoreDepth` debug views are where to look next.
+  - What: check that the shore banding (section 1) is gone once O1 and O5 are in, and find what the faint rectangular patch in the lower right of a world-grid shot is (a tile border, an
+    unloaded tile, or the depth map's edge); if it is not, the `Foam` and `ShoreDepth` debug views are where to look next.
   - Acceptance: the contract in section 6 holds while tiles stream in, at the world edge, and while sculpting.
 
 ### M3. An ocean that looks like water
@@ -216,6 +234,11 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - Acceptance: from the island's cliff and from the air the sea does not look like plastic, no pattern slides past, and the horizon has no edge.
 
 ### M4. The first island scene
+- **X1** `[ ]` Scatter on the world
+  - What: `ScatterObject` reads a ground source instead of "the first terrain": `ScatterTileGround` (built and tested, not wired) over the loaded full-detail tiles, with one change log
+    for the whole world so only the cells whose ground changed are placed again. Scatter works in a bounded world first; an endless world needs a streaming grid.
+  - Tests: `tests/scatter_world_test.cpp`
+  - Acceptance: trees stand on the island's tiles and stay put while tiles stream in and out; sculpting a hill moves only the plants on it.
 - **I1** `[ ]` Build the scene
   - What: a heightmap island, the sea, a sun and a sky; one scene file; scatter on the island.
   - Acceptance: every contract rule in section 6 holds in the saved and re-opened scene.

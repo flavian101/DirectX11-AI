@@ -48,7 +48,7 @@ SplatRules MakeSplatRules(const TerrainSettings& s)
 	rules.shoreHeight = s.shoreHeight;   rules.shoreWidth = s.shoreWidth;
 	rules.snowHeight = s.snowHeight;     rules.snowFade = s.snowFade;
 	rules.breakupScale = s.breakupScale; rules.breakupAmount = s.breakupAmount;
-	rules.seed = s.noiseSeed;
+	rules.seed = s.breakupSeed;
 	return rules;
 }
 
@@ -88,97 +88,6 @@ bool CreateSplatTexture(ID3D11Device* device, const SplatMap& map, ID3D11Texture
 	return true;
 }
 
-float SmoothStep(float value)
-{
-	return value * value * (3.0f - 2.0f * value);
-}
-
-float HashValue(int x, int z, int seed)
-{
-	uint32_t value = static_cast<uint32_t>(x) * 374761393u;
-	value += static_cast<uint32_t>(z) * 668265263u;
-	value += static_cast<uint32_t>(seed) * 1442695041u;
-	value = (value ^ (value >> 13u)) * 1274126177u;
-	value ^= value >> 16u;
-	return static_cast<float>(value & 0x00ffffffu) / 8388607.5f - 1.0f;
-}
-
-float ValueNoise(float x, float z, int seed)
-{
-	const int x0 = static_cast<int>(std::floor(x));
-	const int z0 = static_cast<int>(std::floor(z));
-	const float tx = SmoothStep(x - static_cast<float>(x0));
-	const float tz = SmoothStep(z - static_cast<float>(z0));
-	const float a = HashValue(x0, z0, seed);
-	const float b = HashValue(x0 + 1, z0, seed);
-	const float c = HashValue(x0, z0 + 1, seed);
-	const float d = HashValue(x0 + 1, z0 + 1, seed);
-	const float ab = a + (b - a) * tx;
-	const float cd = c + (d - c) * tx;
-	return ab + (cd - ab) * tz;
-}
-
-float FractalNoise(float x, float z, int seed, int octaves)
-{
-	float value = 0.0f;
-	float amplitude = 0.5f;
-	float frequency = 1.0f;
-	float amplitudeTotal = 0.0f;
-	for (int octave = 0; octave < octaves; ++octave) {
-		value += ValueNoise(x * frequency, z * frequency, seed + octave * 31) * amplitude;
-		amplitudeTotal += amplitude;
-		frequency *= 2.0f;
-		amplitude *= 0.5f;
-	}
-	return value / amplitudeTotal;
-}
-
-// Decodes the heightmap once (red channel, 0..1). A 16-bit image has 65,536 height steps instead of 256, which is the
-// difference between smooth slopes and visible terraces on a gentle hill.
-bool LoadHeightmapFile(const char* path, int& width, int& height, std::vector<float>& values)
-{
-	int channels = 0;
-	if (stbi_is_16_bit(path)) {
-		stbi_us* image = stbi_load_16(path, &width, &height, &channels, STBI_rgb_alpha);
-		if (!image || width < 2 || height < 2) {
-			LOG_ERROR("Failed to load terrain heightmap: " + std::string(path));
-			if (image) stbi_image_free(image);
-			return false;
-		}
-		values.resize(static_cast<size_t>(width) * height);
-		for (size_t i = 0; i < values.size(); ++i) values[i] = image[i * 4] / 65535.0f;
-		stbi_image_free(image);
-		return true;
-	}
-	unsigned char* image = stbi_load(path, &width, &height, &channels, STBI_rgb_alpha);
-	if (!image || width < 2 || height < 2) {
-		LOG_ERROR("Failed to load terrain heightmap: " + std::string(path));
-		if (image) stbi_image_free(image);
-		return false;
-	}
-	values.resize(static_cast<size_t>(width) * height);
-	for (size_t i = 0; i < values.size(); ++i) values[i] = image[i * 4] / 255.0f;
-	stbi_image_free(image);
-	return true;
-}
-
-// Bilinear lookup so the mesh can have ANY resolution, not just integer divisions of the image.
-float SampleHeightmap(const std::vector<float>& values, int width, int height, float u, float v)
-{
-	const float fx = std::clamp(u, 0.0f, 1.0f) * static_cast<float>(width - 1);
-	const float fz = std::clamp(v, 0.0f, 1.0f) * static_cast<float>(height - 1);
-	const int x0 = std::min(static_cast<int>(fx), width - 1);
-	const int z0 = std::min(static_cast<int>(fz), height - 1);
-	const int x1 = std::min(x0 + 1, width - 1);
-	const int z1 = std::min(z0 + 1, height - 1);
-	const float tx = fx - static_cast<float>(x0);
-	const float tz = fz - static_cast<float>(z0);
-	auto at = [&](int x, int z) { return values[static_cast<size_t>(z) * width + x]; };
-	const float top = at(x0, z0) + (at(x1, z0) - at(x0, z0)) * tx;
-	const float bottom = at(x0, z1) + (at(x1, z1) - at(x0, z1)) * tx;
-	return top + (bottom - top) * tz;
-}
-
 static_assert(kTerrainSkipChunk == Model::kSkipMesh, "the terrain and the model must agree on the \"not drawn\" marker");
 
 constexpr int kChunkCells = kTerrainChunkCells;   // grid cells per tile side: 32x32 quads = 2048 triangles per tile
@@ -189,37 +98,6 @@ struct GridShape {
 	int cellsZ = 0;
 	float depth = 0.0f;   // world-space size along Z
 };
-
-GridShape ComputeGridShape(const TerrainSettings& settings, int mapWidth, int mapHeight)
-{
-	GridShape shape;
-	shape.cellsX = settings.maxCells;
-	shape.cellsZ = std::max(2, static_cast<int>(std::lround(
-		static_cast<float>(shape.cellsX) * static_cast<float>(mapHeight) / static_cast<float>(mapWidth))));
-	shape.depth = settings.width * static_cast<float>(mapHeight) / static_cast<float>(mapWidth);
-	return shape;
-}
-
-// The generated heights: the picture resampled to the grid, plus noise. 0..1, row by row.
-std::vector<float> GenerateHeights(const std::vector<float>& map, int mapWidth, int mapHeight,
-								   const TerrainSettings& settings, const GridShape& shape)
-{
-	const int gridWidth = shape.cellsX + 1;
-	const int gridHeight = shape.cellsZ + 1;
-	std::vector<float> heights(static_cast<size_t>(gridWidth) * gridHeight);
-	for (int z = 0; z < gridHeight; ++z) {
-		const float v = static_cast<float>(z) / static_cast<float>(shape.cellsZ);
-		for (int x = 0; x < gridWidth; ++x) {
-			const float u = static_cast<float>(x) / static_cast<float>(shape.cellsX);
-			const float baseHeight = SampleHeightmap(map, mapWidth, mapHeight, u, v);
-			const float noise = FractalNoise(u * settings.noiseScale, v * settings.noiseScale,
-				settings.noiseSeed, settings.noiseOctaves);
-			heights[static_cast<size_t>(z) * gridWidth + x] = std::clamp(
-				baseHeight + noise * settings.noiseStrength, 0.0f, 1.0f);
-		}
-	}
-	return heights;
-}
 
 // How far the skirts hang down: enough to cover the height gap a coarser neighbour can leave.
 float SkirtDepthFor(float heightScale)
@@ -363,9 +241,6 @@ void TerrainSettings::Clamp()
 	width = std::clamp(width, kWidthMin, kWidthMax);
 	heightScale = std::clamp(heightScale, kHeightMin, kHeightMax);
 	maxCells = std::clamp(maxCells, kCellsMin, kCellsMax);
-	noiseStrength = std::clamp(noiseStrength, 0.0f, 1.0f);
-	noiseScale = std::clamp(noiseScale, kNoiseScaleMin, kNoiseScaleMax);
-	noiseOctaves = std::clamp(noiseOctaves, kOctavesMin, kOctavesMax);
 	uvTiling = std::clamp(uvTiling, kTilingMin, kTilingMax);
 	groundTiling = std::clamp(groundTiling, kRockTilingMin, kRockTilingMax);
 	rockTiling = std::clamp(rockTiling, kRockTilingMin, kRockTilingMax);
@@ -407,15 +282,7 @@ void TerrainSettings::ResetLayers()
 
 bool TerrainSettings::SameShape(const TerrainSettings& o) const
 {
-	return width == o.width && heightScale == o.heightScale && maxCells == o.maxCells &&
-		noiseStrength == o.noiseStrength && noiseScale == o.noiseScale &&
-		noiseOctaves == o.noiseOctaves && noiseSeed == o.noiseSeed;
-}
-
-bool TerrainSettings::SameSource(const TerrainSettings& o) const
-{
-	return maxCells == o.maxCells && noiseStrength == o.noiseStrength && noiseScale == o.noiseScale &&
-		noiseOctaves == o.noiseOctaves && noiseSeed == o.noiseSeed;
+	return width == o.width && heightScale == o.heightScale && maxCells == o.maxCells;
 }
 
 bool TerrainSettings::SameSplatRules(const TerrainSettings& o) const
@@ -429,23 +296,6 @@ std::string Terrain::DefaultLayerMapPath(int layer, TerrainLayerMap map)
 	static const char* const kFileNames[] = { "albedo.png", "normal.png", "orm.png" };
 	if (layer < 0 || layer >= kTerrainLayerCount) return {};
 	return std::string("assets/Terrain/") + kTerrainLayerNames[layer] + "/" + kFileNames[static_cast<int>(map)];
-}
-
-Terrain::Terrain(ID3D11Device* device) : device_(device)
-{
-	heightmapPath_ = DefaultHeightmapPath();
-
-	// The layer maps: assets/Terrain/<Layer>/albedo.png, normal.png (alpha = height), orm.png, unless replaced.
-	// Slice order is part of the contract with terrain_ps.hlsl: 0 grass, 1 rock, 2 sand, 3 snow.
-	for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
-		for (int map = 0; map < 3; ++map) layerMapPaths_[layer][map] = DefaultLayerMapPath(layer, static_cast<TerrainLayerMap>(map));
-	}
-	RebuildLayerTextures();
-	LoadHeightmapFile(heightmapPath_.c_str(), heightmap_.width, heightmap_.height, heightmap_.values);
-	settings_.Clamp();
-	if (!Rebuild(settings_)) LOG_ERROR("Terrain mesh initialization failed");
-	UpdateWorldTransform();
-	if (!IsValid()) LOG_ERROR("Terrain initialization failed");
 }
 
 TerrainLayerSet Terrain::GetLayerSet() const
@@ -463,7 +313,6 @@ TerrainLayerSet Terrain::GetLayerSet() const
 Terrain::Terrain(ID3D11Device* device, const TerrainTile& tile, const TerrainSettings& material, const TerrainLayerSet* shareLayers)
 	: device_(device), tile_(tile)
 {
-	heightmapPath_ = DefaultHeightmapPath();   // not used by a tile; kept so the getters and the saved paths stay valid
 	for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
 		for (int map = 0; map < 3; ++map) layerMapPaths_[layer][map] = DefaultLayerMapPath(layer, static_cast<TerrainLayerMap>(map));
 	}
@@ -509,7 +358,6 @@ void Terrain::ForceTileSettings(TerrainSettings& settings) const
 	if (!IsTile()) return;
 	settings.width = static_cast<float>(tile_.grid.TileSize());   // the tile decides its own size and resolution ...
 	settings.maxCells = tile_.grid.TileCells();
-	settings.noiseStrength = 0.0f;                                // ... and its heights come from the world, not from noise on top
 }
 
 Terrain::~Terrain()
@@ -618,22 +466,6 @@ bool Terrain::SetLayerMap(int layer, TerrainLayerMap map, const std::string& pat
 	return true;
 }
 
-bool Terrain::SetHeightmap(const std::string& path)
-{
-	if (IsTile()) return false;   // a tile's heights come from the world
-	const std::string wanted = path.empty() ? std::string(DefaultHeightmapPath()) : path;
-	Heightmap loaded;
-	if (!LoadHeightmapFile(wanted.c_str(), loaded.width, loaded.height, loaded.values)) return false;
-
-	std::swap(heightmap_, loaded);   // `loaded` now holds the OLD map, in case the rebuild fails
-	if (!Rebuild(settings_)) {
-		std::swap(heightmap_, loaded);
-		return false;
-	}
-	heightmapPath_ = wanted;
-	return true;
-}
-
 bool Terrain::ApplySettings(TerrainSettings settings)
 {
 	settings.Clamp();
@@ -645,30 +477,23 @@ bool Terrain::ApplySettings(TerrainSettings settings)
 		if (rulesChanged) RefreshSplatAll();   // the rules are baked into the splat map: a few ms, instead of per pixel every frame
 		return true;
 	}
-	// Width and height scale only STRETCH the heights, so a sculpt survives them. A different resolution or noise
-	// would mean a different grid, so those throw the sculpt away (the editor locks them while sculpted).
-	return Rebuild(settings, /*keepSculpt=*/sculpted_ && settings.SameSource(settings_));
+	return Rebuild(settings);
 }
 
-bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
+bool Terrain::Rebuild(const TerrainSettings& settings)
 {
-	if (!device_ || (heightmap_.values.empty() && !IsTile())) return false;
+	if (!device_ || !IsTile()) return false;
 
-	GridShape shape = ComputeGridShape(settings, heightmap_.width, heightmap_.height);
-	if (IsTile()) { shape.cellsX = shape.cellsZ = tile_.grid.TileCells(); shape.depth = static_cast<float>(tile_.grid.TileSize()); }
-	// A sculpt is kept only while the grid is the very same one it was made on.
-	const bool keep = keepSculpt && sculpted_ && !heightfield_.IsEmpty() &&
-		heightfield_.GetLayout().cellsX == shape.cellsX && heightfield_.GetLayout().cellsZ == shape.cellsZ;
-	TileHeights tileHeights;   // a tile's samples and apron are made together (the rivers are dug into both)
+	GridShape shape;   // the tile decides its own grid
+	shape.cellsX = shape.cellsZ = tile_.grid.TileCells();
+	shape.depth = static_cast<float>(tile_.grid.TileSize());
 	const auto heightsStart = Clock::now();
-	if (IsTile() && !keep) tileHeights = BuildTileHeights();
+	TileHeights tileHeights = BuildTileHeights();   // a tile's samples and apron are made together (the rivers are dug into both)
 	const double heightsMs = MillisecondsSince(heightsStart);
-	std::vector<float> samples = keep ? heightfield_.Samples()
-									  : IsTile() ? std::move(tileHeights.samples)
-												 : GenerateHeights(heightmap_.values, heightmap_.width, heightmap_.height, settings, shape);
+	std::vector<float> samples = std::move(tileHeights.samples);
 	Heightfield field;
 	if (!field.Reset({ shape.cellsX, shape.cellsZ, settings.width, shape.depth, settings.heightScale }, std::move(samples))) return false;
-	if (IsTile()) field.SetApron(keep ? BuildTileHeights().apron : std::move(tileHeights.apron));   // normals that match the neighbours' (lesson 47)
+	field.SetApron(std::move(tileHeights.apron));   // normals that match the neighbours' (lesson 47)
 
 	const float depth = shape.depth;
 	std::vector<TerrainChunk> chunks;
@@ -694,7 +519,7 @@ bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 	ID3D11ShaderResourceView* splatView = nullptr;
 	if (!CreateSplatTexture(device_, splat, splatTexture, splatView)) return false;
 	const double splatMs = MillisecondsSince(splatStart);
-	if (IsTile()) {
+	{
 		g_buildTimes.heightsMs = heightsMs; g_buildTimes.meshMs = meshMs; g_buildTimes.splatMs = splatMs;
 		++g_buildTimes.builds;
 	}
@@ -705,15 +530,10 @@ bool Terrain::Rebuild(const TerrainSettings& settings, bool keepSculpt)
 	splatView_ = splatView;
 	renderable_ = std::move(replacement);
 	heightfield_ = std::move(field);
-	sculpted_ = keep;
-	stroke_.Clear();
-	strokeActive_ = false;
 	if (!keepPaint) {
 		paint_.Resize(shape.cellsX, shape.cellsZ);
 		painted_ = false;
 	}
-	paintStroke_.Clear();
-	paintStrokeActive_ = false;
 	settings_ = settings;
 	depth_ = depth;
 	chunks_ = std::move(chunks);
@@ -905,95 +725,7 @@ bool Terrain::Raycast(const Ray& ray, float& distance, XMFLOAT3* point) const
 	return true;
 }
 
-bool Terrain::SampleNormalizedHeight(float worldX, float worldZ, float& value) const
-{
-	if (heightfield_.IsEmpty() || std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return false;
-	float localY = 0.0f;
-	if (!heightfield_.HeightAt((worldX - position_.x) / scale_.x, (worldZ - position_.z) / scale_.z, localY)) return false;
-	value = localY / heightfield_.GetLayout().heightScale;
-	return true;
-}
-
 // ---- Sculpting (lesson 27) ----------------------------------------------------------------------------------------
-
-void Terrain::BeginSculptStroke()
-{
-	stroke_.Clear();
-	strokeActive_ = true;
-}
-
-bool Terrain::Sculpt(const BrushSettings& brush, float worldX, float worldZ, float seconds)
-{
-	if (IsTile()) return false;   // a tile's heights belong to the world; an edit would open a seam with its neighbours (7c later)
-	if (heightfield_.IsEmpty() || !renderable_ || std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return false;
-	// The brush works in the heightfield's local space, where everything is divided by the scale.
-	BrushSettings local = brush;
-	local.radius = brush.radius / scale_.x;
-	const GridRect changed = ApplyBrush(heightfield_, local, (worldX - position_.x) / scale_.x, (worldZ - position_.z) / scale_.z,
-										seconds, strokeActive_ ? &stroke_ : nullptr);
-	if (changed.IsEmpty()) return false;
-	sculpted_ = true;
-	RefreshChunks(changed);
-	RefreshSplat(SplatCellsForSamples(changed, heightfield_.GetLayout().cellsX, heightfield_.GetLayout().cellsZ));   // new slopes: new layer weights
-	// The revision moves when the stroke ENDS, not on every step: the water re-measures its shore each time it changes,
-	// which is too much work to do every frame while you drag. (A step outside a stroke has no end, so it counts at once.)
-	if (!strokeActive_) NewRevision();
-	return true;
-}
-
-HeightfieldPatch Terrain::EndSculptStroke()
-{
-	HeightfieldPatch patch = stroke_.Finish(heightfield_);
-	const bool changedGround = strokeActive_ && !patch.IsEmpty();
-	stroke_.Clear();
-	strokeActive_ = false;
-	if (changedGround) NewRevision();   // the ground is final now: the water's shore map can be measured again
-	return patch;
-}
-
-HeightfieldPatch Terrain::CarveRiver(const std::vector<RiverPath::Sample>& path, float waterLevelY, float depth, float bankWidth, float bankHeight)
-{
-	if (IsTile()) return {};   // same reason as Sculpt
-	if (heightfield_.IsEmpty() || !renderable_ || path.size() < 2) return {};
-	if (std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.y) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return {};
-	// The carve works in the heightfield's local space (divide by the scale) and in sample values (0..1 of the full height).
-	// The river's widths are measured across the terrain's X scale (a terrain stretched unevenly in X and Z is not supported).
-	const float unit = heightfield_.GetLayout().heightScale * scale_.y;   // world height of a sample value of 1
-	if (unit < 1e-6f) return {};
-	std::vector<RiverPath::Sample> local = path;
-	for (RiverPath::Sample& s : local) {
-		s.x = (s.x - position_.x) / scale_.x;
-		s.z = (s.z - position_.z) / scale_.z;
-		s.halfWidth /= std::fabs(scale_.x);
-		s.level /= unit;   // the river's own fall (world units) as a change of sample value
-	}
-	RiverCarveSettings settings;
-	settings.level = (waterLevelY - position_.y) / unit;
-	settings.depth = depth / unit;
-	settings.bankWidth = bankWidth / std::fabs(scale_.x);
-	settings.bankHeight = bankHeight / unit;
-
-	BeginSculptStroke();
-	const GridRect changed = ::CarveRiver(heightfield_, local, settings, &stroke_);
-	if (!changed.IsEmpty()) {
-		sculpted_ = true;
-		RefreshChunks(changed);
-		RefreshSplat(SplatCellsForSamples(changed, heightfield_.GetLayout().cellsX, heightfield_.GetLayout().cellsZ));
-	}
-	return EndSculptStroke();   // moves the revision, so the water measures its shore again
-}
-
-bool Terrain::ApplyPatch(const HeightfieldPatch& patch, bool useAfter)
-{
-	if (heightfield_.IsEmpty() || !renderable_) return false;
-	const GridRect changed = ::ApplyPatch(heightfield_, patch, useAfter);   // the free function: same name as this member
-	if (changed.IsEmpty()) return false;
-	if (useAfter) sculpted_ = true;
-	RefreshChunks(changed);
-	RefreshSplat(SplatCellsForSamples(changed, heightfield_.GetLayout().cellsX, heightfield_.GetLayout().cellsZ));
-	NewRevision();
-	return true;
-}
 
 bool Terrain::PatchTile(const TileSampleRect& rect, bool groundIsFinal)
 {
@@ -1055,53 +787,6 @@ TerrainWalls Terrain::Walls() const
 	return walls;
 }
 
-bool Terrain::ReplaceHeights(std::vector<float> samples, bool sculpted)
-{
-	if (heightfield_.IsEmpty() || !renderable_ || samples.size() != heightfield_.Samples().size()) return false;
-	const HeightfieldLayout layout = heightfield_.GetLayout();
-	if (!heightfield_.Reset(layout, std::move(samples))) return false;
-	if (IsTile()) heightfield_.SetApron(BuildTileHeights().apron);   // Reset drops it
-	sculpted_ = sculpted;
-	stroke_.Clear();
-	strokeActive_ = false;
-	NewRevision();
-	GridRect everything;
-	everything.Include(0, 0);
-	everything.Include(layout.cellsX, layout.cellsZ);
-	RefreshChunks(everything);
-	RefreshSplatAll();
-	return true;
-}
-
-bool Terrain::GenerateOriginalHeights(std::vector<float>& samples) const
-{
-	if (IsTile()) {   // the world's ground at this tile, rivers included
-		samples = BuildTileHeights().samples;
-		return true;
-	}
-	if (heightmap_.values.empty()) return false;
-	const GridShape shape = ComputeGridShape(settings_, heightmap_.width, heightmap_.height);
-	samples = GenerateHeights(heightmap_.values, heightmap_.width, heightmap_.height, settings_, shape);
-	return true;
-}
-
-bool Terrain::LoadSculptedHeights(const std::string& path, std::string& error)
-{
-	int width = 0, height = 0;
-	std::vector<float> values;
-	if (!LoadHeightmapFile(path.c_str(), width, height, values)) {
-		error = "the image could not be read";
-		return false;
-	}
-	const HeightfieldLayout& layout = heightfield_.GetLayout();
-	if (heightfield_.IsEmpty() || width != layout.cellsX + 1 || height != layout.cellsZ + 1) {
-		error = "the image is " + std::to_string(width) + " x " + std::to_string(height) + " but this terrain's grid is " +
-				std::to_string(layout.cellsX + 1) + " x " + std::to_string(layout.cellsZ + 1);
-		return false;
-	}
-	return ReplaceHeights(std::move(values), true);
-}
-
 void Terrain::RefreshChunks(const GridRect& changed)
 {
 	if (changed.IsEmpty() || !renderable_ || heightfield_.IsEmpty() || !device_) return;
@@ -1154,74 +839,11 @@ SplatPlacement Terrain::CurrentSplatPlacement() const
 
 // ---- Painting (lesson 30) ----------------------------------------------------------------------------------------------
 
-void Terrain::BeginPaintStroke()
-{
-	paintStroke_.Clear();
-	paintStrokeActive_ = true;
-}
-
-bool Terrain::Paint(const PaintBrush& brush, float worldX, float worldZ, float seconds)
-{
-	if (heightfield_.IsEmpty() || paint_.IsEmpty() || std::fabs(scale_.x) < 1e-6f || std::fabs(scale_.z) < 1e-6f) return false;
-	// The brush works in the heightfield's local space, where everything is divided by the scale.
-	PaintBrush local = brush;
-	local.radius = brush.radius / scale_.x;
-	const GridRect changed = ApplyPaintBrush(paint_, heightfield_.GetLayout(), local, (worldX - position_.x) / scale_.x,
-											 (worldZ - position_.z) / scale_.z, seconds, paintStrokeActive_ ? &paintStroke_ : nullptr);
-	if (changed.IsEmpty()) return false;
-	painted_ = true;
-	RefreshSplat(changed);   // re-bake those texels, lay the paint over them, upload just that block
-	return true;
-}
-
-HeightfieldPatch Terrain::EndPaintStroke()
-{
-	HeightfieldPatch patch = paintStroke_.Finish(paint_.weights);
-	paintStroke_.Clear();
-	paintStrokeActive_ = false;
-	return patch;
-}
-
-bool Terrain::ApplyPaintPatch(const HeightfieldPatch& patch, bool useAfter)
-{
-	if (paint_.IsEmpty()) return false;
-	const GridRect changed = ::ApplyPaintPatch(paint_, patch, useAfter);   // the free function: same name as this member
-	if (changed.IsEmpty()) return false;
-	if (useAfter) painted_ = true;
-	RefreshSplat(changed);
-	return true;
-}
-
 bool Terrain::ReplacePaint(std::vector<float> weights, bool painted)
 {
 	if (paint_.IsEmpty() || weights.size() != paint_.weights.size()) return false;
 	paint_.weights = std::move(weights);
 	painted_ = painted;
-	paintStroke_.Clear();
-	paintStrokeActive_ = false;
-	RefreshSplatAll();
-	return true;
-}
-
-bool Terrain::LoadPaint(const std::string& path, std::string& error)
-{
-	int width = 0, height = 0, channels = 0;
-	unsigned char* image = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);   // always 4 channels
-	if (!image) {
-		error = "the image could not be read";
-		return false;
-	}
-	if (paint_.IsEmpty() || width != paint_.width || height != paint_.height) {
-		error = "the image is " + std::to_string(width) + " x " + std::to_string(height) + " but this terrain's grid is " +
-				std::to_string(paint_.width) + " x " + std::to_string(paint_.height);
-		stbi_image_free(image);
-		return false;
-	}
-	PaintFromBytes(image, width, height, paint_);
-	stbi_image_free(image);
-	painted_ = true;
-	paintStroke_.Clear();
-	paintStrokeActive_ = false;
 	RefreshSplatAll();
 	return true;
 }

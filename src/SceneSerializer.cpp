@@ -61,39 +61,8 @@ json DescribeObject(const SceneObject& object, const fs::path* folder, std::vect
 {
     const bool snapshot = (folder == nullptr);
     auto warn = [&](const std::string& text) { if (warnings) warnings->push_back(text); };
-    // A path as it goes into the entry. Returns null when `current` is the default (defaults need no entry).
-    auto storedImage = [&](const std::string& current, const std::string& standard) -> json {
-        if (current == standard) return nullptr;
-        if (snapshot) return current;
-        bool outside = false;
-        const std::string text = MakeStoredPath(fs::path(current), *folder, assetsRoot, outside);
-        if (outside) warn("The terrain image \"" + current + "\" lives outside the assets folder. It will not be shipped with the game: copy it into assets/ and choose it again.");
-        return text;
-    };
-
     json entry;
-    if (const auto* terrain = dynamic_cast<const Terrain*>(&object)) {
-        entry["type"] = "Terrain";
-        entry["settings"] = terrain->GetSettings();
-        json maps = json::object();
-        if (json v = storedImage(terrain->GetHeightmapPath(), Terrain::DefaultHeightmapPath()); !v.is_null()) maps["heightmap"] = v;
-        static const char* const kMapKeys[] = { "albedo", "normal", "orm" };
-        json layers = json::array();
-        bool anyLayer = false;
-        for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
-            json one = json::object();
-            for (int kind = 0; kind < 3; ++kind) {
-                const auto map = static_cast<TerrainLayerMap>(kind);
-                if (json v = storedImage(terrain->GetLayerMapPath(layer, map), Terrain::DefaultLayerMapPath(layer, map)); !v.is_null()) {
-                    one[kMapKeys[kind]] = v;
-                    anyLayer = true;
-                }
-            }
-            layers.push_back(one);
-        }
-        if (anyLayer) maps["layers"] = layers;
-        if (!maps.empty()) entry["maps"] = maps;
-    } else if (const auto* water = dynamic_cast<const Water*>(&object)) {
+    if (const auto* water = dynamic_cast<const Water*>(&object)) {   // (the tiles of a terrain world are not saved: the world grows them again)
         entry["type"] = "Water";
         entry["name"] = water->GetName();   // a scene can hold several bodies ("Lake", "Pool"): they keep their names
         entry["settings"] = water->GetSettings();
@@ -203,51 +172,7 @@ void ApplyObject(SceneObject& object, const json& entry, const fs::path* sceneFo
         return p.string();
     };
 
-    if (auto* terrain = dynamic_cast<Terrain*>(&object)) {
-        // Images first (the heightmap decides the mesh shape), then the settings. A key that is ABSENT means "the
-        // default image", which matters for undo: undoing an image import must put the old image back.
-        const json maps = entry.value("maps", json::object());
-        auto wanted = [&](const json& source, const char* key, const std::string& standard) {
-            return source.is_object() && source.contains(key) ? resolve(source[key].get<std::string>()) : standard;
-        };
-        const std::string height = wanted(maps, "heightmap", Terrain::DefaultHeightmapPath());
-        if (height != terrain->GetHeightmapPath() && !terrain->SetHeightmap(height)) warnings.push_back("The terrain's heightmap could not be loaded: " + height);
-        static const char* const kMapKeys[] = { "albedo", "normal", "orm" };
-        for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
-            const json layerEntry = (maps.contains("layers") && maps["layers"].is_array() && layer < static_cast<int>(maps["layers"].size()))
-                                        ? maps["layers"][layer] : json::object();
-            for (int kind = 0; kind < 3; ++kind) {
-                const auto map = static_cast<TerrainLayerMap>(kind);
-                const std::string path = wanted(layerEntry, kMapKeys[kind], Terrain::DefaultLayerMapPath(layer, map));
-                if (path != terrain->GetLayerMapPath(layer, map) && !terrain->SetLayerMap(layer, map, path)) {
-                    warnings.push_back(std::string("A terrain ") + kTerrainLayerNames[layer] + " " + kMapKeys[kind] + " image could not be loaded: " + path);
-                }
-            }
-        }
-        if (!terrain->ApplySettings(entry.value("settings", TerrainSettings{}))) {
-            warnings.push_back("The terrain mesh could not be rebuilt with the saved settings.");
-        }
-        // Hand-sculpted heights (lesson 27): a 16-bit PNG beside the scene file. Only scene FILES carry this entry (undo
-        // snapshots never do), and it is applied last, once the settings have given the grid its final size.
-        if (entry.contains("sculpt") && entry["sculpt"].is_object() && entry["sculpt"].contains("heights") &&
-            entry["sculpt"]["heights"].is_string()) {
-            const std::string heightsFile = resolve(entry["sculpt"]["heights"].get<std::string>());
-            std::string loadError;
-            if (!terrain->LoadSculptedHeights(heightsFile, loadError)) {
-                warnings.push_back("The sculpted terrain heights could not be loaded (" + loadError + "): " + heightsFile);
-            }
-        }
-        // Painted layers (lesson 30): an RGBA8 PNG beside the scene file, one channel per layer. Applied last, after the
-        // settings have given the grid its final size (the image must match it).
-        if (entry.contains("paint") && entry["paint"].is_object() && entry["paint"].contains("weights") &&
-            entry["paint"]["weights"].is_string()) {
-            const std::string paintFile = resolve(entry["paint"]["weights"].get<std::string>());
-            std::string loadError;
-            if (!terrain->LoadPaint(paintFile, loadError)) {
-                warnings.push_back("The painted terrain layers could not be loaded (" + loadError + "): " + paintFile);
-            }
-        }
-    } else if (auto* water = dynamic_cast<Water*>(&object)) {
+    if (auto* water = dynamic_cast<Water*>(&object)) {   // (a terrain world's tiles are not objects of the file)
         if (entry.contains("name") && entry["name"].is_string()) water->SetName(entry["name"].get<std::string>());
         WaterSettings loaded = entry.value("settings", WaterSettings{});
         loaded.debugView = water->GetSettings().debugView;   // debug switches are not part of a scene: undo and load must not flip them
@@ -382,8 +307,6 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
 {
     const fs::path file = fs::absolute(fs::path(path));
     const fs::path folder = file.parent_path();
-    int sculptedTerrains = 0;   // how many sculpted terrains have been written so far (names their PNG files)
-    int paintedTerrains = 0;    // the same for painted ones
     int worldsWithEdits = 0;    // and for terrain worlds that carry edits
 
     json root;
@@ -399,36 +322,10 @@ bool SaveScene(const Scene& scene, const std::string& path, std::vector<std::str
     for (const auto& owned : scene.GetObjects()) {
         if (!owned) continue;
         // The tiles of a terrain world are derived from the world's settings, which ARE saved (the TerrainWorld object): the
-        // world grows its tiles again when the scene is loaded. A tile saved as an ordinary terrain would come back as a
-        // heightmap terrain, so tiles are left out.
-        if (const auto* tile = dynamic_cast<const Terrain*>(owned.get()); tile && tile->IsTile()) continue;
+        // world grows its tiles again when the scene is loaded. A terrain is only ever a tile, so none is saved.
+        if (dynamic_cast<const Terrain*>(owned.get())) continue;
         json entry = DescribeObject(*owned, &folder, &warnings, assetsRoot);
         if (entry.is_null()) continue;
-        // A sculpted terrain's heights go in a 16-bit PNG next to the scene file, and the entry points at it. If that
-        // file cannot be written the whole save fails: a scene that silently forgets your sculpting is worse.
-        if (const auto* terrain = dynamic_cast<const Terrain*>(owned.get()); terrain && terrain->IsSculpted()) {
-            const HeightfieldLayout& layout = terrain->GetHeightfield().GetLayout();
-            const std::string heightsName = SidecarFileName(file, "terrain", sculptedTerrains++);
-            std::string pngError;
-            if (!WriteGrayscale16Png((folder / heightsName).string(), layout.cellsX + 1, layout.cellsZ + 1,
-                                     QuantizeHeights(terrain->GetHeightfield().Samples()), pngError)) {
-                error = "Could not save the sculpted terrain heights: " + pngError;
-                return false;
-            }
-            entry["sculpt"] = { { "heights", heightsName } };
-        }
-        // Painted layers (lesson 30): an RGBA8 PNG, one texel per grid cell, one channel per layer. Same rule: if it cannot
-        // be written, the save fails.
-        if (const auto* terrain = dynamic_cast<const Terrain*>(owned.get()); terrain && terrain->IsPainted()) {
-            const PaintMap& paint = terrain->GetPaintMap();
-            const std::string paintName = SidecarFileName(file, "paint", paintedTerrains++);
-            std::string pngError;
-            if (!WriteRgba8Png((folder / paintName).string(), paint.width, paint.height, QuantisePaint(paint), pngError)) {
-                error = "Could not save the painted terrain layers: " + pngError;
-                return false;
-            }
-            entry["paint"] = { { "weights", paintName } };
-        }
         // A terrain world's sculpting and painting (roadmap phases 3 and 4): one small binary file beside the scene, the entry points at it.
         // Same rule as the PNGs: if it cannot be written the save fails.
         if (const auto* world = dynamic_cast<const TerrainWorld*>(owned.get()); world && world->HasEdits()) {
@@ -507,8 +404,7 @@ bool LoadScene(Scene& scene, ID3D11Device* device, const std::string& path, std:
         const std::string type = entry.value("type", "");
         attempt("object \"" + type + "\"", [&] {
             SceneObject* created = nullptr;
-            if (type == "Terrain") created = scene.Add<Terrain>(device);
-            else if (type == "Water") created = scene.Add<Water>(device);
+            if (type == "Water") created = scene.Add<Water>(device);
             else if (type == "Skybox") created = scene.Add<Skybox>(device);
             else if (type == "Cube") created = scene.Add<Cube>(device);
             else if (type == "Light") created = scene.Add<LightObject>(LightKind::Point);

@@ -60,11 +60,6 @@ private:
 // Two different numbers place the ground in the air. `heightScale` says how TALL it is (metres from the lowest possible ground to the
 // highest); `baseHeight` says how HIGH it starts (the world Y of the lowest possible ground). A ground value g in 0..1 is at world Y
 //     baseHeight + g * heightScale.
-// An old single terrain stood at `position.y`, its heights stretched by `scale.y`, and it drew a value g at  position.y + g * heightScale * scale.y.
-// Migrated into a world it must stay exactly where it was, so its frame is:
-struct WorldHeightFrame { float baseHeight = 0.0f; float heightScale = 1.0f; };
-inline WorldHeightFrame HeightFrameOfOldTerrain(float positionY, float heightScale, float scaleY) { return { positionY, heightScale * scaleY }; }
-
 // The ground over the rectangle minX..maxX, minZ..maxZ (world metres; grown by one sample all round). The samples sit on the
 // world's own lattice (multiples of `step`), so at full resolution each one is exactly the height a tile's vertex has. A
 // rectangle that would need more than maxSamplesPerSide samples across gets a step that is a whole multiple of the lattice.

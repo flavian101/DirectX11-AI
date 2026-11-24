@@ -33,6 +33,7 @@ struct TerrainWorldSettings {
     // metres, it is `pictureWidth` metres wide and its depth follows its shape, like the old terrain. Empty path: the default
     // heightmap. The world is bounded to the tiles covering the picture (the `bounds` below are ignored).
     std::string picturePath;
+    static constexpr const char* kDefaultPicturePath = "assets/dark alien/Height Map.png";   // used when picturePath is empty
     float pictureWidth = 1024.0f;
     float pictureOffsetX = 0.0f, pictureOffsetZ = 0.0f;
     // The edge of the world for the Fractal source: unbounded (endless) unless bounded is set. A bounded fractal world is a
@@ -40,11 +41,6 @@ struct TerrainWorldSettings {
     WorldBounds bounds;
     // How the picture (or the hills) become terrain: levels, curve, smoothing, detail noise (src/WorldShape.h).
     HeightShapeSettings shape;
-    // The look. false: the automatic rules scaled to the world's height (MakeWorldMaterial). true: `material` and `layerPaths`, as carried over
-    // from a migrated terrain, so its slope/height rules, tints and tilings survive the move.
-    bool customMaterial = false;
-    TerrainSettings material;
-    std::vector<std::string> layerPaths;   // kTerrainLayerCount x 3 image paths (albedo, normal, orm) for customMaterial; empty = the default textures
     float heightScale = 240.0f;     // metres for a ground height of 1.0: how TALL the ground is. The lowest ground stays where it is; the highest rises or falls
     float baseHeight = 0.0f;        // the world Y of the LOWEST possible ground (height 0.0): how HIGH the ground starts. Lifts or sinks the whole world, changes no slope (roadmap H1)
     float viewDistance = 5000.0f;   // tiles closer than this to the camera are loaded (far ones at a lower level of detail)
@@ -71,11 +67,6 @@ public:
 
     const TerrainWorldSettings& GetSettings() const { return settings_; }
     void SetSettings(TerrainWorldSettings settings);   // clamps; every tile is rebuilt from the new settings
-    // Rivers (lesson 51). A river is part of the world's height function, so adding one rebuilds only the tiles it touches, and
-    // it comes back whenever a tile streams in again. AddRiver returns the river's id (0 if there is no room); give the river an
-    // id to put a removed one back under the same name (redo).
-    int AddRiver(WorldRiver river);
-    bool RemoveRiver(int id);
     // --- EDITS (roadmap phases 3 and 4): sculpting and painting stored per tile on the world's lattice, see src/WorldEdits.h ---
     const WorldEdits& Edits() const { return *edits_; }
     bool HasEdits() const { return !edits_->IsEmpty(); }
@@ -97,10 +88,6 @@ public:
     // The edits live in a small file beside the scene file (the settings go in the scene itself).
     bool SaveEdits(const std::string& path, std::string& error) const { return SaveWorldEdits(path, *edits_, error); }
     bool LoadEdits(const std::string& path, std::string& error);
-    // MIGRATION: turns an old single terrain into this world. Call after SetSettings(WorldSettingsFromTerrain(old)). Copies the terrain's
-    // sculpting (and noise) as height edits and its painting as paint edits. False if the world has no ground (the picture could not be read).
-    bool AdoptFrom(const Terrain& old, MigrationStats* stats = nullptr);
-
     // --- the ground as a function, for things that must not depend on which tiles happen to be loaded (roadmap W1) ---
     // The ground over a world rectangle (metres) as a grid of heights, from the same source, edits and rivers the tiles are made
     // from: at full detail each sample is exactly a tile vertex's height. The water measures its shore from this. False when the world
@@ -193,11 +180,6 @@ private:
     bool dirty_ = true;     // the settings changed: unload, then start again
     bool failed_ = false;   // a tile could not be built: stop trying until the settings change
 };
-
-// The world that replaces an old single terrain: one tile as wide as the terrain, the same heightmap, height, cell size, material and
-// layer textures, standing where the terrain stands (the corner is snapped to the cell grid, at most half a cell away). Apply it with
-// SetSettings, then call TerrainWorld::AdoptFrom to carry the sculpting and painting across.
-TerrainWorldSettings WorldSettingsFromTerrain(const Terrain& old);
 
 // Scene::Update calls this when the scene has NO world: any tile left over (the world was deleted) goes too.
 void RemoveOrphanTiles(Scene& scene);

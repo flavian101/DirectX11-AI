@@ -187,60 +187,12 @@ private:
 };
 }
 
-static void TestMigrationKeepsTheOldHeight()
-{
-    const int cells = 64;
-    const double cell = 4.0, size = cells * cell;   // 256 m
-    const FractalHeightSource hills(kHills);
-    struct Placement { float x, y, z, scaleY, heightScale; };
-    const Placement placements[] = {
-        { 640.0f, -2.0f, -384.0f, 1.0f, 45.0f },     // the default terrain: stands at -2 m
-        { 128.0f, 0.0f, 128.0f, 1.0f, 45.0f },       // at 0: always worked
-        { -512.0f, 35.0f, 256.0f, 2.0f, 60.0f },     // raised and stretched upwards
-        { 0.0f, -80.0f, 0.0f, 0.5f, 300.0f },        // sunk, squashed
-    };
-    for (const Placement& p : placements) {
-        // Old terrain: samples from the hills at its lattice (any 0..1 values will do).
-        const double cornerX = p.x - 0.5 * size, cornerZ = p.z - 0.5 * size;   // its world corner, on the 4 m lattice by the choice of positions
-        std::vector<float> samples(static_cast<size_t>(cells + 1) * (cells + 1));
-        for (int j = 0; j <= cells; ++j)
-            for (int i = 0; i <= cells; ++i) samples[static_cast<size_t>(j) * (cells + 1) + i] = hills.Height01(cornerX + i * cell, cornerZ + j * cell);
-        Heightfield old;
-        CHECK(old.Reset({ cells, cells, static_cast<float>(size), static_cast<float>(size), p.heightScale }, samples));
-
-        const OldSamples source(samples, cells, cornerX, cornerZ, cell);
-        const WorldHeightFrame frame = HeightFrameOfOldTerrain(p.y, p.heightScale, p.scaleY);
-        const WorldGroundFunction world = MakeFunction(source, nullptr, frame.heightScale, frame.baseHeight);
-        WorldGroundFunction forgotten = world;   // what migration did before: the frame's height, but the base dropped
-        forgotten.baseHeight = 0.0f;
-
-        double worst = 0.0, worstForgotten = 0.0;
-        int compared = 0;
-        for (int k = 0; k < 500; ++k) {
-            const double lx = (Random01() * 0.96 + 0.02) * size - 0.5 * size, lz = (Random01() * 0.96 + 0.02) * size - 0.5 * size;   // inside, in the old terrain's local space
-            float localY = 0.0f, worldY = 0.0f, worldYForgotten = 0.0f;
-            if (!old.HeightAt(static_cast<float>(lx), static_cast<float>(lz), localY)) continue;
-            const double wx = p.x + lx, wz = p.z + lz;
-            const float oldWorldY = p.y + localY * p.scaleY;   // how Terrain::GetHeightAt puts it in the world
-            CHECK(world.HeightAt(wx, wz, worldY) && forgotten.HeightAt(wx, wz, worldYForgotten));
-            worst = (std::max)(worst, static_cast<double>(std::fabs(worldY - oldWorldY)));
-            worstForgotten = (std::max)(worstForgotten, static_cast<double>(std::fabs(worldYForgotten - oldWorldY)));
-            ++compared;
-        }
-        std::printf("migration at y %.0f, scale.y %.1f: worst difference %.6f m (dropping the base would be off by %.3f m)\n", p.y, p.scaleY, worst, worstForgotten);
-        CHECK(compared > 450);
-        CHECK(worst < 2.0e-3);
-        if (p.y != 0.0f) CHECK(worstForgotten > 0.9 * std::fabs(p.y));   // and this is the bug the base fixes: the world sat |position.y| metres off
-    }
-}
-
 int main()
 {
     TestBaseLiftsEveryHeight();
     TestHillHeightScalesAboveTheBase();
     TestNormalsAndRaysIgnoreTheBase();
     TestGroundGridFollowsTheBase();
-    TestMigrationKeepsTheOldHeight();
     if (g_failures) { std::printf("%d CHECK(s) failed.\n", g_failures); return 1; }
     std::printf("All world base height tests passed.\n");
     return 0;

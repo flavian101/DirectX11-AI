@@ -128,24 +128,6 @@ struct WorldPatchExtent { LatticeRect heights, paint; };
 // Writes a stroke back (undo = the "before" values, redo = "after"). Returns what it touched, to know which tiles to rebuild.
 WorldPatchExtent ApplyWorldEditPatch(WorldEdits& edits, const WorldEditPatch& patch, bool useAfter);
 
-// --- migrating an old single terrain ----------------------------------------------------------------------------------------
-// Where the old terrain stood and how its grid was laid out (all sizes already multiplied by its scale).
-struct OldTerrainPlacement {
-    double centerX = 0.0, centerZ = 0.0;   // its position in the world: the terrain is centred on it
-    double sizeX = 0.0, sizeZ = 0.0;       // metres
-    int cellsX = 0, cellsZ = 0;
-};
-struct MigrationStats { int heightSamples = 0; int paintCells = 0; };
-
-// Writes into `edits` the difference between the old terrain's heights (cellsX + 1 by cellsZ + 1 samples, 0..1) and what `base` gives at
-// the same world positions. Where the world's lattice meets the old grid exactly (same cell size and alignment) the old heights are
-// reproduced sample for sample; elsewhere they are blended bilinearly. Differences below `threshold` (a 16-bit step is 1.5e-5) are not
-// stored, so an untouched terrain creates no edits at all.
-MigrationStats MigrateHeightsIntoEdits(const std::vector<float>& heights, const OldTerrainPlacement& placement, const WorldHeightSource& base,
-                                       double metresPerCell, WorldEdits& edits, float threshold = 1e-5f);
-// Copies the old terrain's painted layer weights (one texel per cell) onto the lattice cells that lie inside it.
-MigrationStats MigratePaintIntoEdits(const PaintMap& paint, const OldTerrainPlacement& placement, double metresPerCell, WorldEdits& edits);
-
 // --- file ------------------------------------------------------------------------------------------------------------------
 // One small binary file per scene: header, then per edited tile its heights (float32) and paint (one byte per weight, like the old paint PNG).
 bool SaveWorldEdits(const std::string& path, const WorldEdits& edits, std::string& error);

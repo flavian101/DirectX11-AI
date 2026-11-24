@@ -70,9 +70,8 @@ private:
     void DrawLightsInspector();
     void DrawShadowInspector();
     void DrawEnvironmentInspector();
-    void DrawTerrainInspector(Terrain* terrain);
     void DrawTerrainWorldInspector(TerrainWorld* world);
-    void DrawSculptSection(Terrain* terrain, TerrainWorld* world = nullptr);   // the brush; `world`: the same brush on a terrain world
+    void DrawSculptSection(TerrainWorld* world);   // the brush of a terrain world
     void DrawWaterInspector(Water* water);
     void DrawAddWaterItems();
     void DrawAddLightItems();                                               // Sun / Moon / Point light: the items of the "Light" menus
@@ -119,18 +118,12 @@ private:
     void RecordGlobalChange(const std::string& before, const std::string& after);
     // --- terrain sculpting (lesson 27) ---
     void ToggleSculptMode();                                      // on: selects the terrain; off: lets go of it
-    void FinishSculptStroke(Terrain* terrain);                    // the mouse button came up: one undo step
     void FinishWorldStroke(TerrainWorld* world);                  // the same for a stroke on a terrain world
     void RecordWorldStroke(WorldEditPatch patch, bool paint);
     void ClearWorldEdits(TerrainWorld* world, bool heights, bool paint);   // "Discard sculpting" / "Clear painting" of a world (undoable)
-    void RecordSculptStroke(SceneObjectId terrainId, HeightfieldPatch patch, const char* name = "Sculpt terrain");
-    void DiscardSculpt(Terrain* terrain);                         // back to the heightmap and noise (undoable)
     // --- terrain painting (lesson 30): the same brush tool, aimed at the layers instead of the heights ---
-    void RecordPaintStroke(SceneObjectId terrainId, HeightfieldPatch patch);
-    void ClearPaint(Terrain* terrain);                            // back to the automatic rules (undoable)
     void DrawHistoryPanel();
     void HandleSceneFileRequests(LayerContext& ctx);
-    void HandleTerrainFileRequest(LayerContext& ctx);
     void HandleWorldPictureRequest(LayerContext& ctx);   // Terrain world > Picture > Browse...
     void ShowMessage(const std::string& title, const std::string& text);
     void DrawTransformEditor(SceneObject* object);
@@ -186,7 +179,6 @@ private:
     int addLightKind_ = -1;   // a light to add next frame: 0 sun, 1 moon, 2 point light (-1 = none)
     bool addScatterRequested_ = false;   // add a scatter (trees and rocks on the terrain) at the start of the next frame
     bool addTerrainWorldRequested_ = false;   // add a 3 x 3 terrain world (lesson 48) at the start of the next frame
-    bool addWorldFromTerrainRequested_ = false;   // rebuild the scene's terrain as a bounded terrain world (roadmap phase 1) at the start of the next frame
     bool strokeOnWorld_ = false;                  // the stroke in progress is on a terrain world (not on the old single terrain)
     bool worldPictureRequested_ = false;          // open the image dialog for the terrain world's picture next frame
     bool addOceanRequested_ = false;   // add an ocean at the start of the next frame
@@ -232,7 +224,6 @@ private:
         int layer = 0;
         int map = 0;
     };
-    TerrainFileRequest terrainFileRequest_;
 
     // Undo / redo. The history holds the commands; the two detectors turn "the state, once per frame" into finished
     // edits (one for the selected object, one for the global settings).

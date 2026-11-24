@@ -96,7 +96,7 @@ public:
 	// `worlds` are the terrain worlds: their ground comes from the world's GROUND FUNCTION (a grid of the same heights the tiles are made
 	// from), so it is the same whether a tile is loaded, still streaming in, or drawn at a coarser level of detail (roadmap W1). `terrains`
 	// are the single terrains (and any tile that has no world). The ground at a point is the highest of all that cover it.
-	void RefreshShoreDepth(const std::vector<const Terrain*>& terrains, const std::vector<const TerrainWorld*>& worlds, std::uint64_t groundStamp);
+	void RefreshShoreDepth(const std::vector<const TerrainWorld*>& worlds, std::uint64_t groundStamp);
 	bool HasShoreDepth() const { return depthView_ != nullptr; }
 	void GetShoreMapSize(int& width, int& height) const { width = depthField_.Width(); height = depthField_.Height(); }
 	const WaterViewStats& GetStats(ViewKind kind) const { return stats_[static_cast<int>(kind)]; }

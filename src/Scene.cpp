@@ -186,8 +186,8 @@ void Scene::Update(float dt)
         model->StepFloating(FindWaterAt(anchor.x, 1.0e5f, anchor.z), time_, dt);
     }
     // Every water body measures the terrain under it (only when something changed: this is a cheap comparison otherwise).
-    // The ground is every valid terrain (a world is many). The stamp changes when one is added, removed or edited (FNV-1a over
-    // each terrain's identity and revision), so the water measures again exactly then.
+    // The ground is every world that has one. The stamp changes when one is added, removed or edited (FNV-1a over
+    // each world's identity and ground revision), so the water measures again exactly then.
     // A world's ground comes from its ground function (roadmap W1), not from its tiles: a tile that has not streamed in yet, or is drawn
     // at a coarser level of detail, must not change what the water thinks is deep. So the tiles of a world that has ground are left out of
     // the list, and the stamp follows the world's own ground revision, not tiles loading and unloading.
@@ -200,42 +200,21 @@ void Scene::Update(float dt)
         groundStamp = (groundStamp ^ static_cast<std::uint64_t>(world->GetId())) * 1099511628211ull;
         groundStamp = (groundStamp ^ static_cast<std::uint64_t>(world->GroundRevision())) * 1099511628211ull;
     }
-    std::vector<const Terrain*> groundTerrains;
-    for (const auto& obj : objects_) {
-        const auto* terrain = dynamic_cast<const Terrain*>(obj.get());
-        if (!terrain || !terrain->IsValid()) continue;
-        if (terrain->IsTile() && !groundWorlds.empty()) continue;   // the world answers for its tiles
-        groundTerrains.push_back(terrain);
-        groundStamp = (groundStamp ^ static_cast<std::uint64_t>(terrain->GetId())) * 1099511628211ull;
-        groundStamp = (groundStamp ^ static_cast<std::uint64_t>(terrain->GetRevision())) * 1099511628211ull;
-    }
-    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) { water->RefreshShoreDepth(groundTerrains, groundWorlds, groundStamp); }
-    // Scatter follows the ground the same way: it regenerates the cells whose ground changed (within a time budget).
-    // (It still reads only the FIRST terrain: scatter over a world is a later step.)
-    const Terrain* terrain = GetTerrain();
-    for (auto& obj : objects_) if (auto* scatter = dynamic_cast<ScatterObject*>(obj.get())) scatter->Refresh(terrain, camera_.GetPosition());
+    for (auto& obj : objects_) if (auto* water = dynamic_cast<Water*>(obj.get())) { water->RefreshShoreDepth(groundWorlds, groundStamp); }
+    // Scatter has no ground until it reads the world (roadmap X1): with none, what stood on the old terrain goes.
+    for (auto& obj : objects_) if (auto* scatter = dynamic_cast<ScatterObject*>(obj.get())) scatter->Refresh(nullptr, camera_.GetPosition());
 }
 
 // A world answers from its GROUND FUNCTION (roadmap C1), so the answer does not depend on which tiles are loaded or at what level of
-// detail they are drawn. The tiles of a world that has ground are therefore skipped; a single terrain still answers from its own mesh.
+// detail they are drawn.
 bool Scene::GetGroundHeight(float worldX, float worldZ, float& worldY) const
 {
     bool found = false;
-    bool worldAnswers = false;
     for (const auto& object : objects_) {
         const auto* world = dynamic_cast<const TerrainWorld*>(object.get());
         if (!world || !world->HasGround()) continue;
-        worldAnswers = true;
         float height = 0.0f;
         if (!world->HeightAt(worldX, worldZ, height)) continue;
-        if (!found || height > worldY) worldY = height;
-        found = true;
-    }
-    for (const auto& object : objects_) {
-        const auto* terrain = dynamic_cast<const Terrain*>(object.get());
-        if (!terrain || (worldAnswers && terrain->IsTile())) continue;
-        float height = 0.0f;
-        if (!terrain->GetHeightAt(worldX, worldZ, height)) continue;
         if (!found || height > worldY) worldY = height;
         found = true;
     }
@@ -246,22 +225,12 @@ bool Scene::GetGroundNormal(float worldX, float worldZ, DirectX::XMFLOAT3& norma
 {
     bool found = false;
     float bestHeight = -FLT_MAX;   // where ground overlaps, the highest one is the one you stand on
-    bool worldAnswers = false;
     for (const auto& object : objects_) {
         const auto* world = dynamic_cast<const TerrainWorld*>(object.get());
         if (!world || !world->HasGround()) continue;
-        worldAnswers = true;
         float height = 0.0f;
         DirectX::XMFLOAT3 n;
         if (!world->HeightAt(worldX, worldZ, height) || !world->NormalAt(worldX, worldZ, n)) continue;
-        if (height > bestHeight) { bestHeight = height; normal = n; found = true; }
-    }
-    for (const auto& object : objects_) {
-        const auto* terrain = dynamic_cast<const Terrain*>(object.get());
-        if (!terrain || (worldAnswers && terrain->IsTile())) continue;
-        float height = 0.0f;
-        DirectX::XMFLOAT3 n;
-        if (!terrain->GetHeightAt(worldX, worldZ, height) || !terrain->GetNormalAt(worldX, worldZ, n)) continue;
         if (height > bestHeight) { bestHeight = height; normal = n; found = true; }
     }
     return found;
@@ -272,21 +241,12 @@ bool Scene::RaycastGround(const Ray& ray, float& distance, DirectX::XMFLOAT3* po
     constexpr float kLongestRay = 20000.0f;   // metres: beyond this nothing is picked
     bool hit = false;
     float best = FLT_MAX;
-    bool worldAnswers = false;
     for (const auto& object : objects_) {
         const auto* world = dynamic_cast<const TerrainWorld*>(object.get());
         if (!world || !world->HasGround()) continue;
-        worldAnswers = true;
         float d = 0.0f;
         DirectX::XMFLOAT3 p;
         if (world->RaycastGround(ray, kLongestRay, d, &p) && d < best) { best = d; hit = true; if (point) *point = p; }
-    }
-    for (const auto& object : objects_) {
-        const auto* terrain = dynamic_cast<const Terrain*>(object.get());
-        if (!terrain || (worldAnswers && terrain->IsTile())) continue;
-        float d = 0.0f;
-        DirectX::XMFLOAT3 p;
-        if (terrain->Raycast(ray, d, &p) && d < best) { best = d; hit = true; if (point) *point = p; }
     }
     if (hit) distance = best;
     return hit;
@@ -295,8 +255,7 @@ bool Scene::RaycastGround(const Ray& ray, float& distance, DirectX::XMFLOAT3* po
 bool Scene::HasGround() const
 {
     for (const auto& object : objects_) {
-        if (const auto* world = dynamic_cast<const TerrainWorld*>(object.get())) { if (world->HasGround()) return true; }
-        else if (const auto* terrain = dynamic_cast<const Terrain*>(object.get())) { if (terrain->IsValid()) return true; }
+        if (const auto* world = dynamic_cast<const TerrainWorld*>(object.get()); world && world->HasGround()) return true;
     }
     return false;
 }

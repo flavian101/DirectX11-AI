@@ -47,10 +47,7 @@ struct TerrainSettings {
 	float width = 240.0f;       // metres along X; depth follows the heightmap's aspect ratio
 	float heightScale = 45.0f;  // metres for a 1.0 (white) heightmap pixel
 	int maxCells = 512;         // mesh resolution: grid cells along X (Z follows the aspect)
-	float noiseStrength = 0.0f;
-	float noiseScale = 4.0f;
-	int noiseOctaves = 4;
-	int noiseSeed = 0;
+	int breakupSeed = 0;        // the random seed of the layer rules' breakup (which patches of rock and sand differ)
 
 	// --- material: cheap, applied without rebuilding ---
 	float uvTiling = 1.0f;      // how many times the texture repeats across the terrain
@@ -95,8 +92,6 @@ struct TerrainSettings {
 	static constexpr float kWidthMin = 40.0f, kWidthMax = 1000.0f;
 	static constexpr float kHeightMin = 1.0f, kHeightMax = 500.0f;
 	static constexpr int kCellsMin = 32, kCellsMax = 1024;
-	static constexpr float kNoiseScaleMin = 0.5f, kNoiseScaleMax = 32.0f;
-	static constexpr int kOctavesMin = 1, kOctavesMax = 8;
 	static constexpr float kTilingMin = 0.25f, kTilingMax = 64.0f;
 	static constexpr float kRockTilingMin = 0.005f, kRockTilingMax = 0.5f;   // also the range of every layer's tiling
 	static constexpr float kBandMin = -50.0f, kBandMax = 200.0f;     // world-Y range of the shore/snow SLIDERS of a single terrain
@@ -107,7 +102,6 @@ struct TerrainSettings {
 	void Clamp();
 	void ResetLayers();   // puts only the layer/material fields back to defaults
 	bool SameShape(const TerrainSettings& other) const;  // true if only material fields differ
-	bool SameSource(const TerrainSettings& other) const; // true if the grid and the generated heights (resolution, noise) agree
 	bool SameSplatRules(const TerrainSettings& other) const; // true if the rules that decide where each layer goes agree (they are baked, lesson 29)
 };
 
@@ -136,8 +130,7 @@ struct TerrainTile {
 
 class Terrain final : public SceneObject {
 public:
-	explicit Terrain(ID3D11Device* device);
-	// A terrain that is one TILE of a world. `material` supplies the look (layers, rules, LOD distances); its width, resolution
+	// A terrain is always one TILE of a world. `material` supplies the look (layers, rules, LOD distances); its width, resolution
 	// and noise are replaced by the tile's own. `shareLayersFrom` lets tiles of one world use ONE set of layer textures instead
 	// of each reading and packing twelve images (null, or not valid: this tile loads its own).
 	Terrain(ID3D11Device* device, const TerrainTile& tile, const TerrainSettings& material, const TerrainLayerSet* shareLayers);
@@ -155,7 +148,7 @@ public:
 	bool IsValid() const;
 	// True for a tile of a world. Its heights come from the world, so (for now) it cannot be sculpted or carved: an edit would
 	// stop it matching its neighbours. Painting works.
-	bool IsTile() const { return tile_.source != nullptr; }
+	bool IsTile() const { return tile_.source != nullptr; }   // always true for a built terrain; false only for a tile without a ground (never made)
 	TerrainWalls Walls() const;   // the walls of this tile (none unless it is on the edge of a bounded world)
 	const TerrainTile& GetTile() const { return tile_; }
 	// The terrain can be deleted (and the delete undone): a scene without one is how a terrain world is tried on its own. The tiles of
@@ -174,15 +167,10 @@ public:
 	// kinds of file into two arrays, lesson 29, but the files, and these counts, are unchanged.)
 	void GetLayerFileCounts(int& albedo, int& normal, int& orm) const;
 
-	// --- The images the terrain is made from. All can be replaced while the program runs. ---
-	// An empty path means "the default file". The Set functions return false (and change nothing) if the file is
-	// missing or cannot be read.
+	// --- The layer images (the heights come from the world) ---
 	static std::string DefaultLayerMapPath(int layer, TerrainLayerMap map);   // assets/Terrain/<Layer>/albedo.png ...
-	static const char* DefaultHeightmapPath() { return "assets/dark alien/Height Map.png"; }
 	const std::string& GetLayerMapPath(int layer, TerrainLayerMap map) const { return layerMapPaths_[layer][static_cast<int>(map)]; }
 	bool SetLayerMap(int layer, TerrainLayerMap map, const std::string& path);
-	const std::string& GetHeightmapPath() const { return heightmapPath_; }
-	bool SetHeightmap(const std::string& path);   // 8-bit or 16-bit greyscale image; 16-bit gives much smoother slopes
 
 	// --- Asking the terrain about its own surface (lesson 25) ---
 	// All in WORLD space, and all answered from the kept height grid, not from the GPU.
@@ -197,22 +185,6 @@ public:
 	// across terrains. Things that measured the ground (the water's depth map) compare it to know when to measure again.
 	unsigned GetRevision() const { return revision_; }
 
-	// The ground height as a 0..1 sample value (what the brushes and the saved PNG use). False outside the terrain.
-	bool SampleNormalizedHeight(float worldX, float worldZ, float& value) const;
-
-	// --- Sculpting (lesson 27) ---
-	// True once the heights have been shaped by hand (or loaded from a saved sculpt). From then on the generated source
-	// (heightmap, noise, mesh resolution) is not used any more and the editor locks those controls; width and height
-	// scale still work because the heights are kept as 0..1.
-	bool IsSculpted() const { return sculpted_; }
-	// A stroke is everything from pressing the mouse button to releasing it: one undo step.
-	void BeginSculptStroke();
-	// One step of a brush at a WORLD position; brush.radius is in world units. False if nothing changed.
-	bool Sculpt(const BrushSettings& brush, float worldX, float worldZ, float seconds);
-	HeightfieldPatch EndSculptStroke();   // the finished stroke (empty if it changed nothing)
-	// Digs a river's channel (lesson 38). `path` is the river's curve in WORLD space. The bed is `depth` below the water's surface
-	// (`waterLevelY`, world Y) in the middle, level with it at the water's edge; the banks climb `bankHeight` over `bankWidth`
-	// beyond that. Returns what changed as one patch, like a stroke, for undo (empty if the ground already had that shape).
 	// Rewrites the samples of THIS TILE (level of detail 0) inside `rect` (tile-local, apron included) from the world's ground, and
 	// refreshes only what they touch: the vertices of the chunks around them, the splat texels, nothing else. The result is exactly
 	// the tile a rebuild would give (tests/tile_patch_test.cpp), at a fraction of the cost: no new Terrain, no new index buffers, no
@@ -232,33 +204,9 @@ public:
 	};
 	static const BuildTimes& GetBuildTimes();
 
-	HeightfieldPatch CarveRiver(const std::vector<RiverPath::Sample>& path, float waterLevelY, float depth, float bankWidth, float bankHeight);
-	// Undo / redo of a stroke: writes the patch's "before" or "after" values and refreshes the chunks it touches.
-	bool ApplyPatch(const HeightfieldPatch& patch, bool useAfter);
-	// Replaces every height at once (loading a saved sculpt, discarding or restoring one). The size must match the grid.
-	bool ReplaceHeights(std::vector<float> samples, bool sculpted);
-	// What the heightmap and noise settings make, ignoring any sculpting: the "Discard sculpting" target.
-	bool GenerateOriginalHeights(std::vector<float>& samples) const;
-	// Reads a saved sculpt (16-bit PNG, one pixel per grid vertex). `error` says what was wrong if it fails.
-	bool LoadSculptedHeights(const std::string& path, std::string& error);
-
-	// --- Painting layers (lesson 30) ---
-	// The artist's layer weights, laid over the weights the rules bake. They never touch the heights, so they survive
-	// sculpting, noise and every rule slider; they are lost only if the GRID changes (mesh resolution, or a heightmap of a
-	// different shape), which is why the editor locks those while painted.
-	bool IsPainted() const { return painted_; }
-	// A stroke is everything from pressing the mouse button to releasing it: one undo step.
-	void BeginPaintStroke();
-	// One step of a brush at a WORLD position; brush.radius is in world units. False if nothing changed.
-	bool Paint(const PaintBrush& brush, float worldX, float worldZ, float seconds);
-	HeightfieldPatch EndPaintStroke();   // the finished stroke (empty if it changed nothing)
-	// Undo / redo of a stroke: writes the patch's "before" or "after" values and re-uploads the texels it touches.
-	bool ApplyPaintPatch(const HeightfieldPatch& patch, bool useAfter);
-	const PaintMap& GetPaintMap() const { return paint_; }
-	// Replaces all the painted weights at once (clearing, or restoring a cleared paint). The size must match the map.
+	// The painted layer weights the world keeps for this tile, laid over the weights the rules bake (the world owns the paint: lesson 30). They
+	// never touch the heights. False if the size does not match.
 	bool ReplacePaint(std::vector<float> weights, bool painted);
-	// Reads a saved paint map (RGBA8 PNG, one pixel per grid cell). `error` says what was wrong if it fails.
-	bool LoadPaint(const std::string& path, std::string& error);
 
 	// --- For things that stand on the ground (scatter, lesson 31) ---
 	// The final layer weights (baked rules + paint), one texel per grid cell: what the pixel shader reads.
@@ -286,14 +234,7 @@ public:
 	void Render(ID3D11DeviceContext* ctx, const RenderView& view) const override;
 
 private:
-	struct Heightmap {
-		int width = 0;
-		int height = 0;
-		std::vector<float> values;  // 0..1, row-major
-	};
-
-	// `keepSculpt`: carry the sculpted heights over into the rebuilt mesh (only when the grid is unchanged).
-	bool Rebuild(const TerrainSettings& settings, bool keepSculpt = false);
+	bool Rebuild(const TerrainSettings& settings);
 	// Re-makes the vertices of every chunk that holds a sample in `changed` (plus one sample around it, for the normals).
 	void RefreshChunks(const GridRect& changed);
 	// Re-reads the twelve layer files and PACKS them into the two texture arrays the shader reads (lesson 29): albedo + height,
@@ -321,16 +262,9 @@ private:
 	SplatMap splat_;                                    // the layer weights, one texel per grid cell
 	ID3D11Texture2D* splatTexture_ = nullptr;           // the same weights on the GPU (RGBA8, no mips)
 	ID3D11ShaderResourceView* splatView_ = nullptr;
-	Heightmap heightmap_;      // decoded ONCE; every rebuild reuses it instead of re-reading the PNG
 	Heightfield heightfield_;  // the FINAL grid the mesh was built from (heightmap + noise, at mesh resolution)
-	bool sculpted_ = false;    // the grid has been shaped by hand: it is the truth, not the heightmap
-	StrokeRecorder stroke_;    // the "before" values of the stroke in progress
-	bool strokeActive_ = false;
 	PaintMap paint_;           // painted layer weights, same grid as splat_ (always sized after the first Rebuild)
 	bool painted_ = false;     // something has been painted (or loaded): saved next to the scene file
-	StrokeRecorder paintStroke_;
-	bool paintStrokeActive_ = false;
-	std::string heightmapPath_;
 	std::string layerMapPaths_[kTerrainLayerCount][3];   // [layer][albedo / normal / orm]
 	float depth_ = 0.0f;       // world-space size along Z of the current mesh
 	unsigned revision_ = 0;    // see GetRevision()
@@ -348,8 +282,8 @@ private:
 	int chunksZ_ = 0;
 	mutable ID3D11RasterizerState* wireframeState_ = nullptr;   // created on first use (debug view)
 	mutable TerrainViewStats stats_[kViewKindCount];
-	TerrainTile tile_;         // source == null: an ordinary terrain
-	// For a tile: puts the settings the tile decides back (its width, resolution, no noise). No-op otherwise.
+	TerrainTile tile_;
+	// Puts the settings the tile decides back (its width, resolution, no noise).
 	void ForceTileSettings(TerrainSettings& settings) const;
 	TileHeights BuildTileHeights() const;   // the tile's samples and apron from the world: base ground with the world's rivers dug in
 	TerrainSettings settings_;

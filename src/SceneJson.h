@@ -144,8 +144,7 @@ inline void from_json(const json& j, ScatterSpeciesSettings& s)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ScatterSettings, enabled, cellSize, seed, lodBias, frustumCulling, lodEnabled, shadows,
                                                 reflectionDetail, generationBudgetMs, maxInstancesPerSpecies, species)
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainSettings, width, heightScale, maxCells, noiseStrength, noiseScale,
-                                                noiseOctaves, noiseSeed, uvTiling, groundTiling, rockTiling, sandTiling, snowTiling,
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainSettings, width, heightScale, maxCells, breakupSeed, uvTiling, groundTiling, rockTiling, sandTiling, snowTiling,
                                                 rockDarkness, normalStrength, flipGreen, heightBlend, aoStrength,
                                                 roughnessScale, groundTint, rockTint, slopeStart, slopeFade, shoreHeight, shoreWidth,
                                                 snowHeight, snowFade, breakupScale, breakupAmount, shoreColor, snowColor, frustumCulling,
@@ -157,5 +156,5 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HeightShapeSettings, blackPoint,
 // hills, 1 picture). A scene saved before the picture source, the shape or the material existed has none of the new keys and loads as the
 // endless fractal world it always was. (The world's EDITS are not here: they are a file beside the scene, see SceneSerializer.cpp.)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainWorldSettings, grid, source, fractal, picturePath, pictureWidth, pictureOffsetX, pictureOffsetZ, bounds,
-                                                shape, customMaterial, material, layerPaths, heightScale, baseHeight, viewDistance, rivers)
+                                                shape, heightScale, baseHeight, viewDistance, rivers)
 

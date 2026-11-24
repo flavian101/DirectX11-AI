@@ -171,11 +171,3 @@ double PictureDepth(double width, int imageWidth, int imageHeight)
     return width * static_cast<double>(imageHeight) / static_cast<double>(imageWidth);
 }
 
-WorldGridSettings WorldGridForTerrain(float width, int maxCells)
-{
-    WorldGridSettings grid;
-    grid.chunksPerTile = std::clamp(static_cast<int>(std::lround(static_cast<double>(maxCells) / kWorldChunkCells)), WorldGridSettings::kChunksMin, WorldGridSettings::kChunksMax);
-    grid.metresPerCell = width / static_cast<float>(grid.TileCells());
-    grid.Clamp();
-    return grid;
-}

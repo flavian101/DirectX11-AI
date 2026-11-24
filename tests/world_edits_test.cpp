@@ -267,97 +267,6 @@ static void TestTilesAffected()
     CHECK(hasMinus && hasZero);
 }
 
-static void TestMigration()
-{
-    const double mpc = 4.0;
-    const int cells = 64;                       // an old terrain of 256 m
-    const auto ground = MakeGround(40, cells * mpc);
-
-    // 1. An untouched terrain: heights exactly the picture's, so nothing to store.
-    {
-        OldTerrainPlacement place; place.sizeX = place.sizeZ = cells * mpc; place.cellsX = place.cellsZ = cells; place.centerX = place.centerZ = 0.5 * cells * mpc;
-        OldField old = MakeOld(*ground, cells, mpc, place.centerX, place.centerZ);
-        WorldEdits edits(32);
-        const MigrationStats stats = MigrateHeightsIntoEdits(old.field.Samples(), place, *ground, mpc, edits);
-        CHECK(stats.heightSamples == 0 && edits.IsEmpty());
-    }
-
-    // 2. A sculpted terrain standing somewhere else in the world (corner on the lattice): heights come back sample for sample.
-    {
-        OldTerrainPlacement place; place.sizeX = place.sizeZ = cells * mpc; place.cellsX = place.cellsZ = cells;
-        place.centerX = 800.0 + 0.5 * cells * mpc; place.centerZ = -400.0 + 0.5 * cells * mpc;   // corner at (800, -400): lattice (200, -100)
-        // The ground under the old terrain: the picture placed so that it lines up with the terrain's corner.
-        auto image = std::make_shared<HeightImage>();
-        image->width = image->height = 40; image->values.resize(1600);
-        for (size_t i = 0; i < image->values.size(); ++i) image->values[i] = 0.2f + 0.6f * std::fmod(static_cast<float>(i) * 0.6180339f, 1.0f);
-        const PictureHeightSource placed(image, 800.0, -400.0, cells * mpc, cells * mpc);
-        OldField old = MakeOld(placed, cells, mpc, place.centerX, place.centerZ);
-        BrushSettings brush; brush.mode = BrushMode::Raise; brush.radius = 40.0f; brush.strength = 1.0f;
-        for (int step = 0; step < 6; ++step) ApplyBrush(old.field, brush, static_cast<float>(-30.0 + step * 10.0), 5.0f, 0.1f, nullptr);
-        brush.mode = BrushMode::Smooth; brush.radius = 25.0f;
-        for (int step = 0; step < 4; ++step) ApplyBrush(old.field, brush, 20.0f, -20.0f, 0.1f, nullptr);
-
-        auto edits = std::make_shared<WorldEdits>(32);
-        const MigrationStats stats = MigrateHeightsIntoEdits(old.field.Samples(), place, placed, mpc, *edits);
-        CHECK(stats.heightSamples > 100 && stats.heightSamples < (cells + 1) * (cells + 1));   // only where it was sculpted
-        const EditedHeightSource world(std::make_shared<const PictureHeightSource>(placed), edits, mpc);
-        double worst = 0.0;
-        for (int z = 0; z <= cells; ++z) for (int x = 0; x <= cells; ++x) {
-            const float visible = world.Height01(800.0 + x * mpc, -400.0 + z * mpc);
-            worst = (std::max)(worst, static_cast<double>(std::fabs(visible - old.field.Sample(x, z))));
-        }
-        CHECK(worst < 2e-5);
-        // Outside the old terrain nothing was written.
-        CHECK(edits->HeightDelta(199, -100) == 0.0f && edits->HeightDelta(200 + cells + 1, -100 + 5) == 0.0f && edits->HeightDelta(200 + 5, -100 + cells + 1) == 0.0f);
-    }
-
-    // 3. A grid that does not meet the lattice (cells of 2.5 m on a 3 m lattice): the old heights are blended, within bilinear accuracy.
-    {
-        OldTerrainPlacement place; place.sizeX = place.sizeZ = 100.0; place.cellsX = place.cellsZ = 40; place.centerX = place.centerZ = 50.0;
-        std::vector<float> heights(41 * 41);
-        for (int z = 0; z <= 40; ++z) for (int x = 0; x <= 40; ++x) heights[static_cast<size_t>(z) * 41 + x] = 0.5f + 0.3f * std::sin(x * 0.3f) * std::cos(z * 0.25f);
-        const auto flatGround = MakeGround(8, 100.0);
-        auto edits = std::make_shared<WorldEdits>(32);
-        MigrateHeightsIntoEdits(heights, place, *flatGround, 3.0, *edits);
-        const EditedHeightSource world(flatGround, edits, 3.0);
-        double worst = 0.0;
-        for (int gz = 1; gz < 33; ++gz) for (int gx = 1; gx < 33; ++gx) {
-            const double wx = gx * 3.0, wz = gz * 3.0;
-            const double fx = wx / 2.5, fz = wz / 2.5;
-            const int ix = static_cast<int>(fx), iz = static_cast<int>(fz);
-            const float tx = static_cast<float>(fx - ix), tz = static_cast<float>(fz - iz);
-            auto at = [&](int x, int z) { return heights[static_cast<size_t>(z) * 41 + x]; };
-            const float expected = (at(ix, iz) * (1 - tx) + at(ix + 1, iz) * tx) * (1 - tz) + (at(ix, iz + 1) * (1 - tx) + at(ix + 1, iz + 1) * tx) * tz;
-            worst = (std::max)(worst, static_cast<double>(std::fabs(world.Height01(wx, wz) - expected)));
-        }
-        CHECK(worst < 1e-4);
-    }
-
-    // 4. Paint comes across cell for cell.
-    {
-        OldTerrainPlacement place; place.sizeX = place.sizeZ = cells * mpc; place.cellsX = place.cellsZ = cells;
-        place.centerX = place.centerZ = 0.5 * cells * mpc;
-        PaintMap paint;
-        paint.Resize(cells, cells);
-        HeightfieldLayout layout; layout.cellsX = layout.cellsZ = cells; layout.sizeX = layout.sizeZ = static_cast<float>(cells * mpc); layout.heightScale = 100.0f;
-        PaintBrush brush; brush.layer = 2; brush.radius = 30.0f; brush.strength = 0.9f;
-        for (int step = 0; step < 4; ++step) ApplyPaintBrush(paint, layout, brush, static_cast<float>(-20 + step * 8), 10.0f, 0.1f, nullptr);
-        WorldEdits edits(32);
-        const MigrationStats stats = MigratePaintIntoEdits(paint, place, mpc, edits);
-        CHECK(stats.paintCells > 20 && stats.paintCells < cells * cells);
-        double worst = 0.0;
-        for (int tz = 0; tz < 2; ++tz) for (int tx = 0; tx < 2; ++tx) {
-            const PaintMap tile = edits.PaintForTile({ tx, tz }, 32);
-            for (int z = 0; z < 32; ++z) for (int x = 0; x < 32; ++x) for (int c = 0; c < 4; ++c) {
-                const float expected = paint.weights[paint.TexelIndex(tx * 32 + x, tz * 32 + z) * kSplatChannels + c];
-                const float got = tile.IsEmpty() ? 0.0f : tile.weights[tile.TexelIndex(x, z) * kSplatChannels + c];
-                worst = (std::max)(worst, static_cast<double>(std::fabs(expected - got)));
-            }
-        }
-        CHECK(worst < 1e-6);
-    }
-}
-
 static void TestFile()
 {
     namespace fs = std::filesystem;
@@ -409,7 +318,6 @@ int main()
     TestPatch();
     TestPaint();
     TestTilesAffected();
-    TestMigration();
     TestFile();
     if (g_failures == 0) std::printf("All world edits tests passed.\n");
     return g_failures == 0 ? 0 : 1;

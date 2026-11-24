@@ -5,7 +5,7 @@
 #include "SceneSerializer.h"
 #include <filesystem>
 #include "Skybox.h"
-#include "Terrain.h"
+#include "TerrainWorld.h"
 #include "Water.h"
 #include <algorithm>
 
@@ -37,17 +37,10 @@ bool BuildDemoScene(Scene& scene, ID3D11Device* device)
     fog.heightFalloff = 0.01f;
 
     // --- objects (the scene owns them) ---
-    Terrain* terrain = scene.Add<Terrain>(device);
+    scene.Add<TerrainWorld>(device);   // the ground: its tiles stream in around the camera
     scene.Add<Cube>(device);
-    Water* water = scene.Add<Water>(device);
+    scene.CreateOcean();               // the sea, at sea level 0
     scene.Add<Skybox>(device);
-
-    // Cover the whole terrain (plus a margin) whatever its width setting is.
-    WaterSettings waterSettings = water->GetSettings();
-    const DirectX::XMFLOAT2 extent = terrain->GetWorldExtent();
-    waterSettings.size = (std::max)(extent.x, extent.y) * 1.2f;
-    waterSettings.sizeZ = waterSettings.size;
-    water->SetSettings(waterSettings);
     return true;
 }
 

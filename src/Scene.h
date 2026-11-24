@@ -39,18 +39,15 @@ public:
     bool Initialize(ID3D11Device* device);
     const Camera& GetCamera() const { return camera_; }
     Camera& GetCamera() { return camera_; }
-    // The FIRST terrain. A world is many terrains (tiles): code that asks about the ground at a place should use GetGroundHeight.
-    Terrain* GetTerrain() { return FindFirst<Terrain>(); }
-    const Terrain* GetTerrain() const { return FindFirst<Terrain>(); }
-    // The height of the ground at a world position, from whichever terrain covers it (the highest, if they overlap).
-    // False when no terrain does.
+    // The height of the ground at a world position, from whichever world covers it (the highest, if they overlap).
+    // False when no world does.
     bool GetGroundHeight(float worldX, float worldZ, float& worldY) const;
-    // The ground's unit normal at a world position, from the same places. False when nothing covers it.
+    // The ground's unit normal at a world position, from the same worlds. False when nothing covers it.
     bool GetGroundNormal(float worldX, float worldZ, DirectX::XMFLOAT3& normal) const;
-    // Where a ray first meets the ground (the nearest, over every world and every single terrain). Worlds answer from their ground function, so
-    // it works over tiles that are not loaded; a single terrain answers from its mesh.
+    // Where a ray first meets the ground (the nearest, over every world). A world answers from its ground function, so
+    // it works over tiles that are not loaded.
     bool RaycastGround(const Ray& ray, float& distance, DirectX::XMFLOAT3* point) const;
-    // Is there any ground at all (a world with a ground function, or a single terrain)?
+    // Is there any ground at all (a world with a ground function)?
     bool HasGround() const;
     // The FIRST water body (scenes can have several: loop over GetObjects(), or use FindWaterAt for a position).
     Water* GetWater() { return FindFirst<Water>(); }

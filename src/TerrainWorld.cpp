@@ -19,8 +19,6 @@ void TerrainWorldSettings::Clamp()
     pictureOffsetZ = std::clamp(pictureOffsetZ, -kPictureOffsetMax, kPictureOffsetMax);
     bounds.Normalize();
     shape.Clamp();
-    material.Clamp();
-    if (static_cast<int>(layerPaths.size()) != kTerrainLayerCount * 3) layerPaths.clear();
     heightScale = std::clamp(heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax);
     baseHeight = std::clamp(baseHeight, kBaseHeightMin, kBaseHeightMax);
     viewDistance = std::clamp(viewDistance, kViewDistanceMin, kViewDistanceMax);
@@ -33,12 +31,6 @@ void TerrainWorldSettings::Clamp()
 
 TerrainSettings MakeWorldMaterial(const TerrainWorldSettings& world)
 {
-    if (world.customMaterial) {   // the look of a migrated terrain; its shape fields do not matter (a tile forces its own), the height does
-        TerrainSettings carried = world.material;
-        carried.heightScale = world.heightScale;
-        carried.Clamp();
-        return carried;
-    }
     TerrainSettings material;
     material.heightScale = world.heightScale;
     // The layer rules talk in world metres (world Y). The defaults suit a 45 m tall terrain standing at Y = 0, so they are scaled to this
@@ -85,30 +77,6 @@ void TerrainWorld::MarkTilesTouchedBy(const WorldRiver& river)
     }
 }
 
-int TerrainWorld::AddRiver(WorldRiver river)
-{
-    if (river.path.size() < 2 || static_cast<int>(settings_.rivers.size()) >= TerrainWorldSettings::kMaxRivers) return 0;
-    if (static_cast<int>(river.path.size()) > TerrainWorldSettings::kMaxRiverSamples) river.path.resize(TerrainWorldSettings::kMaxRiverSamples);
-    if (river.id > 0) nextRiverId_ = std::max(nextRiverId_, river.id + 1); else river.id = nextRiverId_++;
-    settings_.rivers.push_back(river);
-    RefreshRivers();
-    GroundChanged();
-    MarkTilesTouchedBy(river);   // only the tiles it touches are rebuilt, nearest the camera first
-    return river.id;
-}
-
-bool TerrainWorld::RemoveRiver(int id)
-{
-    const auto it = std::find_if(settings_.rivers.begin(), settings_.rivers.end(), [id](const WorldRiver& river) { return river.id == id; });
-    if (it == settings_.rivers.end()) return false;
-    const WorldRiver removed = *it;
-    settings_.rivers.erase(it);
-    RefreshRivers();
-    GroundChanged();
-    MarkTilesTouchedBy(removed);
-    return true;
-}
-
 // Makes the ground (ground_, then source_ with the edits over it) and the edge of the world (activeBounds_) from the settings. If the picture
 // cannot be read the world has no land: failed_ stops the streaming until the settings change, and status_ says why.
 void TerrainWorld::BuildSource()
@@ -126,7 +94,7 @@ void TerrainWorld::BuildSource()
     if (settings_.source != WorldSourceKind::Picture) {
         raw = std::make_shared<const FractalHeightSource>(settings_.fractal);
     } else {
-        const std::string path = settings_.picturePath.empty() ? std::string(Terrain::DefaultHeightmapPath()) : settings_.picturePath;
+        const std::string path = settings_.picturePath.empty() ? std::string(TerrainWorldSettings::kDefaultPicturePath) : settings_.picturePath;
         auto image = std::make_shared<HeightImage>();
         std::string error;
         if (!LoadHeightImage(path, *image, error)) {
@@ -286,18 +254,7 @@ void TerrainWorld::Stream(Scene& scene, double cameraX, double cameraZ)
         }
         terrain->SetName("Terrain tile (" + std::to_string(request.coord.x) + ", " + std::to_string(request.coord.z) + ") level " + std::to_string(request.lod));
         if (!layers_.IsValid()) {
-            // The first tile's textures are lent to the rest. A migrated terrain's own layer images are put on it first.
-            if (settings_.customMaterial && static_cast<int>(settings_.layerPaths.size()) == kTerrainLayerCount * 3) {
-                for (int layer = 0; layer < kTerrainLayerCount; ++layer) {
-                    for (int kind = 0; kind < 3; ++kind) {
-                        const std::string& wanted = settings_.layerPaths[static_cast<size_t>(layer * 3 + kind)];
-                        const auto map = static_cast<TerrainLayerMap>(kind);
-                        if (!wanted.empty() && wanted != terrain->GetLayerMapPath(layer, map) && !terrain->SetLayerMap(layer, map, wanted)) {
-                            LOG_WARNING("Terrain world: a layer image could not be loaded: " + wanted);
-                        }
-                    }
-                }
-            }
+            // The first tile's textures are lent to the rest.
             layers_ = terrain->GetLayerSet();
         }
         // Painting: the world keeps it, the tile only shows it (at this level of detail: each coarse texel averages the cells it covers).
@@ -491,61 +448,6 @@ bool TerrainWorld::AutoLevels(float lowPercent, float highPercent)
     if (!ComputeAutoLevels(*pictureRaw_, lowPercent, highPercent, next.shape.blackPoint, next.shape.whitePoint)) return false;
     SetSettings(next);
     return true;
-}
-
-bool TerrainWorld::AdoptFrom(const Terrain& old, MigrationStats* stats)
-{
-    BuildSource();   // the ground the terrain is compared with (Stream builds it again when it starts: harmless)
-    if (!ground_ || old.GetHeightfield().IsEmpty()) return false;
-    DirectX::XMFLOAT3 position{ 0, 0, 0 }, rotation{ 0, 0, 0 }, scale{ 1, 1, 1 };
-    old.GetEditorTransform(position, rotation, scale);
-    const HeightfieldLayout& layout = old.GetHeightfield().GetLayout();
-    OldTerrainPlacement place;
-    place.cellsX = layout.cellsX;
-    place.cellsZ = layout.cellsZ;
-    place.sizeX = static_cast<double>(layout.sizeX) * scale.x;
-    place.sizeZ = static_cast<double>(layout.sizeZ) * scale.z;
-    // The picture's corner is where the terrain's corner is (WorldSettingsFromTerrain snapped it to the grid), so the centre follows from it.
-    place.centerX = static_cast<double>(settings_.pictureOffsetX) + 0.5 * place.sizeX;
-    place.centerZ = static_cast<double>(settings_.pictureOffsetZ) + 0.5 * place.sizeZ;
-    MigrationStats total;
-    const MigrationStats heights = MigrateHeightsIntoEdits(old.GetHeightfield().Samples(), place, *ground_, editsMetresPerCell_, *edits_);
-    total.heightSamples = heights.heightSamples;
-    if (old.IsPainted()) total.paintCells = MigratePaintIntoEdits(old.GetPaintMap(), place, editsMetresPerCell_, *edits_).paintCells;
-    if (stats) *stats = total;
-    dirty_ = true;
-    return true;
-}
-
-TerrainWorldSettings WorldSettingsFromTerrain(const Terrain& old)
-{
-    DirectX::XMFLOAT3 position{ 0, 0, 0 }, rotation{ 0, 0, 0 }, scale{ 1, 1, 1 };
-    old.GetEditorTransform(position, rotation, scale);
-    const HeightfieldLayout& layout = old.GetHeightfield().GetLayout();
-    const float width = layout.sizeX * scale.x, depth = layout.sizeZ * scale.z;
-    TerrainWorldSettings s;
-    s.source = WorldSourceKind::Picture;
-    s.picturePath = old.GetHeightmapPath();
-    s.pictureWidth = width;
-    s.grid = WorldGridForTerrain(width, old.GetSettings().maxCells);
-    // The old terrain is centred on its position. The world's picture is placed by its corner, snapped to the cell grid so that the old
-    // samples land exactly on the world's lattice (a move of at most half a cell, a few decimetres).
-    const double cell = static_cast<double>(s.grid.metresPerCell);
-    s.pictureOffsetX = static_cast<float>(std::round((static_cast<double>(position.x) - 0.5 * width) / cell) * cell);
-    s.pictureOffsetZ = static_cast<float>(std::round((static_cast<double>(position.z) - 0.5 * depth) / cell) * cell);
-    // Where the old ground stood in the air (roadmap C3): it started at its position.y (the default terrain stands at -2 m). Dropping that
-    // put the whole migrated world higher by that much, against the water, the objects on it and the layer rules (which are world Y).
-    const WorldHeightFrame frame = HeightFrameOfOldTerrain(position.y, old.GetSettings().heightScale, scale.y);
-    s.heightScale = frame.heightScale;
-    s.baseHeight = frame.baseHeight;
-    s.shape.prefilter = false;   // a migrated terrain gives the old terrain's heights sample for sample: no filter on top
-    s.customMaterial = true;
-    s.material = old.GetSettings();
-    s.layerPaths.resize(static_cast<size_t>(kTerrainLayerCount) * 3);
-    for (int layer = 0; layer < kTerrainLayerCount; ++layer)
-        for (int kind = 0; kind < 3; ++kind) s.layerPaths[static_cast<size_t>(layer * 3 + kind)] = old.GetLayerMapPath(layer, static_cast<TerrainLayerMap>(kind));
-    s.Clamp();
-    return s;
 }
 
 void RemoveOrphanTiles(Scene& scene)

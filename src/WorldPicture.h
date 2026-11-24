@@ -92,7 +92,3 @@ private:
 double PictureDepth(double width, int imageWidth, int imageHeight);
 
 // --- rebuilding the old single terrain as a world -----------------------------------------------------------------------
-// The grid a world needs so that ONE tile is exactly as wide as an old terrain of `width` metres and `maxCells` cells along X,
-// with the same cell size: the heights of that terrain and of the world's tile then agree sample for sample. A terrain wider
-// than the finest cell the world allows (WorldGridSettings::kMetresPerCellMin) simply becomes several tiles.
-WorldGridSettings WorldGridForTerrain(float width, int maxCells);
