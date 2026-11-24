@@ -11,9 +11,11 @@ is in git history: `git show 1463cb3:docs/ROADMAP.md`.
 3. **No parallel systems.** A new module replaces the old one in the same milestone. Two height systems or two wave models at once is a bug in the plan.
 4. **A setting is a physical quantity or an artistic intent that survives moving to another scene.** A setting that exists to compensate for another
    setting (an "auto" scale, a size cap, a switch that turns an old look back on) is a patch and is deleted (list: section 5).
-5. States, one per item: `[ ]` open, `[~]` code and unit tests landed but **not yet checked in the editor**, `[x]` checked in the editor
+5. **Shaders are compile-checked** with DXC at shader model 6.0 (a superset of the 5.0 the engine compiles with); a shader change without a clean compile is not done.
+   Everything else that does not need a GPU is a pure header with a test.
+6. States, one per item: `[ ]` open, `[~]` code and unit tests landed but **not yet checked in the editor**, `[x]` checked in the editor
    (needs an `Editor:` line with the date and what was seen), `[!]` known bug. Unit tests alone never make an item `[x]`.
-6. A commit that changes an item's state edits this file in the same commit and says so in its message (see Tracking).
+7. A commit that changes an item's state edits this file in the same commit and says so in its message (see Tracking).
 
 ## Tracking
 
@@ -46,9 +48,12 @@ When an item reaches `[x]`, the `Editor:` line is the record of what was seen.
 **The white banding along the shore, diagnosed.** In the `ShoreDepth` debug view (red = land, green = depth up to 8 m, blue = surf) the coastline and the depth are
 clean and follow the shore, so the depth map is not the cause. The blue bars are the `breaking` term, and they run in straight lines across the shallows: that is the crests
 of the (at most 16) straight Gerstner waves, made to break by the shallow water. Few components with a narrow spread make straight, evenly spaced crests, and the foam
-follows them. The fix is in the waves and the foam (O1, O5), not in the terrain.
+follows them. The fix is in the waves and the foam (O1, O5, O7), not in the terrain.
 
 ## 2. What to borrow from Unreal (and what not)
+
+This section is only Unreal. **The wider research (Unity, Crest, Sea of Thieves, Atlas, Godot, Frostbite, Bruneton), the physics of waves coming ashore, a foam model and the
+shading fixes are in `docs/OCEAN_RESEARCH.md`**; its decisions D7 to D12 are what M2 and M3 are built from.
 
 Checked against Epic's documentation for the Water plugin:
 
@@ -60,7 +65,7 @@ Checked against Epic's documentation for the Water plugin:
 | **Single Layer Water**: a physically based shading model with scattering and absorption coefficients, roughness, specular and a normal; the usual water material blends **two tiled normal maps panning in different directions**. | GGX specular with roughness, absorption and scattering as coefficients, two scrolling normal maps (O2 to O4). |
 
 Waves "bashing the island" are **not simulated**. Engines fake it from the depth: waves grow in shallow water, break, and a swash line slides on the beach.
-Your `shoreWaves` / `swash` / `shoreShelter` already follow that idea; they move onto the world water info (O5). Particles are for spray, later. They are not
+Your `shoreWaves` / `swash` / `shoreShelter` already follow that idea; they are replaced by a real shore-wave model, swash and a foam simulation (O5 to O7). Particles are for spray, later. They are not
 why the water looks wrong.
 
 ## 3. Decisions
@@ -77,6 +82,9 @@ why the water looks wrong.
    Schlick Fresnel at F0 = 0.02, sky reflection blurred by roughness, colour from absorption and scattering per metre.
 6. **Lakes, ponds, rivers and swamps are gone (confirmed).** Each is a different kind of water that needs its own design, so each comes back later, one at a time,
    on the same water info and shading. Git history keeps all of it. The editor offers one thing: **Add > Ocean**.
+7. **D7 to D12 (from the research):** waves are a spectrum in three bands (64 or more components first, FFT only if needed, always exact on the CPU for boats); the seabed is the
+   world's ground (waves, foam, colour and refraction read it); shore waves are modelled (dispersion, shoaling, refraction, breaking, surf zone, swash); foam is a simulated
+   persistent field; shading is a microfacet BRDF whose roughness grows with unresolved wave slope; the ocean mesh follows the camera and has no size.
 
 ---
 
@@ -127,6 +135,12 @@ Done with this roadmap: `WorldTileFile` (the baked tile file; nothing read it) i
   - Tests: `tests/scene_version_test.cpp`
   - Acceptance (for `[x]`): opening a version-2 scene in the editor shows the message and changes nothing; a scene saved now opens again.
 
+- **T4** `[ ]` Water shader: delete the river branches
+  - What: with DXC available, remove from `water_ps.hlsl`, `water_vs.hlsl` and `water_material.hlsli` the river, flow, bank, rapids and ellipse code, and from `Water.cpp` the matching
+    constant-buffer fields (`flow`, `river`, `river2`, the shape flag) and `Slots::kSrvWaterFlow`. The shader and the C++ buffer change together.
+  - Tests: none that run (shaders); acceptance is a clean DXC compile of every water shader, and an ocean that looks the same in the editor.
+  - Acceptance (for `[x]`): the ocean in the editor is unchanged; a search for `river` in `shaders/` and `Water.cpp` finds nothing.
+
 ### M1. One ground
 Pure logic first (no Direct3D, built and tested on any compiler), then wired into the editor.
 
@@ -176,8 +190,9 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
 ### M2. The world owns the sea
 
 - **S1** `[ ]` World water info
-  - What: one raster over the world bounds, built from the ground function: depth (`seaLevel` - ground), ocean flag, unit direction toward the nearest land. Streamed
-    with the tiles. A tile that is not loaded is never deep ocean inside the world (it is "unknown", and the sea waits).
+  - What: one raster over the world bounds, built from the ground function: depth (`seaLevel` - ground), ocean flag, unit direction toward the nearest land and the distance to it
+    (refraction and surf need both). Outside the bounds the ground is a constant great depth (decision D4), and the depth falls smoothly toward it so there is no step in the waves or a line
+    of foam (Crest). Streamed with the tiles. A tile that is not loaded is never deep ocean inside the world (it is "unknown", and the sea waits).
   - Tests: `tests/world_sea_test.cpp`
   - Acceptance: the depth equals the ground the player sees at every tile LOD, within the wave margin.
 - **S2** `[ ]` Where the sea is, and where it is not (decision D3)
@@ -193,15 +208,17 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - Acceptance: no foam band along tile seams; no walls at the world edge (decision D4).
 - **S5** `[ ]` One ocean for the whole world
   - What: a camera-centred ring mesh with a constant vertex count at any world size, a far-distance mesh to the horizon just under the sea level, and a wave phase kept
-    relative to the camera in double so it stays exact far from the origin.
+    relative to the camera in double so it stays exact far from the origin. The wave bands change scale with distance (a repetition hider used by every engine in the research).
   - Tests: `tests/ocean_ring_test.cpp`
   - Acceptance: a 20 km world shows the same sea near the camera as a 200 m one; no seam where the ring meets the far mesh; no visible edge of the sea at any camera height.
 - **S6** `[ ]` Editor check of the water contract
-  - What: check that the shore banding (section 1) is gone once O1 and O5 are in, and find what the faint rectangular patch in the lower right of a world-grid shot is (a tile border, an
+  - What: check that the shore banding (section 1) is gone once O1, O5 and O7 are in, and find what the faint rectangular patch in the lower right of a world-grid shot is (a tile border, an
     unloaded tile, or the depth map's edge); if it is not, the `Foam` and `ShoreDepth` debug views are where to look next.
   - Acceptance: the contract in section 6 holds while tiles stream in, at the world edge, and while sculpting.
 
 ### M3. An ocean that looks like water
+Built from `docs/OCEAN_RESEARCH.md`. Waves and light first (O1 to O4), then the shore (O5, O6), then foam (O7). Each item is a pure header with a test, plus its shader
+change checked with DXC.
 
 - **W6** `[~]` A sea from the wind
   - What: the weather's wind is a real wind (a speed in m/s and a direction) and is the only wind: a water body has none of its own. The sea is a
@@ -212,32 +229,47 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - Tests: `tests/sea_state_test.cpp`
   - Editor check to do: Weather > Wind > Speed from 3 to 25 m/s makes the open sea taller, longer and faster (the Waves panel shows the numbers); a lake in the
     same wind stays small; moving a body or changing its size never changes its waves (an ocean) or only its fetch (a lake).
-- **O1** `[ ]` No visible repetition (also what ends the straight surf bars along the shore)
-  - What: the wind sea is a spectrum of at least 32 components (raise `kMaxWaves` and `WATER_MAX_WAVES` together, or move the waves out of the constant buffer into a
-    structured buffer) with a directional spread, random phases per component, and no two components with the same direction and wavelength. Far bands fade by pixel footprint (already so).
+- **O1** `[ ]` A spectrum in three bands (D7)
+  - What: the waves leave the 16-slot constant buffer for a structured buffer, and become 64 or more Gerstner components over three bands (swell, wind sea, ripples) with a directional
+    spread, random phases, and no two components with the same direction and wavelength. The CPU table stays exact (boats). The bands change scale with distance. This is what ends the straight
+    surf bars along the shore and the "structures drifting".
   - Tests: `tests/sea_pattern_test.cpp`
-  - Acceptance: over 4 km the height field has no autocorrelation peak other than at zero; the significant height and peak wavelength of W6 do not change.
-- **O2** `[ ]` GGX specular and roughness from slope variance
-  - What: replace the Blinn-Phong glint. `WaterBrdf.h` (pure maths, mirrored in the shader): GGX distribution, Smith visibility, Schlick Fresnel (F0 = 0.02), and a
-    roughness that rises with the variance of the wave slope inside one pixel (distance, small waves).
+  - Acceptance: over 4 km the height field has no autocorrelation peak other than at zero; the significant height and peak wavelength of W6 do not change; boats still float.
+- **O2** `[ ]` A microfacet BRDF whose roughness comes from unresolved wave slope (D11)
+  - What: replace the Blinn-Phong glint. `WaterBrdf.h` (pure maths, mirrored in the shader): GGX distribution, Smith masking, Schlick Fresnel with F0 from the index of refraction (about 0.02), and a
+    roughness that rises with the variance of the slopes of the waves too small to resolve at this pixel (Bruneton). `glintSharpness` is deleted.
   - Tests: `tests/water_brdf_test.cpp`
-  - Acceptance: the GGX distribution integrates to 1 over the hemisphere; head-on Fresnel is 0.02 and 1 at grazing; roughness never falls with distance; sun glint energy
-    does not grow when the roughness goes up.
-- **O3** `[ ]` Ripples from two normal maps
-  - What: replace `RippleSlope` (`ValueNoiseD`). Two tileable normal maps (made on start-up from the noise code, no asset needed) at different scales, scrolling in
-    different directions and speeds, blended with reoriented normal blending, faded by distance into the roughness of O2.
+  - Acceptance: the GGX distribution integrates to 1 over the hemisphere; head-on Fresnel is 0.02 and tends to 1 at grazing; roughness never falls with distance; the sun's peak brightness falls as roughness rises.
+- **O3** `[ ]` Ripples from two normal maps, filtered
+  - What: replace `RippleSlope` (`ValueNoiseD`). Two tileable normal maps (made at start-up) at different scales, scrolling in different directions and speeds, blended with reoriented normal blending; the
+    second moment of each (LEAN) is kept so distant ripples add roughness to O2 instead of flickering.
   - Tests: `tests/water_normal_map_test.cpp`
-  - Acceptance: the map is tileable (the left and right edges agree); the two layers never move the same way; the blended normal is unit length.
-- **O4** `[ ]` Colour from absorption and scattering
-  - What: water colour from coefficients per metre (absorption, scattering), replacing colour + alpha + shallow colour + fade distance. The look is a few numbers with units.
+  - Acceptance: the map is tileable; the layers never move the same way; the blended normal is unit length; the roughness they add grows with distance.
+- **O4** `[ ]` Colour from absorption and scattering, with a wave-peak mask
+  - What: water colour from coefficients per metre (absorption, scattering), mixed with a sub-surface colour at wave crests lit from behind using a peak mask (Sea of Thieves). Replaces colour + alpha + shallow colour +
+    fade distance + `scatter`.
   - Tests: `tests/water_optics_test.cpp`
-  - Acceptance: transmittance falls as exp(-a d); doubling the depth squares the transmittance; clear shallow water shows the bottom, deep water shows none.
-- **O5** `[ ]` Shore from the world water info
-  - What: shoaling (waves grow in shallow water), breaking foam and the swash line read S1 instead of a per-body map. The breaking foam gets its break-up from depth and noise,
-    not only from the phase of a few straight crests, which is what draws the straight bars now.
-  - Acceptance: no foam over deep water; foam follows the shoreline of the island at every LOD.
-- **O6** `[ ]` Editor check of the look
-  - Acceptance: from the island's cliff and from the air the sea does not look like plastic, no pattern slides past, and the horizon has no edge.
+  - Acceptance: transmittance falls as exp(-a d); doubling the depth squares the transmittance; clear shallow water shows the bottom, deep water none.
+- **O5** `[ ]` Waves coming ashore (D9)
+  - What: `ShoreWaves.h`, pure: (a) **dispersion with depth**, w squared = g k tanh(k d), so the wavelength shortens as the water shallows; (b) **shoaling**, height growing with falling depth; (c) **refraction**, the
+    wave direction turning toward the shore with Snell's law from the depth gradient (S1); (d) **breaking**, height limited by the breaker index times the depth, spilling on gentle beaches and plunging on steep ones;
+    (e) the **surf zone**, where height stays proportional to depth behind the break. Replaces `shoreWaves`, `shoreShelter` and the old shore height envelope.
+  - Tests: `tests/shore_waves_test.cpp`
+  - Acceptance: in deep water the speed is sqrt(g / k) and in shallow water sqrt(g d); the period never changes; a crest at an angle to the shore ends up closer to parallel; height never exceeds the breaker limit; in the editor the waves
+    shorten, bend to follow the coast and break in a line that follows the depth contour, on a straight beach and around an island.
+- **O6** `[ ]` Swash and wet sand
+  - What: the waterline slides up and down the beach with the breaking waves, and the sand it wets is darker and glossier, fading after the water has gone (a wetness mask read by `terrain_ps.hlsl`). Replaces `swash`.
+  - Tests: `tests/swash_test.cpp`
+  - Acceptance: run-up grows with wave height and falls with beach slope; wetness decays at a set rate; in the editor the wet band follows the waterline and dries behind it.
+- **O7** `[ ]` Foam as a simulation (D10)
+  - What: `FoamField.h`, pure: one foam value per texel of a camera-centred window that **grows from sources** (wave folding from the Jacobian, breaking from O5, objects crossing the surface from the depth buffer), **decays
+    exponentially**, and is carried by the current. The window moves with the camera in whole texels so the foam does not swim. Wind speed scales the whitecaps. Replaces `crestFoam`, `crestFoamThreshold`, `foamTrail`,
+    `foamIntensity`, the shoreline foam band and the per-wave `breaking` term that draws the straight bars.
+  - Tests: `tests/foam_field_test.cpp`
+  - Acceptance: foam halves in a set time; growth is capped; advection moves foam without changing its total; re-centring the window by whole texels keeps the values; in the editor foam follows the break line, leaves a trail
+    behind a boat's wake later, and the surf bars are gone.
+- **O8** `[ ]` Editor check of the look
+  - Acceptance: from the island's cliff and from the air the sea does not look like plastic, no pattern slides past, the shore has a surf zone with breaking waves, foam that lingers and dies away, and a wet beach; and the horizon has no edge.
 
 ### M4. The first island scene
 - **X1** `[ ]` Scatter on the world
@@ -250,7 +282,7 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - Acceptance: every contract rule in section 6 holds in the saved and re-opened scene.
 
 ### Not planned yet
-Lakes, ponds, rivers and swamps (they return on the same water info), FFT wave cascades, caustics, spray particles, biomes, erosion and generators,
+Lakes, ponds, rivers and swamps (they return on the same water info), FFT wave cascades, caustics, wakes and boat interaction, the underwater volume, spray particles, biomes, erosion and generators,
 camera-relative rendering, cascaded shadows, GPU heights. Each returns to this file only when the scene needs it.
 
 ---
