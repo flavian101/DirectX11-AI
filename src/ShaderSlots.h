@@ -34,7 +34,6 @@ namespace Slots {
     constexpr unsigned int kSrvSceneColor  = 14;  // a copy of the opaque scene, bound only for the water pass (refraction)
     constexpr unsigned int kSrvWaterDepth  = 15;  // R32_FLOAT map of the water's depth over the terrain, bound per water body (VS + PS)
     constexpr unsigned int kSrvTerrainSplat = 16; // RGBA8: the terrain's layer weights (grass, rock, sand, snow), baked from the heightfield (PS)
-    constexpr unsigned int kSrvWaterFlow   = 17;  // RGBA32F: a river's curve as a flow map (distance along, distance across, direction), bound per water body (PS)
 
     // Samplers (PS)
     constexpr unsigned int kSamplerLinear  = 0;  // trilinear + anisotropic, bound once by the renderer

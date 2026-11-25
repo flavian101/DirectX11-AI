@@ -14,13 +14,10 @@ cbuffer WaterMaterial : register(b4) {
     float4 waterWaveInfo;       // x = wave count, y = detail normal strength, z = detail scale, w = detail fade distance
     float4 waterFoamInfo;       // x = crest foam strength, y = crest foam threshold, z = scatter strength, w = debug view
     float4 waterMeshInfo;       // x = LOD distance, y = size of one grid cell at the finest level, z = tallest possible wave
-    float4 waterWind;           // xy = unit direction the waves travel toward (XZ); for a river, the direction of the current
-    float4 waterShape;          // x = 1 when this body has a mirror image bound to t3 this frame, y = shape (0 rectangle, 1 ellipse), z = ellipse edge softness
-    float4 waterFlow;           // x = ripple drift multiplier (1 = wind-blown, river = rides the current), y = sideways ripple drift (1 on, 0 river), z = body type (0 ocean, 1 lake, 2 river, 3 pond), w = flow speed
+    float4 waterWind;           // xy = unit direction the waves travel toward (XZ)
+    float4 waterMirror;         // x = 1 when this body has a mirror image bound to t3 this frame, yzw unused
     float4 waterShore;          // x = 1 when this body's depth map is bound to t15, y = shore wave strength (0 = waves identical everywhere), z = swash, w = shelter (0 = off)
     float4 waterGroupInfo;      // wave groups (WaveGroupFactor): x = strength (0 = off), y = k of the pattern, z = its speed (radians per second)
-    float4 waterRiver;          // lesson 37: x = bank drag, y = how much slower the sides of the plane are, zw = unit vector ACROSS the flow in the body's own (x, z) space
-    float4 waterRiver2;         // x = ripple stretch along the flow, y = rapids (foam in fast shallow water), zw unused
     float4 waterFoam2;          // x = foam bubble scale, y = seconds crest foam lingers, zw unused
     float4 waterWaveDirK[WATER_MAX_WAVES];     // xy = unit direction, z = k (radians per unit), w = amplitude
     float4 waterWaveMotion[WATER_MAX_WAVES];   // x = omega (radians per second), y = steepness Q, z = phase offset
@@ -33,9 +30,7 @@ cbuffer WaterMaterial : register(b4) {
 // Four floats per texel: x = depth, y and z = the unit direction TOWARD the nearest land (world x and z) times how sure we are
 // of it (0 on a flat bottom), w = unused. Blended with the same bilinear weights as the depth, so a headland where two
 // directions oppose cancels to "not sure" (WaterShore::DepthField::SampleToward is the CPU twin).
-// w = how far the water's surface stands above (+) or below (-) the body's own level here, in world units (lesson 41: a river
-// that falls; 0 for every other body). The depth in x already includes it; the vertex shader lifts the surface by it
-// (WaterShore::DepthField::SampleLevel is the CPU twin).
+// w = unused.
 Texture2D<float4> waterDepthMap : register(t15);
 
 float4 SampleWaterShore(float2 local)
@@ -60,29 +55,6 @@ float SampleWaterDepth(float2 local)
     return SampleWaterShore(local).x;   // (the compiler drops the channels this does not use)
 }
 
-// A river's curve (lesson 38), baked on the CPU (src/WaterRiver.h). Same texel layout as the depth map; four floats per texel:
-// x = s (how far along the river), y = d (how far across it, signed, world units), zw = the unit flow direction (world x, z)
-// times a strength: 0.1 + 0.9 * (how fast across the width: 1 in the middle, 0 at the bank), or 0 away from the river.
-// Only bound for a body that has a curve: waterRiver2.z says so.
-Texture2D<float4> waterRiverFlow : register(t17);
-
-float4 SampleRiverFlow(float2 local)
-{
-    uint width, height;
-    waterRiverFlow.GetDimensions(width, height);
-    const float2 size = float2(width, height);
-    const float2 p = saturate(local * 0.5f + 0.5f) * size - 0.5f;
-    const float2 base = floor(p);
-    const float2 t = p - base;
-    const int2 i0 = (int2)base;
-    const int2 maxIndex = int2(width, height) - 1;
-    const float4 d00 = waterRiverFlow.Load(int3(clamp(i0, int2(0, 0), maxIndex), 0));
-    const float4 d10 = waterRiverFlow.Load(int3(clamp(i0 + int2(1, 0), int2(0, 0), maxIndex), 0));
-    const float4 d01 = waterRiverFlow.Load(int3(clamp(i0 + int2(0, 1), int2(0, 0), maxIndex), 0));
-    const float4 d11 = waterRiverFlow.Load(int3(clamp(i0 + int2(1, 1), int2(0, 0), maxIndex), 0));
-    return lerp(lerp(d00, d10, t.x), lerp(d01, d11, t.x), t.y);
-}
-
 // The depth under a point of the plane, or "very deep" when this body has no map (no terrain under it).
 float WaterDepthAt(float2 local)
 {
@@ -93,12 +65,6 @@ float WaterDepthAt(float2 local)
 float3 WaterShoreAt(float2 local)
 {
     return waterShore.x > 0.5f ? SampleWaterShore(local).xyz : float3(1000.0f, 0.0f, 0.0f);
-}
-
-// How far the surface at rest stands above or below the body's level here (a river that falls). 0 without a depth map.
-float WaterLevelAt(float2 local)
-{
-    return waterShore.x > 0.5f ? SampleWaterShore(local).w : 0.0f;
 }
 
 #endif

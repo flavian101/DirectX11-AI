@@ -82,28 +82,13 @@ public:
 		wx = Bilinear(towardX_, localX, localZ);
 		wz = Bilinear(towardZ_, localX, localZ);
 	}
-	// How far the water's surface stands above (+) or below (-) the body's own level, per texel (lesson 41: a river that falls).
-	// The depth already includes it (depth = level + offset - ground); this is for the vertex shader, which lifts the surface by it,
-	// and for the CPU (Water::SampleHeight). Empty = the surface is level everywhere.
-	bool HasLevelOffsets() const { return !levelOffset_.empty(); }
-	const std::vector<float>& LevelOffsets() const { return levelOffset_; }
-	void SetLevelOffsets(std::vector<float> offsets)
-	{
-		if (offsets.size() != static_cast<size_t>(width_) * static_cast<size_t>(height_)) return;
-		levelOffset_ = std::move(offsets);
-	}
-	float SampleLevel(float localX, float localZ) const
-	{
-		return levelOffset_.empty() ? 0.0f : Bilinear(levelOffset_, localX, localZ);
-	}
-	// What the shader's texture holds: four floats per texel, row by row: depth, toward-land x, toward-land z, level offset.
+	// What the shader's texture holds: four floats per texel, row by row: depth, toward-land x, toward-land z, and an unused 0.
 	std::vector<float> PackedTexels() const
 	{
 		std::vector<float> out(depth_.size() * 4, 0.0f);
 		for (size_t i = 0; i < depth_.size(); ++i) {
 			out[i * 4 + 0] = depth_[i];
 			if (!towardX_.empty()) { out[i * 4 + 1] = towardX_[i]; out[i * 4 + 2] = towardZ_[i]; }
-			if (!levelOffset_.empty()) out[i * 4 + 3] = levelOffset_[i];
 		}
 		return out;
 	}
@@ -149,7 +134,6 @@ private:
 	int height_ = 0;
 	std::vector<float> depth_;
 	std::vector<float> towardX_, towardZ_;   // premultiplied unit direction toward land (empty = not computed)
-	std::vector<float> levelOffset_;         // the surface's height relative to the body's level, per texel (empty = level)
 };
 
 // How far (in depth units) the bottom is allowed to matter when finding the shore direction: deeper than this counts as
@@ -227,12 +211,9 @@ inline void ComputeShoreDirections(DepthField& field, float exX, float exZ, floa
 //   toWorld(localX, localZ, worldX, worldZ)   where is this spot of the body in the world?
 //   groundAt(worldX, worldZ, groundY) -> bool the height of the ground there (false = no ground: deep water)
 // The two are passed in, so this code knows nothing about the terrain or the body's transform.
-//   levelOffsets (optional, one per texel)    how far the surface stands above the body's level at that texel: a river that falls
 template <class ToWorld, class GroundAt>
-inline DepthField Bake(int width, int height, float waterLevel, ToWorld&& toWorld, GroundAt&& groundAt,
-					   const std::vector<float>* levelOffsets = nullptr)
+inline DepthField Bake(int width, int height, float waterLevel, ToWorld&& toWorld, GroundAt&& groundAt)
 {
-	const bool sloped = levelOffsets && levelOffsets->size() == static_cast<size_t>(width) * static_cast<size_t>(height);
 	std::vector<float> depth(static_cast<size_t>(width) * static_cast<size_t>(height), kDeepWater);
 	for (int z = 0; z < height; ++z) {
 		const float localZ = (static_cast<float>(z) + 0.5f) / static_cast<float>(height) * 2.0f - 1.0f;
@@ -242,14 +223,12 @@ inline DepthField Bake(int width, int height, float waterLevel, ToWorld&& toWorl
 			toWorld(localX, localZ, worldX, worldZ);
 			if (groundAt(worldX, worldZ, groundY)) {
 				// Clamp so one deep trench cannot dominate the bilinear blend with its neighbours.
-				const float level = waterLevel + (sloped ? (*levelOffsets)[static_cast<size_t>(z) * width + x] : 0.0f);
-				depth[static_cast<size_t>(z) * width + x] = std::min(level - groundY, kDeepWater);
+				depth[static_cast<size_t>(z) * width + x] = std::min(waterLevel - groundY, kDeepWater);
 			}
 		}
 	}
 	DepthField field;
 	field.Reset(width, height, std::move(depth));
-	if (sloped) field.SetLevelOffsets(*levelOffsets);
 	// Which way the land lies, in world space: from how far one texel step moves you in the world.
 	float ox = 0.0f, oz = 0.0f, ax = 0.0f, az = 0.0f, bx = 0.0f, bz = 0.0f;
 	toWorld(0.0f, 0.0f, ox, oz);

@@ -24,12 +24,9 @@ struct WaterMaterialCB {
 	XMFLOAT4 foamInfo;       // crest foam strength, crest foam threshold, scatter strength, debug view
 	XMFLOAT4 meshInfo;       // LOD distance, finest grid cell size, tallest possible wave, unused
 	XMFLOAT4 wind;           // xy = unit direction the waves travel toward
-	XMFLOAT4 shape;          // x = a mirror image is bound for this body this frame, y = shape (0 rect, 1 ellipse), z = ellipse edge softness
-	XMFLOAT4 flow;           // x = ripple drift multiplier (1 = wind-blown), y = sideways ripple drift (1 on, 0 river), z = body type, w = flow speed
+	XMFLOAT4 mirror;         // x = a mirror image is bound for this body this frame, yzw unused
 	XMFLOAT4 shore;          // x = a depth map is bound (t15), y = shore wave strength, z = swash, w = unused
 	XMFLOAT4 groupInfo;      // wave groups: strength (0 = off), k of the pattern, its speed
-	XMFLOAT4 river;          // x = bank drag, y = how much slower the sides of the plane are, zw = unit vector ACROSS the flow in the body's own (x, z) space
-	XMFLOAT4 river2;         // x = ripple stretch along the flow, y = rapids, zw unused
 	XMFLOAT4 foam2;          // x = foam bubble scale, y = seconds crest foam lingers, zw unused
 	XMFLOAT4 waveDirK[WaterWaves::kMaxWaves];     // xy = direction, z = k, w = amplitude
 	XMFLOAT4 waveMotion[WaterWaves::kMaxWaves];   // x = omega, y = steepness, z = phase offset
@@ -286,12 +283,7 @@ void Water::UploadMaterial(bool mirrored) const
 	block.shore = { depthView_ ? 1.0f : 0.0f, settings_.shoreWaves, settings_.swash, settings_.shoreShelter };
 	block.groupInfo = { waves_.groupStrength, waves_.groupK, waves_.groupSpeed, 0.0f };
 	block.foam2 = { settings_.foamScale, settings_.foamTrail, 0.0f, 0.0f };
-	// The fields the shader still reads for rivers and round bodies stay in the buffer so the layout does not move (they leave with the water shader's
-	// rewrite, roadmap O1 to O4): ripples drift with the wind at the pace they always had, sideways drift on, an ocean, a rectangle.
-	block.flow = { 1.0f, 1.0f, 0.0f, 0.0f };
-	block.river = { 0.0f, 0.0f, 1.0f, 0.0f };
-	block.river2 = { 1.0f, 0.0f, 0.0f, 0.0f };
-	block.shape = { mirrored ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
+	block.mirror = { mirrored ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
 	for (int i = 0; i < waves_.count; ++i) {
 		const WaterWaves::Wave& w = waves_.waves[i];
 		block.waveDirK[i] = { w.dirX, w.dirZ, w.k, w.amplitude };
@@ -602,15 +594,14 @@ void Water::RefreshShoreDepth(const std::vector<const TerrainWorld*>& worlds, st
 				found = true;
 			}
 			return found;
-		},
-		nullptr);
+		});
 
 	D3D11_TEXTURE2D_DESC desc{};
 	desc.Width = static_cast<UINT>(width);
 	desc.Height = static_cast<UINT>(height);
 	desc.MipLevels = 1;
 	desc.ArraySize = 1;
-	desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;   // depth, toward-land x, toward-land z, level offset (lesson 41)
+	desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;   // depth, toward-land x, toward-land z, unused
 	desc.SampleDesc.Count = 1;
 	desc.Usage = D3D11_USAGE_IMMUTABLE;   // a new map is made whenever the numbers change: it is never edited in place
 	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;

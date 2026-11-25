@@ -118,9 +118,7 @@ Done with this roadmap: `WorldTileFile` (the baked tile file; nothing read it) i
     sections are gone, and the Waves section shows only what the wind sea uses. Saved look presets (`.waterpreset`) stay: a look is a user's file, not a patch.
   - Kept on purpose, because they are REPLACED later rather than deleted: `size` / `sizeZ` / `kSizeMax` and the plane mesh (S5), `meshDetail` / `lodDistance`
     (S5), the per-body depth map (S1). `waveScale` stays too: for the wind sea it is only an exaggeration of the wave HEIGHT.
-  - Not touched, and why: the water shader (`water_ps.hlsl`, `water_vs.hlsl`, `water_material.hlsli`) still has its river branches, and the constant buffer still has the
-    river fields (the C++ sends zeros), plus the unused slot `kSrvWaterFlow`. I could not compile HLSL here, and a wrong edit would give an invisible sea; they go with the
-    shader rewrite (O2 to O4). The terrain's own river code (`RiverPath`, `RiverCarve`, `WorldRivers`, `CarveRiver`, `river_test`) goes with T1.
+  - The water shader's river code was left for T4 (below), which has now landed. The terrain's own river code goes with H7.
   - Tests: `tests/water_test.cpp`, `tests/water_settings_test.cpp`, `tests/sea_state_test.cpp`, `tests/buoyancy_test.cpp`, `tests/water_preset_test.cpp`
   - Acceptance (for `[x]`): in the editor, Add shows only Ocean; an ocean can be added, saved, re-opened and edited; its Waves section follows the scene's wind; boats still
     float on it.
@@ -135,11 +133,13 @@ Done with this roadmap: `WorldTileFile` (the baked tile file; nothing read it) i
   - Tests: `tests/scene_version_test.cpp`
   - Acceptance (for `[x]`): opening a version-2 scene in the editor shows the message and changes nothing; a scene saved now opens again.
 
-- **T4** `[ ]` Water shader: delete the river branches
-  - What: with DXC available, remove from `water_ps.hlsl`, `water_vs.hlsl` and `water_material.hlsli` the river, flow, bank, rapids and ellipse code, and from `Water.cpp` the matching
-    constant-buffer fields (`flow`, `river`, `river2`, the shape flag) and `Slots::kSrvWaterFlow`. The shader and the C++ buffer change together.
-  - Tests: none that run (shaders); acceptance is a clean DXC compile of every water shader, and an ocean that looks the same in the editor.
-  - Acceptance (for `[x]`): the ocean in the editor is unchanged; a search for `river` in `shaders/` and `Water.cpp` finds nothing.
+- **T4** `[~]` Water shader: delete the river branches
+  - Done: `water_ps.hlsl`, `water_vs.hlsl` and `water_material.hlsli` have no river, flow, bank, rapids, ellipse or falling-surface code. The ripples keep their old look (two layers drifting
+    with the wind). The constant block lost `waterFlow`, `waterRiver`, `waterRiver2`; `waterShape` is `waterMirror` (one flag). `Water.cpp`'s mirror struct lost the same fields, `kSrvWaterFlow`
+    (slot 17) is gone, and the depth map's fourth channel (the level offset of a falling river) is gone from `WaterShore::Bake` and the packed texels.
+  - Checked: all 16 shaders in the shaders folder compile with DXC at shader model 6.0; the depth-map bake is covered by the test below.
+  - Tests: `tests/water_test.cpp`
+  - Acceptance (for `[x]`): the ocean in the editor looks the same as before this commit, in a sea with a shore and in the open sea; no shader compile error appears in the console.
 
 ### M1. One ground
 Pure logic first (no Direct3D, built and tested on any compiler), then wired into the editor.
