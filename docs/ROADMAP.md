@@ -247,22 +247,24 @@ change checked with DXC.
   - Tests: `tests/sea_state_test.cpp`
   - Editor check to do: Weather > Wind > Speed from 3 to 25 m/s makes the open sea taller, longer and faster (the Waves panel shows the numbers); a lake in the
     same wind stays small; moving a body or changing its size never changes its waves (an ocean) or only its fetch (a lake).
-- **O1** `[ ]` A sea spectrum (D7)
-  - What: `SeaSpectrum.h`, pure: the energy of the sea as a function of wavenumber and direction, from the wind speed, the fetch and the depth (the JONSWAP shape, made finite-depth by the TMA
-    correction, so waves get shorter and lower as the seabed rises), times a directional spread, sampled as complex amplitudes on an N x N grid for a patch of side L with a seeded Gaussian
-    random number. It is cut into three bands (swell, wind sea, ripples), each with its own patch size, so no patch repeats within sight. `SeaState` (W6) already knows the significant height and the
-    peak wavelength: the spectrum must agree with it.
+- **O1** `[~]` A sea spectrum (D7)
+  - Done: `src/SeaSpectrum.h`, pure. The 2-D spectrum of the sea from `SeaState`'s own numbers: the scaled JONSWAP density turned into energy per wave vector with the depth-aware dispersion, the
+    directional spread `SeaState` defines (normalised), and the TMA shallow-water correction; cut into three bands (swell 2 km patch, wind sea 250 m, ripples 30 m, meeting at 0.15 and 1.2 rad/m) and
+    sampled as complex amplitudes with a seeded, order-independent Gaussian. The three bands together give `SeaState`'s significant height to within 0.6% for winds from 5 to 18 m/s.
+  - Not wired into anything yet: the water still draws the 16 Gerstner waves. It is read by O2.
   - Tests: `tests/sea_spectrum_test.cpp`
-  - Acceptance: the significant height from the spectrum's variance matches `SeaState` within a few per cent; the amplitudes are Hermitian (so the sea is real); the same seed gives the same sea; no
-    energy outside a band's wavenumber range; a stronger wind gives longer and taller waves; shallower water gives shorter, lower waves.
+  - Acceptance (for `[x]`): nothing to see on its own; it is accepted with O2. (The tests check: height agrees with `SeaState`; the amplitudes make a real sea; no energy outside a band; the same seed is the
+    same sea; a stronger wind is taller; down-wind beats cross-wind; shallow water holds less and slower long waves.)
 - **O2** `[ ]` FFT cascades, on the GPU with an exact CPU mirror (D7)
-  - What: `OceanFFT.h`, pure: a radix-2 inverse FFT in 2D, and the time step that turns the O1 amplitudes into height, horizontal displacement (the choppy waves) and slopes using the dispersion
-    relation (depth included, so the waves slow in shallow water); the Jacobian of the displacement is what O8's foam reads. A compute shader (checked with DXC at `cs_6_0`) does the same on the GPU
-    for three cascades and feeds the water's vertex and pixel shaders. Boats need the heights on the CPU, the same for everybody: the CPU mirror runs the same FFT for the coarse cascades at a small size
-    and `Buoyancy` reads it; it is the reference the GPU result is tested against. The 16-slot wave table and `WaterWaves` are deleted when this lands.
+  - Done so far: `src/OceanFFT.h`, pure: a radix-2 2-D inverse FFT; the time step giving height, choppy displacement, slopes and the Jacobian of the displacement for one band; `Surface::HeightAt` (periodic,
+    bilinear) and `SeaHeightAt` (the bands added): this is the CPU mirror and the GPU's reference. Checked: a single wave moves at exactly omega / k toward +k, deep or shallow; the sea is real, periodic and has the
+    spectrum's variance; the slopes are exact; the Jacobian is 1 with no choppiness, falls as it grows and goes negative where a storm folds.
+  - Still to do: the compute shader (checked with DXC at `cs_6_0`) and its D3D11 resources, three cascades feeding the water's vertex and pixel shaders, `Buoyancy` reading the CPU mirror, and deleting the 16-slot
+    wave table, `WaterWaves` and the settings that only it used.
+  - What: the rest of this item is the GPU half. Boats need the heights on the CPU, the same for everybody: the CPU mirror runs the same FFT for the coarse cascades at a small size and `Buoyancy` reads it; it is the
+    reference the GPU result is tested against.
   - Tests: `tests/ocean_fft_test.cpp`
-  - Acceptance: the inverse FFT of a single wave is that wave, to rounding; the field is real, periodic in the patch and has the spectrum's variance (Parseval); a wave's phase moves at its dispersion speed;
-    the displaced surface does not fold where the Jacobian stays positive; the CPU and GPU heights agree at test points; boats still float; over 4 km there is no repeating pattern.
+  - Acceptance: the CPU and GPU heights agree at test points; boats still float; over 4 km there is no repeating pattern; the straight surf bars and the "structures drifting" are gone.
 - **O3** `[ ]` A microfacet BRDF whose roughness comes from unresolved wave slope (D11)
   - What: replace the Blinn-Phong glint. `WaterBrdf.h` (pure maths, mirrored in the shader): GGX distribution, Smith masking, Schlick Fresnel with F0 from the index of refraction (about 0.02), and a
     roughness that rises with the variance of the slopes of the waves too small to resolve at this pixel (Bruneton). `glintSharpness` is deleted.

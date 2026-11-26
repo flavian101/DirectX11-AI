@@ -278,6 +278,14 @@ if(BUILD_TESTS)
     target_include_directories(WorldMaterialTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME WorldMaterial COMMAND WorldMaterialTests)
 
+    # The sea's spectrum, and its FFT in time (roadmap O1, O2).
+    add_executable(SeaSpectrumTests tests/sea_spectrum_test.cpp)
+    target_include_directories(SeaSpectrumTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME SeaSpectrum COMMAND SeaSpectrumTests)
+    add_executable(OceanFFTTests tests/ocean_fft_test.cpp)
+    target_include_directories(OceanFFTTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME OceanFFT COMMAND OceanFFTTests)
+
     add_executable(WorldGridTests tests/world_grid_test.cpp src/WorldGrid.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
     target_include_directories(WorldGridTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME WorldGrid COMMAND WorldGridTests)
