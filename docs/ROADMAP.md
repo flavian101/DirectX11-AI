@@ -210,11 +210,14 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
     of foam (Crest). Streamed with the tiles. A tile that is not loaded is never deep ocean inside the world (it is "unknown", and the sea waits).
   - Tests: `tests/world_sea_test.cpp`
   - Acceptance: the depth equals the ground the player sees at every tile LOD, within the wave margin.
-- **S2** `[ ]` Where the sea is, and where it is not (decision D3)
-  - What: connectivity from the open sea (flood fill on the coarse raster) and exclusion boxes. An inland hollow below sea level stays dry; cutting a channel to the sea
-    floods it when the stroke ends.
-  - Tests: `tests/world_sea_test.cpp` (shared with S1)
-  - Acceptance: a test island with a hollow below sea level has no ocean in the hollow; opening a channel puts ocean in it; a box excludes a coast basin.
+- **S2** `[~]` Where the sea is, and where it is not (decision D3)
+  - Done: the ocean is the water below sea level that is JOINED to the open sea (`WaterShore::KeepOnlyConnectedSea`, run inside the depth bake): wet texels connected, through wet texels, to a wet texel
+    on the edge of the map. A hollow below sea level with a rim all round it is dry (negative depth, so the shore direction, the foam and the see-through edge treat it as land); cut a channel to the
+    sea and it floods the next time the depth map is measured.
+  - Not done: exclusion boxes. The rule runs on each ocean's own depth map until S1 makes one world raster, so the edge of the ocean plane is what counts as "the open sea": an ocean plane that sits
+    entirely inside a bay (its edge all land) would be dry. Until S5 removes the plane, make it reach the sea.
+  - Tests: `tests/water_test.cpp`
+  - Acceptance (for `[x]`): in the editor a hollow below sea level inside an island has no water; sculpt a channel from the sea to it and it fills when the stroke ends.
 - **S3** `[ ]` Shore tiles at full detail
   - What: a tile whose bounds are within the wave margin of the sea level is drawn at LOD 0, so a coarse mesh cannot dip below the sea over dry land.
   - Acceptance: editor check first: force all tiles to LOD 0 and see whether the ocean-through-land artefact disappears. If it does not, the cause is elsewhere

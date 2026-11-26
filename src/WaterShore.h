@@ -211,6 +211,38 @@ inline void ComputeShoreDirections(DepthField& field, float exX, float exZ, floa
 //   toWorld(localX, localZ, worldX, worldZ)   where is this spot of the body in the world?
 //   groundAt(worldX, worldZ, groundY) -> bool the height of the ground there (false = no ground: deep water)
 // The two are passed in, so this code knows nothing about the terrain or the body's transform.
+// What the ocean is, and is not (roadmap S2, decision D3): a texel is OCEAN when its ground is below the water AND it is joined to the open sea, that is,
+// to a wet texel on the edge of the map, through wet texels (4 neighbours). A hollow below sea level in the middle of an island, with a rim all round
+// it, is NOT ocean: it stays dry until a channel is cut to the sea. Such texels are given kDryHollow, like any other dry ground (negative depth), so the
+// shore direction, the foam and the see-through edge treat them as land. The map's edge is where the sea is assumed to carry on beyond the map.
+constexpr float kDryHollow = -1.0f;
+
+inline void KeepOnlyConnectedSea(std::vector<float>& depth, int width, int height)
+{
+	if (width <= 0 || height <= 0 || depth.size() != static_cast<size_t>(width) * static_cast<size_t>(height)) return;
+	std::vector<unsigned char> sea(depth.size(), 0);
+	std::vector<int> stack;
+	auto seed = [&](int x, int z) {
+		const size_t i = static_cast<size_t>(z) * width + x;
+		if (depth[i] > 0.0f && !sea[i]) { sea[i] = 1; stack.push_back(static_cast<int>(i)); }
+	};
+	for (int x = 0; x < width; ++x) { seed(x, 0); seed(x, height - 1); }
+	for (int z = 0; z < height; ++z) { seed(0, z); seed(width - 1, z); }
+	while (!stack.empty()) {
+		const int i = stack.back();
+		stack.pop_back();
+		const int x = i % width, z = i / width;
+		auto visit = [&](int nx, int nz) {
+			if (nx < 0 || nz < 0 || nx >= width || nz >= height) return;
+			const size_t j = static_cast<size_t>(nz) * width + nx;
+			if (depth[j] > 0.0f && !sea[j]) { sea[j] = 1; stack.push_back(static_cast<int>(j)); }
+		};
+		visit(x - 1, z); visit(x + 1, z); visit(x, z - 1); visit(x, z + 1);
+	}
+	for (size_t i = 0; i < depth.size(); ++i)
+		if (depth[i] > 0.0f && !sea[i]) depth[i] = kDryHollow;
+}
+
 template <class ToWorld, class GroundAt>
 inline DepthField Bake(int width, int height, float waterLevel, ToWorld&& toWorld, GroundAt&& groundAt)
 {
@@ -227,6 +259,7 @@ inline DepthField Bake(int width, int height, float waterLevel, ToWorld&& toWorl
 			}
 		}
 	}
+	KeepOnlyConnectedSea(depth, width, height);   // a hollow below the water that the sea does not reach is dry land
 	DepthField field;
 	field.Reset(width, height, std::move(depth));
 	// Which way the land lies, in world space: from how far one texel step moves you in the world.

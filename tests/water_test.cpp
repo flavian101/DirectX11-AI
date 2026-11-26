@@ -223,6 +223,52 @@ static void TestShoaling()
 	CHECK(worst < 0.03f * table.heightBound);
 }
 
+// S2: the ocean is the part of the water below sea level that is JOINED to the open sea. A hollow with a rim all round it is dry; cut a channel to the
+// sea and it floods.
+static void TestSeaConnectivity()
+{
+	// A square of side 200 m: sea floor at -10 m, a ring of land (+5 m) at 45..60 % of the half-width round a hollow whose floor is also -10 m.
+	auto ground = [](bool channel) {
+		return [channel](float wx, float wz, float& y) {
+			const float distance = std::sqrt(wx * wx + wz * wz) / 100.0f;
+			y = -10.0f;
+			if (distance >= 0.45f && distance <= 0.60f) y = 5.0f;                       // the rim
+			if (channel && wx > 0.0f && std::fabs(wz) < 12.0f) y = -10.0f;                // a cut through the rim, to the east
+			return true;
+		};
+	};
+	auto toWorld = [](float lx, float lz, float& wx, float& wz) { wx = lx * 100.0f; wz = lz * 100.0f; };
+	const WaterShore::DepthField closed = WaterShore::Bake(64, 64, 0.0f, toWorld, ground(false));
+	const WaterShore::DepthField open = WaterShore::Bake(64, 64, 0.0f, toWorld, ground(true));
+	CHECK(closed.Sample(-0.9f, 0.0f) > 0.0f && closed.Sample(0.9f, 0.9f) > 0.0f);   // the sea outside the rim is sea
+	CHECK(closed.Sample(0.52f, 0.0f) < 0.0f);                                          // the rim is land
+	CHECK(closed.Sample(0.0f, 0.0f) < 0.0f && closed.Sample(0.2f, -0.1f) < 0.0f);      // the hollow is DRY although its floor is below the water
+	CHECK(open.Sample(0.0f, 0.0f) > 0.0f && open.Sample(0.2f, -0.1f) > 0.0f);          // cut a channel and the sea comes in
+	CHECK(open.Sample(0.0f, 0.52f) < 0.0f);                                            // the rest of the rim is still land
+	// The depth where the sea is, is untouched by the rule: it only dries what the sea does not reach.
+	CHECK(std::fabs(closed.Sample(-0.9f, 0.0f) - open.Sample(-0.9f, 0.0f)) < 1e-5f);
+	// A beach (sea on one side, land on the other) and open water with no ground are all sea or land as before.
+	const WaterShore::DepthField none = WaterShore::Bake(8, 8, 0.0f, toWorld, [](float, float, float&) { return false; });
+	CHECK(none.Sample(0.0f, 0.0f) == WaterShore::kDeepWater);
+	// The rule on a plain array: only wet texels joined to a wet edge texel stay wet.
+	std::vector<float> depth = {  1, 1, 1, 1, 1,
+								 -2,-2,-2,-2, 1,
+								  1, 1, 1,-2, 1,   // wet texels that touch the left edge of the map
+								 -2,-2,-2,-2, 1,
+								 -2, 3, 3, 3,-2 };   // a row of wet texels at the bottom touching the bottom edge: sea
+	WaterShore::KeepOnlyConnectedSea(depth, 5, 5);
+	CHECK(depth[10] == 1.0f && depth[11] == 1.0f && depth[12] == 1.0f);   // touches the left edge of the map: joined to the sea
+	CHECK(depth[21] == 3.0f && depth[22] == 3.0f && depth[23] == 3.0f);   // touches the bottom edge: joined to the sea
+	std::vector<float> pocket = { 1, 1, 1, 1, 1,
+								  1,-2,-2,-2, 1,
+								  1,-2, 4,-2, 1,   // an island lake: wet texel in the middle, ringed by land
+								  1,-2,-2,-2, 1,
+								  1, 1, 1, 1, 1 };
+	WaterShore::KeepOnlyConnectedSea(pocket, 5, 5);
+	CHECK(pocket[12] == WaterShore::kDryHollow);   // dry
+	CHECK(pocket[0] == 1.0f && pocket[6] == -2.0f);  // the sea and the land are untouched
+}
+
 // The depth map: bilinear reads, the bake, and how big it is for a pond and for a river.
 static void TestShoreMap()
 {
@@ -567,6 +613,7 @@ int main()
 	TestWaves();
 	TestShoaling();
 	TestShoreMap();
+	TestSeaConnectivity();
 	TestSeaTable();
 	TestTileGrowth();
 	TestShoreDirections();
