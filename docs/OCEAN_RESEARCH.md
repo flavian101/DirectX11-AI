@@ -82,10 +82,10 @@ Combining Crest, Sea of Thieves, Godot, Unity and the whitecaps paper:
 
 ## 6. What we take (decisions for the roadmap)
 
-1. **D7 (our call).** The sea's **waves are a spectrum in three bands** (swell, wind sea, ripples), as in Unity. Today's 16 waves is the part that repeats and
-   looks like drifting structures. FFT is what every engine above uses, but our boats need the wave height on the CPU, deterministically (Sea of Thieves had to keep waves the
-   same for every player). So: first a **structured buffer of 64 or more Gerstner components** over the three bands (cheap, exact on the CPU); FFT cascades only if that
-   proves not enough, and then with a CPU mirror. Stated as a trade-off to confirm.
+1. **D7 (decided: FFT).** The sea's waves are a **spectrum in three bands** (swell, wind sea, ripples), simulated with **FFT cascades** on the GPU, as in Unity, Sea of Thieves, Atlas and the Godot
+   ocean. Today's 16 waves is the part that repeats and looks like drifting structures. Our boats need the wave height on the CPU, and the same for every player (Sea of Thieves had to keep waves
+   in step), so the same spectrum is also run by a **CPU mirror** at a small size for the coarse cascades; it is the reference the GPU is tested against. The spectrum is JONSWAP-shaped with the
+   depth correction, so the sea and the shore waves (D9) agree about depth.
 2. **D8.** The seabed is the **world's ground function**: wave damping, shore foam, colour and wave refraction all read the world water info (S1); the ground is
    given a great depth outside the world so there is no step (Crest).
 3. **D9.** **Shore waves are modelled, not faked from the wind sea:** depth-dependent dispersion and shoaling, refraction toward the shore, breaking by breaker index, a
