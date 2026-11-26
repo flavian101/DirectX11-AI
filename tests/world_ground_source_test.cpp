@@ -6,10 +6,12 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <string>
 
 static int failures = 0;
 #define CHECK(cond) do { if (!(cond)) { std::printf("FAIL line %d: %s\n", __LINE__, #cond); ++failures; } } while (0)
 static bool Near(double a, double b, double eps) { return std::fabs(a - b) <= eps; }
+static const char* TerrainPicturePath() { return "assets/dark alien/Height Map.png"; }   // the world's default picture (run from the repository root)
 
 // A 5 x 5 raster, 10 m between samples, the corner at (100, 200): metres rise by 3 per sample along x, 2 along z, from 50.
 static std::shared_ptr<HeightRaster> MakeRamp()
@@ -81,8 +83,30 @@ static void TestDetail()
     CHECK(a.Height01(131.3, 244.7) == b.Height01(131.3, 244.7));
 }
 
+// H8: a picture is placed by its CENTRE. At (0, 0) the middle of the ground is the middle of the world, whatever the picture's size or shape, and
+// moving the centre moves every point by exactly that much (the heights do not change, only where they are).
+static void TestPlacedByItsCentre()
+{
+    const char* path = TerrainPicturePath();
+    for (double width : { 1024.0, 3000.0 }) {
+        HeightImportSettings import;
+        import.widthMetres = width;
+        std::shared_ptr<const HeightRaster> at00, moved;
+        WorldPictureInfo info;
+        std::string error;
+        if (!ImportWorldRaster(path, import, 4.0, 0.0, 0.0, at00, info, error)) { std::printf("FAIL: %s\n", error.c_str()); ++failures; return; }
+        CHECK(Near(at00->originX + 0.5 * at00->SizeX(), 0.0, 1e-6) && Near(at00->originZ + 0.5 * at00->SizeZ(), 0.0, 1e-6));
+        CHECK(Near(at00->SizeX(), width, 1e-3));
+        CHECK(info.valid && info.widthPixels > 1 && info.stats.highest > info.stats.lowest);
+        CHECK(ImportWorldRaster(path, import, 4.0, 500.0, -250.0, moved, info, error));
+        CHECK(Near(moved->originX - at00->originX, 500.0, 1e-6) && Near(moved->originZ - at00->originZ, -250.0, 1e-6));
+        CHECK(moved->metres == at00->metres);   // the same heights
+    }
+}
+
 int main()
 {
+    TestPlacedByItsCentre();
     TestRasterUnits();
     TestRangeEnds();
     TestDetail();

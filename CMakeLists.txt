@@ -270,7 +270,7 @@ if(BUILD_TESTS)
     # The ground of a world in metres: raster and detail layers (roadmap H7).
     add_executable(WorldGroundSourceTests tests/world_ground_source_test.cpp src/WorldGroundSource.cpp src/WorldGrid.cpp src/HeightDetail.cpp src/HeightRaster.cpp src/HeightSample.cpp src/HeightStats.cpp src/HeightDeterrace.cpp src/HeightPicture.cpp src/Png16.cpp src/libs/stb_image.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
     target_include_directories(WorldGroundSourceTests PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/libs)
-    add_test(NAME WorldGroundSource COMMAND WorldGroundSourceTests)
+    add_test(NAME WorldGroundSource COMMAND WorldGroundSourceTests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
     add_executable(WorldGridTests tests/world_grid_test.cpp src/WorldGrid.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
     target_include_directories(WorldGridTests PRIVATE ${CMAKE_SOURCE_DIR}/src)

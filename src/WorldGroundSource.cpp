@@ -29,7 +29,7 @@ float DetailedHeightSource::Height01(double worldX, double worldZ) const
     return std::clamp(static_cast<float>(static_cast<double>(ground) + bump), 0.0f, 1.0f);
 }
 
-bool ImportWorldRaster(const std::string& path, const HeightImportSettings& settings, double cellMetres,
+bool ImportWorldRaster(const std::string& path, const HeightImportSettings& settings, double cellMetres, double centreX, double centreZ,
                        std::shared_ptr<const HeightRaster>& raster, WorldPictureInfo& info, std::string& error)
 {
     info = WorldPictureInfo{};
@@ -41,6 +41,8 @@ bool ImportWorldRaster(const std::string& path, const HeightImportSettings& sett
         error = "the picture could not be turned into ground";
         return false;
     }
+    imported.originX = centreX - 0.5 * imported.SizeX();   // placed by its centre (H8)
+    imported.originZ = centreZ - 0.5 * imported.SizeZ();
     info.valid = true;
     info.widthPixels = picture.width;
     info.heightPixels = picture.height;

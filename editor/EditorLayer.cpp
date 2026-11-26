@@ -2304,11 +2304,11 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
         if (ImGui::SliderFloat("Width (km)", &widthKm, TerrainWorldSettings::kPictureWidthMin / 1000.0f, 20.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) s.pictureWidth = widthKm * 1000.0f;
         commitOnRelease();
         ImGui::SetItemTooltip("How wide the picture is in the world. Its depth follows its shape.");
-        ImGui::DragFloat("Corner X (m)", &s.pictureOffsetX, 1.0f, -TerrainWorldSettings::kPictureOffsetMax, TerrainWorldSettings::kPictureOffsetMax, "%.0f");
+        ImGui::DragFloat("Centre X (m)", &s.pictureCentreX, 1.0f, -TerrainWorldSettings::kPictureCentreMax, TerrainWorldSettings::kPictureCentreMax, "%.0f");
         commitOnRelease();
-        ImGui::DragFloat("Corner Z (m)", &s.pictureOffsetZ, 1.0f, -TerrainWorldSettings::kPictureOffsetMax, TerrainWorldSettings::kPictureOffsetMax, "%.0f");
+        ImGui::DragFloat("Centre Z (m)", &s.pictureCentreZ, 1.0f, -TerrainWorldSettings::kPictureCentreMax, TerrainWorldSettings::kPictureCentreMax, "%.0f");
         commitOnRelease();
-        ImGui::SetItemTooltip("Where the picture's top-left corner is, in world metres.");
+        ImGui::SetItemTooltip("Where the middle of the picture is, in world metres. 0, 0 puts the middle of the island at the middle of the world.");
         if (!world->StatusMessage().empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s", world->StatusMessage().c_str());
     } else {
         ImGui::InputInt("Seed", &s.fractal.seed);

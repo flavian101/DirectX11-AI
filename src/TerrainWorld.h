@@ -28,13 +28,14 @@ struct TerrainWorldSettings {
     WorldGridSettings grid;         // tile size and metres per cell (8 chunks x 32 cells x 4 m = 1024 m tiles)
     WorldSourceKind source = WorldSourceKind::Fractal;
     FractalWorldSettings fractal;   // the hills: seed, octaves, size of the biggest features in metres (source Fractal)
-    // Source Picture: an 8-bit or 16-bit greyscale image. Its top-left corner is at (pictureOffsetX, pictureOffsetZ) in world
-    // metres, it is `pictureWidth` metres wide and its depth follows its shape, like the old terrain. Empty path: the default
+    // Source Picture: an 8-bit or 16-bit greyscale image. Its CENTRE is at (pictureCentreX, pictureCentreZ) in world
+    // metres (0, 0 by default: the middle of the island is the middle of the world), it is `pictureWidth` metres wide and its depth follows
+    // its shape. Empty path: the default
     // heightmap. The world is bounded to the tiles covering the picture (the `bounds` below are ignored).
     std::string picturePath;
     static constexpr const char* kDefaultPicturePath = "assets/dark alien/Height Map.png";   // used when picturePath is empty
     float pictureWidth = 1024.0f;
-    float pictureOffsetX = 0.0f, pictureOffsetZ = 0.0f;
+    float pictureCentreX = 0.0f, pictureCentreZ = 0.0f;
     // The edge of the world for the Fractal source: unbounded (endless) unless bounded is set. A bounded fractal world is a
     // rectangle of tiles, which is also how a small test world is made.
     WorldBounds bounds;
@@ -47,7 +48,7 @@ struct TerrainWorldSettings {
     float viewDistance = 5000.0f;   // tiles closer than this to the camera are loaded (far ones at a lower level of detail)
 
     static constexpr float kPictureWidthMin = 40.0f, kPictureWidthMax = 20000.0f;
-    static constexpr float kPictureOffsetMax = 100000.0f;
+    static constexpr float kPictureCentreMax = 100000.0f;
     static constexpr float kViewDistanceMin = 500.0f, kViewDistanceMax = 8000.0f;
     static constexpr float kBaseHeightMin = -1000.0f, kBaseHeightMax = 1000.0f;   // metres
     static constexpr int kMaxTiles = 256;   // however far you look, at most this many tiles are alive (far tiles are cheap: 1/4, 1/16, 1/64 of the cells)

@@ -52,6 +52,7 @@ struct WorldPictureInfo {
 
 // Reads a picture and imports it (H1, H4) and shrinks it to the world's lattice (H3): when the picture is finer than one cell the raster is
 // averaged down to the cell size, once, so a thin ridge neither vanishes nor aliases into stairs. False, with the reason in `error`, if the
-// picture cannot be read or is not usable.
-bool ImportWorldRaster(const std::string& path, const HeightImportSettings& settings, double cellMetres,
+// picture cannot be read or is not usable. The picture is placed by its CENTRE: (centreX, centreZ) is the world position of the middle of its
+// ground, whatever its size (roadmap H8: the middle of an island is the middle of the world).
+bool ImportWorldRaster(const std::string& path, const HeightImportSettings& settings, double cellMetres, double centreX, double centreZ,
                        std::shared_ptr<const HeightRaster>& raster, WorldPictureInfo& info, std::string& error);

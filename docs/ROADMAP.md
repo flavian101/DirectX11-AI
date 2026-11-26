@@ -182,10 +182,12 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - Tests: `tests/world_ground_source_test.cpp`, `tests/world_edits_test.cpp`, `tests/world_height_test.cpp`, `tests/world_base_height_test.cpp`, `tests/water_visibility_test.cpp`, `tests/tile_patch_test.cpp`
   - Acceptance (for `[x]`): in the editor the dark-alien picture imports with its true range, a sea-level coast has no stairs, the detail slider adds bumps of the stated height, and the Ground panel
     shows the numbers it should.
-- **H8** `[ ]` A new world is centred (decision D2)
-  - What: New World makes symmetric bounds; the world's picture is centred on the origin; sea level defaults to 0.
-  - Tests: `tests/world_grid_test.cpp` (extended)
-  - Acceptance: the middle of the island is at (0, 0); moving the picture never moves the grid.
+- **H8** `[~]` A new world is centred (decision D2)
+  - Done: a picture is placed by its CENTRE (`pictureCentreX/Z`, 0 and 0 by default), not by its corner (`pictureOffsetX/Z` is gone), so the middle of an island is the middle of the world, whatever
+    the picture's size or shape; the world's tiles are the ones covering the centred picture. The grid maths is unchanged (tile (0,0) still starts at the origin). Sea level defaults to Y = 0
+    (the ocean and the world's lowest ground), so a picture whose lowest pixels are the sea floor needs a negative lowest ground, e.g. -150 m.
+  - Tests: `tests/world_ground_source_test.cpp`
+  - Acceptance (for `[x]`): a new world made from the dark-alien picture has the middle of the island at (0, 0); moving the centre moves the island and never the grid; the ocean at Y = 0 meets its coast.
 - **H9** `[ ]` Editor check of the whole ground
   - What: import the dark-alien picture, fit it, fly around, sculpt, scatter.
   - Acceptance: flat areas appear only where the file is flat; peaks are rounded and complete; no stairs. Then H1 to H8 can become `[x]`.

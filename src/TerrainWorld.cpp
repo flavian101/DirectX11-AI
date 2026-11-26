@@ -15,8 +15,8 @@ void TerrainWorldSettings::Clamp()
     fractal.baseWavelength = std::clamp(fractal.baseWavelength, 50.0f, 50000.0f);
     if (source != WorldSourceKind::Fractal && source != WorldSourceKind::Picture) source = WorldSourceKind::Fractal;   // a scene file from a newer version
     pictureWidth = std::clamp(pictureWidth, kPictureWidthMin, kPictureWidthMax);
-    pictureOffsetX = std::clamp(pictureOffsetX, -kPictureOffsetMax, kPictureOffsetMax);
-    pictureOffsetZ = std::clamp(pictureOffsetZ, -kPictureOffsetMax, kPictureOffsetMax);
+    pictureCentreX = std::clamp(pictureCentreX, -kPictureCentreMax, kPictureCentreMax);
+    pictureCentreZ = std::clamp(pictureCentreZ, -kPictureCentreMax, kPictureCentreMax);
     bounds.Normalize();
     detail.Clamp();
     heightScale = std::clamp(heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax);
@@ -70,14 +70,12 @@ void TerrainWorld::BuildSource()
         const std::string path = settings_.picturePath.empty() ? std::string(TerrainWorldSettings::kDefaultPicturePath) : settings_.picturePath;
         HeightImportSettings import;
         import.widthMetres = settings_.pictureWidth;
-        import.originX = settings_.pictureOffsetX;
-        import.originZ = settings_.pictureOffsetZ;
         import.lowestY = settings_.baseHeight;       // the picture's lowest pixel is the lowest ground, its highest pixel is `heightScale` above it (H1)
         import.relief = settings_.heightScale;
         import.deterrace = settings_.deterrace;
         std::shared_ptr<const HeightRaster> raster;
         std::string error;
-        if (!ImportWorldRaster(path, import, static_cast<double>(settings_.grid.metresPerCell), raster, pictureInfo_, error)) {
+        if (!ImportWorldRaster(path, import, static_cast<double>(settings_.grid.metresPerCell), settings_.pictureCentreX, settings_.pictureCentreZ, raster, pictureInfo_, error)) {
             status_ = "Terrain world: " + error;
             LOG_ERROR(status_);
             source_ = nullptr;
@@ -87,8 +85,7 @@ void TerrainWorld::BuildSource()
             return;
         }
         raw = std::make_shared<const RasterHeightSource>(raster, settings_.baseHeight, settings_.heightScale);
-        activeBounds_ = WorldBounds::Covering(settings_.grid, settings_.pictureOffsetX, settings_.pictureOffsetZ,
-                                              settings_.pictureOffsetX + raster->SizeX(), settings_.pictureOffsetZ + raster->SizeZ());
+        activeBounds_ = WorldBounds::Covering(settings_.grid, raster->originX, raster->originZ, raster->originX + raster->SizeX(), raster->originZ + raster->SizeZ());
     }
     if (settings_.detail.IsIdentity()) ground_ = raw;
     else ground_ = std::make_shared<const DetailedHeightSource>(raw, settings_.detail, settings_.heightScale);
