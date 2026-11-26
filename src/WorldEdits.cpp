@@ -167,8 +167,9 @@ void WorldEdits::SetBlock(TileCoord tile, Block block)
     ++revision_;
 }
 
-EditedHeightSource::EditedHeightSource(std::shared_ptr<const WorldHeightSource> base, std::shared_ptr<const WorldEdits> edits, double metresPerCell)
-    : base_(std::move(base)), edits_(std::move(edits)), metresPerCell_((std::max)(metresPerCell, 1e-6))
+EditedHeightSource::EditedHeightSource(std::shared_ptr<const WorldHeightSource> base, std::shared_ptr<const WorldEdits> edits, double metresPerCell,
+                                       double reliefMetres)
+    : base_(std::move(base)), edits_(std::move(edits)), metresPerCell_((std::max)(metresPerCell, 1e-6)), reliefMetres_((std::max)(reliefMetres, 1e-3))
 {
 }
 
@@ -190,7 +191,7 @@ float EditedHeightSource::Height01(double worldX, double worldZ) const
         delta = top * (1.0f - tz) + bottom * tz;
     }
     if (delta == 0.0f) return ground;
-    return std::clamp(ground + delta, 0.0f, 1.0f);
+    return std::clamp(ground + static_cast<float>(static_cast<double>(delta) / reliefMetres_), 0.0f, 1.0f);   // the delta is in metres
 }
 
 void WorldStrokeRecorder::RememberHeight(LatticeIndex x, LatticeIndex z, float deltaBefore)
@@ -223,11 +224,11 @@ WorldEditPatch WorldStrokeRecorder::Finish(const WorldEdits& edits) const
     return patch;
 }
 
-LatticeRect ApplyWorldHeightBrush(WorldEdits& edits, const WorldHeightSource& base, double metresPerCell, const BrushSettings& brush,
+LatticeRect ApplyWorldHeightBrush(WorldEdits& edits, const WorldHeightSource& base, double metresPerCell, double reliefMetres, const BrushSettings& brush,
                                   double worldX, double worldZ, float seconds, WorldStrokeRecorder* recorder)
 {
     LatticeRect changed;
-    if (!(brush.radius > 0.0f) || !(seconds > 0.0f) || !(metresPerCell > 0.0)) return changed;
+    if (!(brush.radius > 0.0f) || !(seconds > 0.0f) || !(metresPerCell > 0.0) || !(reliefMetres > 0.0)) return changed;
     const double radius = brush.radius;
     const LatticeIndex x0 = static_cast<LatticeIndex>(std::floor((worldX - radius) / metresPerCell)), x1 = static_cast<LatticeIndex>(std::ceil((worldX + radius) / metresPerCell));
     const LatticeIndex z0 = static_cast<LatticeIndex>(std::floor((worldZ - radius) / metresPerCell)), z1 = static_cast<LatticeIndex>(std::ceil((worldZ + radius) / metresPerCell));
@@ -238,7 +239,7 @@ LatticeRect ApplyWorldHeightBrush(WorldEdits& edits, const WorldHeightSource& ba
     // What the eye sees at a lattice point (the ground plus the edits), WITHOUT the rivers.
     auto visible = [&](LatticeIndex x, LatticeIndex z) {
         const float ground = base.Height01(static_cast<double>(x) * metresPerCell, static_cast<double>(z) * metresPerCell);
-        return std::clamp(ground + edits.HeightDelta(x, z), 0.0f, 1.0f);
+        return std::clamp(ground + static_cast<float>(static_cast<double>(edits.HeightDelta(x, z)) / reliefMetres), 0.0f, 1.0f);
     };
 
     // TWO PASSES, like the old brush: every new value is worked out from the old ones, then they are written.
@@ -269,7 +270,7 @@ LatticeRect ApplyWorldHeightBrush(WorldEdits& edits, const WorldHeightSource& ba
     }
     for (const Pending& change : pending) {
         const float before = edits.HeightDelta(change.x, change.z);
-        const float delta = change.value - change.ground;   // chosen so that ground + delta is exactly the new value
+        const float delta = static_cast<float>(static_cast<double>(change.value - change.ground) * reliefMetres);   // metres: chosen so that ground + delta / relief is exactly the new value
         if (delta == before) continue;
         if (recorder) recorder->RememberHeight(change.x, change.z, before);
         edits.SetHeightDelta(change.x, change.z, delta);
@@ -330,7 +331,7 @@ WorldPatchExtent ApplyWorldEditPatch(WorldEdits& edits, const WorldEditPatch& pa
 
 namespace {
 constexpr char kMagic[4] = { 'W', 'E', 'D', 'T' };
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 2;   // 2: heights are deltas in METRES (version 1 held ground units); older files are not read (roadmap T3)
 template <typename T> bool WriteValue(std::FILE* file, const T& value) { return std::fwrite(&value, sizeof(T), 1, file) == 1; }
 template <typename T> bool ReadValue(std::FILE* file, T& value) { return std::fread(&value, sizeof(T), 1, file) == 1; }
 }   // namespace
@@ -368,7 +369,7 @@ bool LoadWorldEdits(const std::string& path, WorldEdits& edits, std::string& err
         error = "not a world edits file: " + path;
         return false;
     }
-    if (version != kVersion) { error = "unknown world edits version " + std::to_string(version) + ": " + path; return false; }
+    if (version != kVersion) { error = "The edits file is in an old format (" + std::to_string(version) + "; this editor reads " + std::to_string(kVersion) + "): its heights are in other units and are not converted: " + path; return false; }
     if (cells < 1 || cells > 4096 || count > 100000) { error = "the world edits file is damaged: " + path; return false; }
     WorldEdits loaded(static_cast<int>(cells));
     const size_t cellCount = static_cast<size_t>(cells) * cells;

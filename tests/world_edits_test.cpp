@@ -7,7 +7,7 @@
 //   7. MIGRATION: a sculpted and painted old terrain becomes edits that give back its heights sample for sample; an untouched one makes none.
 //   8. The file.
 #include "WorldEdits.h"
-#include "WorldPicture.h"
+#include "WorldGroundSource.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -20,13 +20,15 @@ static int g_failures = 0;
 #define CHECK(condition) do { if (!(condition)) { std::printf("FAIL line %d: %s\n", __LINE__, #condition); ++g_failures; } } while (0)
 static bool Near(double a, double b, double tolerance = 1e-5) { return std::fabs(a - b) <= tolerance; }
 
+// Rough, deterministic ground: a size x size raster of heights 0.2 .. 0.8 spread over `metres`, read as the ground value directly (lowestY 0, relief 1).
 static std::shared_ptr<const WorldHeightSource> MakeGround(int size, double metres)
 {
-    auto image = std::make_shared<HeightImage>();
-    image->width = image->height = size;
-    image->values.resize(static_cast<size_t>(size) * size);
-    for (size_t i = 0; i < image->values.size(); ++i) image->values[i] = 0.2f + 0.6f * std::fmod(static_cast<float>(i) * 0.6180339f, 1.0f);
-    return std::make_shared<const PictureHeightSource>(image, 0.0, 0.0, metres, metres);
+    auto raster = std::make_shared<HeightRaster>();
+    raster->width = raster->height = size;
+    raster->spacingX = raster->spacingZ = metres / static_cast<double>(size - 1);
+    raster->metres.resize(static_cast<size_t>(size) * size);
+    for (size_t i = 0; i < raster->metres.size(); ++i) raster->metres[i] = 0.2f + 0.6f * std::fmod(static_cast<float>(i) * 0.6180339f, 1.0f);
+    return std::make_shared<const RasterHeightSource>(raster, 0.0f, 1.0f);
 }
 
 static void TestStore()
@@ -61,7 +63,7 @@ static void TestEditedSourceAndTiles()
 {
     const auto ground = MakeGround(40, 512.0);
     auto edits = std::make_shared<WorldEdits>(64);
-    const EditedHeightSource none(ground, edits, 4.0);
+    const EditedHeightSource none(ground, edits, 4.0, 1.0);
     bool exact = true;
     for (double x = 0.0; x < 512.0; x += 4.0) for (double z = 0.0; z < 512.0; z += 12.0) if (none.Height01(x, z) != ground->Height01(x, z)) exact = false;
     CHECK(exact);   // no edits: the base's own bits
@@ -72,7 +74,7 @@ static void TestEditedSourceAndTiles()
     // Edits across the border between tile (0,0) and (1,0), at x = 256 m = lattice 64.
     for (int z = 4; z < 56; ++z) for (int x = 56; x < 72; ++x) edits->SetHeightDelta(x, z, 0.1f);
     edits->SetHeightDelta(64, 10, 5.0f);   // clamps: ground + 5 is above 1
-    const EditedHeightSource edited(ground, edits, 4.0);
+    const EditedHeightSource edited(ground, edits, 4.0, 1.0);
     CHECK(Near(edited.Height01(64 * 4.0, 5 * 4.0), std::clamp(ground->Height01(256.0, 20.0) + 0.1f, 0.0f, 1.0f)));
     CHECK(edited.Height01(64 * 4.0, 10 * 4.0) == 1.0f);
 
@@ -130,7 +132,7 @@ static void TestBrushParity()
         for (int step = 0; step < 6; ++step) {
             const double wx = 80.0 + step * 6.0, wz = 90.0 + step * 3.0;
             ApplyBrush(old.field, brush, static_cast<float>(wx - centre), static_cast<float>(wz - centre), 0.05f, nullptr);
-            ApplyWorldHeightBrush(edits, *ground, mpc, brush, wx, wz, 0.05f, nullptr);
+            ApplyWorldHeightBrush(edits, *ground, mpc, 1.0, brush, wx, wz, 0.05f, nullptr);
         }
         for (int z = 0; z <= cells; ++z) {
             for (int x = 0; x <= cells; ++x) {
@@ -146,8 +148,8 @@ static void TestBrushParity()
     BrushSettings brush;
     brush.mode = BrushMode::Raise; brush.radius = 30.0f; brush.strength = 0.9f;
     for (int step = 0; step < 4; ++step) {
-        ApplyWorldHeightBrush(small, *ground, mpc, brush, 64.0 + step, 64.0, 0.1f, nullptr);   // x = 64 m is lattice 32: the border of tiles 0 and 1
-        ApplyWorldHeightBrush(big, *ground, mpc, brush, 64.0 + step, 64.0, 0.1f, nullptr);
+        ApplyWorldHeightBrush(small, *ground, mpc, 1.0, brush, 64.0 + step, 64.0, 0.1f, nullptr);   // x = 64 m is lattice 32: the border of tiles 0 and 1
+        ApplyWorldHeightBrush(big, *ground, mpc, 1.0, brush, 64.0 + step, 64.0, 0.1f, nullptr);
     }
     bool sameEverywhere = true;
     for (int z = 0; z <= 64; ++z) for (int x = 0; x <= 80; ++x) if (small.HeightDelta(x, z) != big.HeightDelta(x, z)) sameEverywhere = false;
@@ -157,7 +159,7 @@ static void TestBrushParity()
     // A brush with no radius, no time or an unknown spot does nothing.
     WorldEdits none(32);
     brush.radius = 0.0f;
-    CHECK(ApplyWorldHeightBrush(none, *ground, mpc, brush, 50.0, 50.0, 0.1f, nullptr).IsEmpty() && none.IsEmpty());
+    CHECK(ApplyWorldHeightBrush(none, *ground, mpc, 1.0, brush, 50.0, 50.0, 0.1f, nullptr).IsEmpty() && none.IsEmpty());
 }
 
 static void TestPatch()
@@ -169,11 +171,11 @@ static void TestPatch()
     brush.radius = 20.0f; brush.strength = 0.8f;
     WorldStrokeRecorder recorder;
     // A first stroke that is already on the ground (the delta is not zero before the second one).
-    ApplyWorldHeightBrush(edits, *ground, mpc, brush, 60.0, 60.0, 0.1f, nullptr);
+    ApplyWorldHeightBrush(edits, *ground, mpc, 1.0, brush, 60.0, 60.0, 0.1f, nullptr);
     std::vector<float> beforeAll;
     for (int z = 0; z < 96; ++z) for (int x = 0; x < 96; ++x) beforeAll.push_back(edits.HeightDelta(x, z));
     brush.mode = BrushMode::Lower;
-    for (int step = 0; step < 5; ++step) ApplyWorldHeightBrush(edits, *ground, mpc, brush, 62.0 + step, 60.0, 0.1f, &recorder);
+    for (int step = 0; step < 5; ++step) ApplyWorldHeightBrush(edits, *ground, mpc, 1.0, brush, 62.0 + step, 60.0, 0.1f, &recorder);
     const WorldEditPatch patch = recorder.Finish(edits);
     CHECK(!patch.IsEmpty() && patch.heights.size() > 10 && patch.paints.empty());
 
@@ -267,6 +269,65 @@ static void TestTilesAffected()
     CHECK(hasMinus && hasZero);
 }
 
+// H6: the stored delta is in METRES. With a relief of 200 m a stroke that raises the ground by a ground-unit of 0.1 stores 20 m, and the
+// same stored edit seen through another relief is the same number of metres (not the same fraction of a taller or shorter world).
+static void TestDeltasAreMetres()
+{
+    const double mpc = 2.0;
+    const auto ground = MakeGround(50, 192.0);
+    BrushSettings brush;
+    brush.mode = BrushMode::Raise; brush.radius = 12.0f; brush.strength = 1.0f; brush.falloff = 0.5f;
+    for (double relief : { 100.0, 200.0, 400.0 }) {
+        WorldEdits edits(32);
+        ApplyWorldHeightBrush(edits, *ground, mpc, relief, brush, 60.0, 60.0, 0.1f, nullptr);
+        const LatticeIndex cx = 30, cz = 30;                      // the middle of the stroke
+        const float stored = edits.HeightDelta(cx, cz);
+        CHECK(stored > 0.0f);
+        const EditedHeightSource edited(ground, std::make_shared<WorldEdits>(edits), mpc, relief);
+        const double base = ground->Height01(cx * mpc, cz * mpc), now = edited.Height01(cx * mpc, cz * mpc);
+        CHECK(Near((now - base) * relief, stored, 1e-3));         // stored metres = what the eye gained, times the relief
+    }
+    // The same stroke in a world twice as tall stores the same GROUND-UNIT change, so twice the metres (the brush works in ground units).
+    WorldEdits a(32), b(32);
+    ApplyWorldHeightBrush(a, *ground, mpc, 100.0, brush, 60.0, 60.0, 0.1f, nullptr);
+    ApplyWorldHeightBrush(b, *ground, mpc, 200.0, brush, 60.0, 60.0, 0.1f, nullptr);
+    CHECK(Near(b.HeightDelta(30, 30), 2.0 * a.HeightDelta(30, 30), 1e-3));
+    // A relief that is zero or negative changes nothing (no division by zero).
+    WorldEdits none(32);
+    CHECK(ApplyWorldHeightBrush(none, *ground, mpc, 0.0, brush, 60.0, 60.0, 0.1f, nullptr).IsEmpty() && none.IsEmpty());
+    // The edit keeps its metres when the world's relief changes afterwards: seen through relief 400 it is half the ground-unit change.
+    WorldEdits e(32);
+    e.SetHeightDelta(10, 10, 20.0f);
+    const auto shared = std::make_shared<WorldEdits>(e);
+    const EditedHeightSource r200(ground, shared, mpc, 200.0), r400(ground, shared, mpc, 400.0);
+    const double g = ground->Height01(10 * mpc, 10 * mpc);
+    CHECK(Near((r200.Height01(10 * mpc, 10 * mpc) - g) * 200.0, 20.0, 1e-3) && Near((r400.Height01(10 * mpc, 10 * mpc) - g) * 400.0, 20.0, 1e-3));
+}
+
+// An edits file from before the units changed (version 1, ground units) is refused with a message, not read as if it were metres.
+static void TestOldEditsFileRefused()
+{
+    namespace fs = std::filesystem;
+    const std::string path = (fs::temp_directory_path() / "world_edits_old_version.worldedits").string();
+    WorldEdits edits(32);
+    edits.SetHeightDelta(3, 4, 0.125f);
+    std::string error;
+    CHECK(SaveWorldEdits(path, edits, error));
+    {
+        std::FILE* f = std::fopen(path.c_str(), "r+b");
+        std::fseek(f, 4, SEEK_SET);                  // the version follows the 4-byte magic
+        const std::uint32_t old = 1;
+        std::fwrite(&old, sizeof(old), 1, f);
+        std::fclose(f);
+    }
+    WorldEdits loaded(32);
+    CHECK(!LoadWorldEdits(path, loaded, error));
+    CHECK(error.find("old format") != std::string::npos);
+    CHECK(loaded.IsEmpty());
+    std::error_code ignore;
+    fs::remove(path, ignore);
+}
+
 static void TestFile()
 {
     namespace fs = std::filesystem;
@@ -318,6 +379,8 @@ int main()
     TestPatch();
     TestPaint();
     TestTilesAffected();
+    TestDeltasAreMetres();
+    TestOldEditsFileRefused();
     TestFile();
     if (g_failures == 0) std::printf("All world edits tests passed.\n");
     return g_failures == 0 ? 0 : 1;

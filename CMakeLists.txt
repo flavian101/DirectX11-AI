@@ -115,14 +115,18 @@ add_library(Engine STATIC
 	src/TerrainChunkIndexCache.cpp
 	src/WorldGround.cpp
 	src/WorldGrid.cpp
-	src/WorldPicture.cpp
-	src/WorldShape.cpp
+	src/WorldGroundSource.cpp
+	src/WorldTileHeights.cpp
+	src/HeightDeterrace.cpp
+	src/HeightDetail.cpp
+	src/HeightPicture.cpp
+	src/HeightRaster.cpp
+	src/HeightSample.cpp
+	src/HeightStats.cpp
 	src/WorldEdits.cpp
-	src/WorldRivers.cpp
 	src/TerrainWorld.cpp
 	src/Heightfield.cpp
 	src/HeightfieldEdit.cpp
-	src/RiverCarve.cpp
 	src/TerrainSplat.cpp
 	src/TerrainPaint.cpp
 	src/Png16.cpp
@@ -254,13 +258,6 @@ if(BUILD_TESTS)
     add_executable(UnderwaterLookTests tests/underwater_look_test.cpp)
     target_include_directories(UnderwaterLookTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME UnderwaterLook COMMAND UnderwaterLookTests)
-    # Rivers as part of the world's height function (lesson 51): agrees with the single-terrain carve, no seams, no edits far away.
-    add_executable(WorldRiversTests tests/world_rivers_test.cpp src/WorldRivers.cpp src/WorldGrid.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
-    target_include_directories(WorldRiversTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
-    add_test(NAME WorldRivers COMMAND WorldRiversTests)
-    add_executable(RiverTests tests/river_test.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
-    target_include_directories(RiverTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
-    add_test(NAME River COMMAND RiverTests)
     # The reversed-Z depth convention (lesson 46): the end points, the inverse the water shader uses, and why we reversed.
     add_executable(DepthMathTests tests/depth_math_test.cpp)
     target_include_directories(DepthMathTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -270,23 +267,22 @@ if(BUILD_TESTS)
     add_executable(SceneVersionTests tests/scene_version_test.cpp)
     target_include_directories(SceneVersionTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME SceneVersion COMMAND SceneVersionTests)
+    # The ground of a world in metres: raster and detail layers (roadmap H7).
+    add_executable(WorldGroundSourceTests tests/world_ground_source_test.cpp src/WorldGroundSource.cpp src/WorldGrid.cpp src/HeightDetail.cpp src/HeightRaster.cpp src/HeightSample.cpp src/HeightStats.cpp src/HeightDeterrace.cpp src/HeightPicture.cpp src/Png16.cpp src/libs/stb_image.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
+    target_include_directories(WorldGroundSourceTests PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/libs)
+    add_test(NAME WorldGroundSource COMMAND WorldGroundSourceTests)
+
     add_executable(WorldGridTests tests/world_grid_test.cpp src/WorldGrid.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
     target_include_directories(WorldGridTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME WorldGrid COMMAND WorldGridTests)
-    add_executable(WorldPictureTests tests/world_picture_test.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/Heightfield.cpp src/Png16.cpp src/libs/stb_image.cpp)
-    target_include_directories(WorldPictureTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
-    add_test(NAME WorldPicture COMMAND WorldPictureTests)
     # Heightmap customisation (levels, curve, smoothing, bicubic, detail noise) and auto levels.
-    add_executable(WorldShapeTests tests/world_shape_test.cpp src/WorldShape.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
-    target_include_directories(WorldShapeTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
-    add_test(NAME WorldShape COMMAND WorldShapeTests)
     # Sculpting and painting stored per tile, brush parity with the old terrain, and the migration of an old terrain.
-    add_executable(WorldEditsTests tests/world_edits_test.cpp src/WorldEdits.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/HeightfieldEdit.cpp src/TerrainPaint.cpp src/TerrainSplat.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
+    add_executable(WorldEditsTests tests/world_edits_test.cpp src/WorldGroundSource.cpp src/HeightDetail.cpp src/HeightRaster.cpp src/HeightSample.cpp src/HeightStats.cpp src/HeightDeterrace.cpp src/HeightPicture.cpp src/Png16.cpp src/libs/stb_image.cpp src/WorldEdits.cpp src/WorldGrid.cpp src/HeightfieldEdit.cpp src/TerrainPaint.cpp src/TerrainSplat.cpp src/Heightfield.cpp)
     target_include_directories(WorldEditsTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(WorldEditsTests PRIVATE Threads::Threads)   # TerrainSplat.cpp bakes on several threads
     add_test(NAME WorldEdits COMMAND WorldEditsTests)
     # Patching a loaded tile in place (roadmap T2): which samples a stroke reaches, and that patched == rebuilt.
-    add_executable(TilePatchTests tests/tile_patch_test.cpp src/WorldEdits.cpp src/WorldRivers.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/TerrainPaint.cpp src/TerrainSplat.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
+    add_executable(TilePatchTests tests/tile_patch_test.cpp src/WorldEdits.cpp src/WorldTileHeights.cpp src/WorldGrid.cpp src/HeightfieldEdit.cpp src/TerrainPaint.cpp src/TerrainSplat.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
     target_include_directories(TilePatchTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(TilePatchTests PRIVATE Threads::Threads)
     add_test(NAME TilePatch COMMAND TilePatchTests)
@@ -299,22 +295,22 @@ if(BUILD_TESTS)
     target_include_directories(TerrainWallsTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME TerrainWalls COMMAND TerrainWallsTests)
     # The water-terrain contract: the water measures the world's ground function, not its loaded tiles (roadmap W1).
-    add_executable(WaterVisibilityTests tests/water_visibility_test.cpp src/WorldGround.cpp src/WorldRivers.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
+    add_executable(WaterVisibilityTests tests/water_visibility_test.cpp src/WorldGround.cpp src/WorldTileHeights.cpp src/WorldGrid.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
     target_include_directories(WaterVisibilityTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(WaterVisibilityTests PRIVATE Threads::Threads)
     add_test(NAME WaterVisibility COMMAND WaterVisibilityTests)
     # The ground at one point: height, normal and a ray (roadmap C1).
-    add_executable(WorldHeightTests tests/world_height_test.cpp src/WorldGround.cpp src/WorldRivers.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
+    add_executable(WorldHeightTests tests/world_height_test.cpp src/WorldGround.cpp src/WorldTileHeights.cpp src/WorldGrid.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
     target_include_directories(WorldHeightTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(WorldHeightTests PRIVATE Threads::Threads)
     add_test(NAME WorldHeight COMMAND WorldHeightTests)
     # The scatter's ground over the tiles of a world (roadmap S12).
-    add_executable(ScatterTileGroundTests tests/scatter_tile_ground_test.cpp src/ScatterTileGround.cpp src/ScatterPlacement.cpp src/TerrainSplat.cpp src/WorldRivers.cpp src/WorldGrid.cpp src/WorldPicture.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
+    add_executable(ScatterTileGroundTests tests/scatter_tile_ground_test.cpp src/ScatterTileGround.cpp src/ScatterPlacement.cpp src/TerrainSplat.cpp src/WorldTileHeights.cpp src/WorldGrid.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
     target_include_directories(ScatterTileGroundTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(ScatterTileGroundTests PRIVATE Threads::Threads)
     add_test(NAME ScatterTileGround COMMAND ScatterTileGroundTests)
     # The two heights of a world (how tall, how high) and a migrated terrain keeping its Y (roadmaps H1, C3).
-    add_executable(WorldBaseHeightTests tests/world_base_height_test.cpp src/WorldGround.cpp src/WorldRivers.cpp src/WorldPicture.cpp src/WorldGrid.cpp src/RiverCarve.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
+    add_executable(WorldBaseHeightTests tests/world_base_height_test.cpp src/WorldGround.cpp src/WorldTileHeights.cpp src/WorldGrid.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp src/libs/stb_image.cpp)
     target_include_directories(WorldBaseHeightTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(WorldBaseHeightTests PRIVATE Threads::Threads)
     add_test(NAME WorldBaseHeight COMMAND WorldBaseHeightTests)

@@ -2345,10 +2345,10 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
         }
     }
     // Two different things were called "height" (roadmap H1): how TALL the ground is, and how HIGH it starts. They are two controls now.
-    ImGui::SliderFloat("Hill height (m)", &s.heightScale, 20.0f, 500.0f, "%.0f");
+    ImGui::SliderFloat("Relief (m)", &s.heightScale, 20.0f, 500.0f, "%.0f");
     commitOnRelease();
-    ImGui::SetItemTooltip("How tall the ground is: the highest possible ground stands this many metres above the lowest. A bigger number raises the hilltops and\nmakes every slope steeper. The lowest ground does not move. To lift or sink the whole world, use Ground level.");
-    ImGui::DragFloat("Ground level (m)", &s.baseHeight, 0.5f, TerrainWorldSettings::kBaseHeightMin, TerrainWorldSettings::kBaseHeightMax, "%.1f");
+    ImGui::SetItemTooltip("How tall the ground is: the highest possible ground stands this many metres above the lowest. A bigger number raises the hilltops and\nmakes every slope steeper. The lowest ground does not move. To lift or sink the whole world, use Lowest ground.");
+    ImGui::DragFloat("Lowest ground (m)", &s.baseHeight, 0.5f, TerrainWorldSettings::kBaseHeightMin, TerrainWorldSettings::kBaseHeightMax, "%.1f");
     commitOnRelease();
     ImGui::SetItemTooltip("How high the ground starts: the height (world Y) of the lowest possible ground. It lifts or sinks the whole world without changing its\nshape. Water, objects and the camera stay where they are, so shorelines move.");
     ImGui::TextDisabled("The ground spans %.0f to %.0f m (world Y).", s.baseHeight, s.baseHeight + s.heightScale);
@@ -2375,72 +2375,31 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
         ImGui::TextDisabled("Last tile build: heights %.1f ms, mesh %.1f ms, splat %.1f ms (%d built)", times.heightsMs, times.meshMs, times.splatMs, times.builds);
         ImGui::TextDisabled("Last sculpt patch: %.2f ms (%d patched)", times.patchMs, times.patches);
     }
-    // ---- GROUND SHAPE (roadmap, heightmap customisation): the controls that turn a picture into good-looking terrain ----
-    ImGui::SeparatorText("Ground shape");
-    if (const HeightImageStats* stats = world->PictureStats()) {
-        const float slope = SlopeDegrees(stats->meanGradient, s.heightScale, world->PictureMetresPerPixel());
-        ImGui::TextDisabled("Picture %d px wide, %.2f m per pixel. It uses %.0f%% of its grey range (%.2f to %.2f); typical slope %.1f degrees.",
-                            world->PictureWidthPixels(), world->PictureMetresPerPixel(), stats->UsedRange() * 100.0f, stats->low, stats->high, slope);
-        if (stats->UsedRange() < 0.6f && s.shape.blackPoint == 0.0f && s.shape.whitePoint == 1.0f) {
-            ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f), "This picture only uses part of its grey range, so the terrain spans only part of the height scale. Auto levels stretches it.");
-        }
-        if (ImGui::Button("Auto levels")) world->AutoLevels();
-        ImGui::SetItemTooltip("Sets black and white point from what the picture really spans (ignoring the darkest and brightest half percent),\nso the lowest ground is at the bottom of the height scale and the highest at the top.");
-        ImGui::SameLine();
-    }
-    if (ImGui::BeginCombo("Preset", "Choose...")) {
-        for (int preset = 0; preset < kHeightShapePresetCount; ++preset) {
-            if (ImGui::Selectable(HeightShapePresetName(preset))) {
-                const float black = s.shape.blackPoint, white = s.shape.whitePoint;   // a preset sets the character, not the levels
-                const bool prefilter = s.shape.prefilter;                              // nor how the picture is read
-                s.shape = HeightShapePreset(preset);
-                s.shape.blackPoint = black;
-                s.shape.whitePoint = white;
-                s.shape.prefilter = prefilter;
-                commit = true;
-            }
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SliderFloat("Black point", &s.shape.blackPoint, 0.0f, 0.99f, "%.3f");
-    commitOnRelease();
-    ImGui::SetItemTooltip("Picture values at or below this become the lowest ground.");
-    ImGui::SliderFloat("White point", &s.shape.whitePoint, 0.01f, 1.0f, "%.3f");
-    commitOnRelease();
-    ImGui::SetItemTooltip("Picture values at or above this become the highest ground.");
-    ImGui::SliderFloat("Curve", &s.shape.curve, HeightShapeSettings::kCurveMin, HeightShapeSettings::kCurveMax, "%.2f", ImGuiSliderFlags_Logarithmic);
-    commitOnRelease();
-    ImGui::SetItemTooltip("Above 1: flat lowlands and sharper peaks (mountains). Below 1: broad highlands. 1: as the picture is.");
-    if (ImGui::Checkbox("Invert", &s.shape.invert)) commit = true;
-    if (s.source == WorldSourceKind::Picture) {
-        ImGui::SliderFloat("Smoothing (px)", &s.shape.smoothing, 0.0f, HeightShapeSettings::kSmoothingMax, "%.0f");
-        commitOnRelease();
-        ImGui::SetItemTooltip("Blurs the picture. Removes the steps of an 8-bit image and the faceting of a small picture stretched over a big world.");
-        if (ImGui::Checkbox("Smooth interpolation (bicubic)", &s.shape.bicubic)) commit = true;
-        ImGui::SetItemTooltip("A smooth curve through the pixels instead of straight lines between them. Off matches the old terrain exactly.");
-        if (ImGui::Checkbox("Prefilter the picture", &s.shape.prefilter)) commit = true;
-        ImGui::SetItemTooltip("When one cell covers several pixels, average the picture over the cell before sampling it. Removes the stairs and streaks on\nthin cliffs. Off matches the old terrain exactly.");
-        const float perCell = world->PictureCellPixels();
-        if (perCell > 0.0f) {
-            const bool aliasing = perCell > 2.0f && !world->PictureIsPrefiltered();
-            const ImVec4 color = aliasing ? ImVec4(1.0f, 0.75f, 0.3f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
-            ImGui::TextColored(color, "%.1f picture pixels per cell%s", perCell,
-                               world->PictureIsPrefiltered() ? " (prefiltered)" : (aliasing ? ": thin cliffs will look like stairs. Turn the prefilter on." : ""));
+    // ---- GROUND: what the picture gives (roadmap H1 to H5, H7), and the detail laid on top in metres ----
+    ImGui::SeparatorText("Ground");
+    if (const WorldPictureInfo* info = world->Picture()) {
+        ImGui::TextDisabled("Picture %d x %d px, %d-bit, %.2f m per pixel.", info->widthPixels, info->heightPixels, info->bits, info->metresPerPixel);
+        ImGui::TextDisabled("The ground spans %.1f to %.1f m (world Y); %.0f%% of it is below Y = 0; typical slope %.1f degrees.",
+                            info->stats.lowest, info->stats.highest, info->shareBelowZero * 100.0, info->stats.MeanSlopeDegrees());
+        if (info->flat) ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f), "Every pixel of this picture has the same level: there is nothing to stretch, so the ground is flat.");
+        if (info->cellPixels > 1.0) ImGui::TextDisabled("One cell covers %.1f pixels: the picture is averaged down to the cell, so thin ridges do not turn into stairs.", info->cellPixels);
+        if (info->bits == 8) {
+            if (ImGui::Checkbox("Take the stairs out of an 8-bit picture", &s.deterrace)) commit = true;
+            ImGui::SetItemTooltip("An 8-bit picture has only 256 levels, so smooth ground shows as terraces. This smooths the picture while keeping every pixel inside its own level,\nso nothing is invented. A 16-bit picture is never touched.");
+        } else {
+            ImGui::TextDisabled("A 16-bit picture is used exactly as it is.");
         }
     }
-    ImGui::SliderFloat("Detail strength (m)", &s.shape.detailStrength, 0.0f, 60.0f, "%.1f");
+    ImGui::SliderFloat("Detail (m)", &s.detail.strength, 0.0f, 60.0f, "%.1f");
     commitOnRelease();
-    ImGui::SetItemTooltip("Fine bumps added on top, in METRES (they do not change with the height scale). A picture cannot hold detail finer than its pixels.");
-    if (s.shape.detailStrength > 0.0f) {
-        ImGui::SliderFloat("Detail size (m)", &s.shape.detailWavelength, HeightShapeSettings::kDetailWavelengthMin, HeightShapeSettings::kDetailWavelengthMax, "%.0f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Fine bumps added on top, in METRES: they are never taller than this and do not change when the relief does. A picture cannot hold detail finer than its pixels.");
+    if (s.detail.strength > 0.0f) {
+        ImGui::SliderFloat("Detail size (m)", &s.detail.wavelength, HeightDetailSettings::kWavelengthMin, 2000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
         commitOnRelease();
-        ImGui::SliderInt("Detail layers##shape", &s.shape.detailOctaves, 1, 8);
+        ImGui::SliderInt("Detail layers", &s.detail.octaves, HeightDetailSettings::kOctavesMin, HeightDetailSettings::kOctavesMax);
         commitOnRelease();
-        if (ImGui::Checkbox("Ridged (sharp creases)", &s.shape.detailRidged)) commit = true;
-        ImGui::SliderFloat("Keep low ground smooth", &s.shape.detailValleyMask, 0.0f, 1.0f, "%.2f");
-        commitOnRelease();
-        ImGui::SetItemTooltip("0: detail everywhere. 1: none in the lowest ground, so shores and riverbeds stay clean.");
-        ImGui::InputInt("Detail seed", &s.shape.detailSeed);
+        if (ImGui::Checkbox("Ridged (sharp creases)", &s.detail.ridged)) commit = true;
+        ImGui::InputInt("Detail seed", &s.detail.seed);
         commitOnRelease();
     }
     if (commit) world->SetSettings(s);   // every tile is rebuilt from the new settings

@@ -7,7 +7,6 @@
 #include "Color.h"
 #include "Logger.h"
 #include "Mesh.h"
-#include "RiverCarve.h"
 #include "ShaderSlots.h"
 #include "TerrainChunks.h"
 #include "libs/stb_image.h"
@@ -350,7 +349,7 @@ const Terrain::BuildTimes& Terrain::GetBuildTimes() { return g_buildTimes; }
 
 TileHeights Terrain::BuildTileHeights() const
 {
-	return GenerateTileHeights(*tile_.source, tile_.grid, tile_.coord, tile_.rivers.get());
+	return GenerateTileHeights(*tile_.source, tile_.grid, tile_.coord);
 }
 
 void Terrain::ForceTileSettings(TerrainSettings& settings) const
@@ -488,7 +487,7 @@ bool Terrain::Rebuild(const TerrainSettings& settings)
 	shape.cellsX = shape.cellsZ = tile_.grid.TileCells();
 	shape.depth = static_cast<float>(tile_.grid.TileSize());
 	const auto heightsStart = Clock::now();
-	TileHeights tileHeights = BuildTileHeights();   // a tile's samples and apron are made together (the rivers are dug into both)
+	TileHeights tileHeights = BuildTileHeights();   // a tile's samples and apron are made together (from the same ground function)
 	const double heightsMs = MillisecondsSince(heightsStart);
 	std::vector<float> samples = std::move(tileHeights.samples);
 	Heightfield field;
@@ -734,8 +733,8 @@ bool Terrain::PatchTile(const TileSampleRect& rect, bool groundIsFinal)
 	if (heightfield_.GetLayout().cellsZ != cells || cells != tile_.grid.TileCells()) return false;
 	const auto start = Clock::now();
 
-	// The ground the world gives at exactly these samples (edits and rivers included): the same numbers a rebuild would read.
-	const std::vector<float> block = GenerateTileBlock(*tile_.source, tile_.grid, tile_.coord, tile_.rivers.get(), rect);
+	// The ground the world gives at exactly these samples (edits included): the same numbers a rebuild would read.
+	const std::vector<float> block = GenerateTileBlock(*tile_.source, tile_.grid, tile_.coord, rect);
 	if (block.size() != static_cast<size_t>(rect.Width()) * rect.Height()) return false;
 
 	HeightfieldApron apron = heightfield_.Apron();

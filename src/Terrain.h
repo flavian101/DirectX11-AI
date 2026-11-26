@@ -2,10 +2,9 @@
 #include <string>
 #include "Heightfield.h"
 #include "WorldGrid.h"
-#include "WorldRivers.h"
+#include "WorldTileHeights.h"
 #include "HeightfieldEdit.h"
 #include "RayPicking.h"
-#include "RiverPath.h"
 #include "Renderable.h"
 #include "SceneObject.h"
 #include "Texture.h"
@@ -122,7 +121,6 @@ struct TerrainTile {
 	TileCoord coord;                                 // which tile this is
 	int lod = 0;                                     // its level of detail (WorldGridSettings::ForLod): `grid` is already the grid at this level
 	std::shared_ptr<const WorldHeightSource> source; // the ground, shared by every tile of the world
-	std::shared_ptr<const std::vector<WorldRiver>> rivers;   // the rivers dug into the ground (lesson 51); null or empty: none
 	bool capBottom = false;                          // every tile of a BOUNDED world also draws a bottom at the floor, so the world is a closed block (roadmap X1)
 	unsigned char outerEdges = 0;                    // TerrainEdgeBit mask: the sides of this tile that are the edge of a BOUNDED world. They are closed with a wall down to a floor (roadmap X1)
 	float baseHeight = 0.0f;                         // the world Y of ground height 0: the tile's position.y. Every tile of a world has the same one (roadmap H1)
@@ -196,7 +194,7 @@ public:
 	// How long the last tile build took and where the time went, and the last patch (milliseconds, measured with a steady clock).
 	// Shared by every tile; shown in the world inspector so a slow stroke can be told from a slow build.
 	struct BuildTimes {
-		double heightsMs = 0.0;   // the tile's heights and apron through the whole source chain (edits and rivers included)
+		double heightsMs = 0.0;   // the tile's heights and apron through the whole source chain (edits included)
 		double meshMs = 0.0;      // the vertex and index buffers of all its chunks
 		double splatMs = 0.0;     // the layer weights and their texture
 		double patchMs = 0.0;     // the last PatchTile
@@ -285,7 +283,7 @@ private:
 	TerrainTile tile_;
 	// Puts the settings the tile decides back (its width, resolution, no noise).
 	void ForceTileSettings(TerrainSettings& settings) const;
-	TileHeights BuildTileHeights() const;   // the tile's samples and apron from the world: base ground with the world's rivers dug in
+	TileHeights BuildTileHeights() const;   // the tile's samples and apron from the world's ground function
 	TerrainSettings settings_;
 	DirectX::XMFLOAT3 position_ = { 0.0f, -2.0f, 0.0f };
 	DirectX::XMFLOAT3 rotation_ = { 0.0f, 0.0f, 0.0f };

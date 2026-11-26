@@ -1,11 +1,11 @@
-// Tests for patching a loaded tile in place (roadmap T2): src/WorldGrid.{h,cpp} TileSamplesAffectedBy and src/WorldRivers.{h,cpp}
+// Tests for patching a loaded tile in place (roadmap T2): src/WorldGrid.{h,cpp} TileSamplesAffectedBy and src/WorldTileHeights.{h,cpp}
 // GenerateTileBlock. No Direct3D, no framework.
 //   1. Which samples of a tile a changed lattice rectangle can reach (the block, grown by one, apron included, clipped).
-//   2. A block of a tile equals the same samples of the whole tile (with and without a river dug in).
+//   2. A block of a tile equals the same samples of the whole tile.
 //   3. THE ACCEPTANCE: after every one of 200 random brush strokes, a tile that was only PATCHED (just the affected samples were
 //      rewritten) equals a tile built from scratch, sample for sample, apron included. This is what Terrain::PatchTile relies on.
 #include "WorldEdits.h"
-#include "WorldRivers.h"
+#include "WorldTileHeights.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -51,21 +51,6 @@ static void TestAffectedRect()
     CHECK(TileSamplesAffectedBy(grid, { 0, 0 }, 5, 5, 4, 4).IsEmpty());       // an empty change reaches nothing
 }
 
-// A river across tile (0, 0): digs a valley through the hills.
-static WorldRiver MakeRiver()
-{
-    WorldRiver river;
-    river.id = 3;
-    const float points[][2] = { { -40, 60 }, { 90, 120 }, { 170, 110 }, { 230, 190 }, { 300, 260 } };
-    for (const auto& p : points) {
-        RiverPath::Sample s;
-        s.x = p[0]; s.z = p[1]; s.halfWidth = 10.0f; s.level = 0.0f;
-        river.path.push_back(s);
-    }
-    river.carve.level = 0.36f; river.carve.depth = 0.03f; river.carve.bankWidth = 20.0f; river.carve.bankHeight = 0.04f;
-    return river;
-}
-
 static const FractalWorldSettings kHills = { 7, 6, 400.0f };
 
 // The value GenerateTileHeights holds for tile-local sample (x, z), apron included. The four corners of the apron are not stored.
@@ -102,14 +87,13 @@ static void TestBlockEqualsTileSlice()
     const WorldGridSettings grid = SmallGrid();
     const int cells = grid.TileCells();
     const FractalHeightSource source(kHills);
-    const std::vector<WorldRiver> rivers = { MakeRiver() };
     const TileSampleRect rects[] = { { 0, 0, cells, cells }, { 10, 12, 20, 40 }, { -1, -1, cells + 1, cells + 1 }, { -1, 30, 3, 33 }, { cells - 2, -1, cells + 1, 5 } };
-    for (const std::vector<WorldRiver>* withRivers : { static_cast<const std::vector<WorldRiver>*>(nullptr), &rivers }) {
-        const TileHeights whole = GenerateTileHeights(source, grid, { 0, 0 }, withRivers);
+    {
+        const TileHeights whole = GenerateTileHeights(source, grid, { 0, 0 });
         bool same = true;
         int compared = 0;
         for (const TileSampleRect& rect : rects) {
-            const std::vector<float> block = GenerateTileBlock(source, grid, { 0, 0 }, withRivers, rect);
+            const std::vector<float> block = GenerateTileBlock(source, grid, { 0, 0 }, rect);
             same = same && block.size() == static_cast<size_t>(rect.Width()) * rect.Height();
             for (int z = rect.z0; z <= rect.z1; ++z) {
                 for (int x = rect.x0; x <= rect.x1; ++x) {
@@ -123,23 +107,23 @@ static void TestBlockEqualsTileSlice()
         CHECK(same);
         CHECK(compared > 4000);
     }
-    CHECK(GenerateTileBlock(source, grid, { 0, 0 }, nullptr, TileSampleRect{}).empty());
+    CHECK(GenerateTileBlock(source, grid, { 0, 0 }, TileSampleRect{}).empty());
 }
 
 static unsigned g_seed = 12345u;
 static float Random01() { g_seed = g_seed * 1664525u + 1013904223u; return static_cast<float>((g_seed >> 8) & 0xFFFF) / 65535.0f; }
 
-static void RunStrokes(const std::vector<WorldRiver>* rivers, const char* label)
+static void RunStrokes(const char* label)
 {
     const WorldGridSettings grid = SmallGrid();
     const int cells = grid.TileCells();
     const double mpc = grid.metresPerCell;
     const auto ground = std::make_shared<const FractalHeightSource>(kHills);
     auto edits = std::make_shared<WorldEdits>(cells);
-    const EditedHeightSource edited(ground, edits, mpc);
+    const EditedHeightSource edited(ground, edits, mpc, 1.0);
     const TileCoord tile{ 0, 0 };
 
-    TileHeights live = GenerateTileHeights(edited, grid, tile, rivers);   // the tile as loaded; from now on it is only PATCHED
+    TileHeights live = GenerateTileHeights(edited, grid, tile);   // the tile as loaded; from now on it is only PATCHED
     const TileHeights start = live;
     int touched = 0, identical = 0;
     const BrushMode modes[] = { BrushMode::Raise, BrushMode::Lower, BrushMode::Smooth, BrushMode::Flatten };
@@ -151,15 +135,15 @@ static void RunStrokes(const std::vector<WorldRiver>* rivers, const char* label)
         brush.targetHeight = Random01();
         // Positions reach well past the tile on every side: strokes next to the tile change only its apron.
         const double x = -60.0 + 380.0 * Random01(), z = -60.0 + 380.0 * Random01();
-        const LatticeRect changed = ApplyWorldHeightBrush(*edits, *ground, mpc, brush, x, z, 0.1f, nullptr);
+        const LatticeRect changed = ApplyWorldHeightBrush(*edits, *ground, mpc, 1.0, brush, x, z, 0.1f, nullptr);
         const TileSampleRect rect = TileSamplesAffectedBy(grid, tile, changed.minX, changed.minZ, changed.maxX, changed.maxZ);
         if (!rect.IsEmpty()) {
             ++touched;
-            const std::vector<float> block = GenerateTileBlock(edited, grid, tile, rivers, rect);
+            const std::vector<float> block = GenerateTileBlock(edited, grid, tile, rect);
             for (int j = 0; j < rect.Height(); ++j)
                 for (int i = 0; i < rect.Width(); ++i) StoreAt(live, cells, rect.x0 + i, rect.z0 + j, block[static_cast<size_t>(j) * rect.Width() + i]);
         }
-        const TileHeights fresh = GenerateTileHeights(edited, grid, tile, rivers);
+        const TileHeights fresh = GenerateTileHeights(edited, grid, tile);
         if (SameTile(live, fresh)) ++identical;
     }
     std::printf("%s: %d of 200 strokes reached the tile; patched tile equals rebuilt tile after %d of 200\n", label, touched, identical);
@@ -170,9 +154,7 @@ static void RunStrokes(const std::vector<WorldRiver>* rivers, const char* label)
 
 static void TestPatchEqualsRebuild()
 {
-    RunStrokes(nullptr, "no river");
-    const std::vector<WorldRiver> rivers = { MakeRiver() };
-    RunStrokes(&rivers, "with a river");
+    RunStrokes("sculpt strokes");
 }
 
 int main()

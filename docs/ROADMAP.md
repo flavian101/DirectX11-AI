@@ -103,12 +103,10 @@ Done with this roadmap: `WorldTileFile` (the baked tile file; nothing read it) i
     reads or writes a standalone terrain or its sculpt and paint images. The editor's single-terrain inspector, its sculpt and paint plumbing, the terrain texture picker,
     `AddRiver` / `RemoveRiver` and the water's "Fit size to terrain" button are deleted; the brush works on the world only. The default scene is a world, an ocean, a cube
     and a sky. The terrain noise settings are gone (`noiseSeed` became `breakupSeed`: it only seeds the layer rules).
-  - Kept on purpose: the world's ground is still made from `WorldPicture`, `WorldShape`, `heightScale`, `baseHeight` and `pictureOffsetX/Z`, and its rivers still go through
-    the ground functions (`WorldRivers`, `RiverCarve`, `RiverPath`, `TerrainWorldSettings::rivers`). They cannot be created any more. H7 replaces the whole ground and deletes
-    them; deleting them first would leave the world without ground.
+  - Kept for H7 (done since): the old picture, shape and river code, which were the world's ground at the time.
   - Consequences you will see: **scatter is off** (it read "the first terrain"; the Add scatter items are gone and an existing scatter object shows nothing) until X1 puts it
     on the world, and **the world has no panel for its look** (layer rules, tints, textures) because that lived in the old terrain inspector: H10.
-  - Tests: `tests/world_edits_test.cpp`, `tests/world_picture_test.cpp`, `tests/world_base_height_test.cpp`, `tests/world_grid_test.cpp`
+  - Tests: `tests/world_edits_test.cpp`, `tests/world_base_height_test.cpp`, `tests/world_grid_test.cpp`
   - Acceptance (for `[x]`): in the editor, a new scene has a world; Add shows no single terrain; sculpt and paint work on the world and undo; the water sees the shore.
 - **T2** `[~]` Water: one ocean, no patches, no other kinds of water
   - Done: `WaterBodyType`, `WaterTypeUi`, `WaterRiver`, `WaterFlow` and `WaterSelect` are deleted. `WaterSettings` is the ocean: its defaults ARE the ocean (sea level 0,
@@ -164,15 +162,26 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - What: strength, wavelength, octaves, seed, ridged. Band-limited, unclamped, deterministic in world coordinates. The valley mask is not carried over.
   - Tests: `tests/height_detail_test.cpp`
   - Acceptance: strength 0 (or a negative or NaN one) adds exactly 0; the detail never goes beyond plus or minus the strength, in either style and at 1 to 8 octaves, and really uses it; over a 3 km square its mean is under 5% of the strength (a ridged layer had a mean of 0.2423 of its strength until that was measured and removed); the slope never exceeds the bound that follows from the octave sizes (a finer octave than promised breaks it); no jump across x = 0 or z = 0; the same position gives the same value anywhere in the world. Four deliberate mutants (ridged mean left in, octaves too fine, truncating instead of flooring, no normalisation) fail the tests.
-- **H6** `[ ]` Edits in metres
-  - What: brush deltas in metres on the world lattice, per tile, on the new ground function. (Rivers are gone: T2.)
-  - Tests: `tests/height_edits_test.cpp`
-  - Acceptance: after re-importing with another `lowestY`, an edit keeps its height in world Y; an edit across a tile border is continuous.
-- **H7** `[ ]` Wire the new ground into the world
-  - What: `TerrainWorld` takes its heights from H1 to H6 and nothing else; the editor's import panel is "picture, lowest Y, relief, metres per cell". The old ground goes in the same
-    commit: `WorldPicture`, `WorldShape`, `heightScale`, `baseHeight`, `pictureOffsetX/Z` and the world rivers (`WorldRivers`, `RiverCarve`, `RiverPath`, `TerrainWorldSettings::rivers`,
-    `TerrainTile::rivers`, `river_test`, `world_rivers_test`), with the ground functions that carve them (`GenerateTileHeights`, `GenerateTileBlock`, `BuildWorldGroundGrid`).
-  - Acceptance: it builds; scatter and placement ask the same ground function the tiles are built from.
+- **H6** `[~]` Edits in metres
+  - Done: the world's sculpt edits store each height delta in METRES (`WorldEdits`), and `EditedHeightSource` and `ApplyWorldHeightBrush` take the world's relief to turn them into ground units
+    and back. A bump is as many metres tall whatever the relief is; change the relief and the edit keeps its metres. The edits file is version 2; a version-1 file (ground units) is refused
+    with a message, not read as if it were metres.
+  - Not done: the visible height is still held between 0 and 1 (the tiles' range) after the edit is added, so sculpting cannot go above `baseHeight + heightScale` or below `baseHeight`.
+    The range is the one the picture was imported into, so nothing of the PICTURE is clipped; extending the range for sculpting is its own change (a headroom setting).
+  - Tests: `tests/world_edits_test.cpp`, `tests/tile_patch_test.cpp`
+  - Acceptance (for `[x]`): sculpt a hill, change the relief, and the hill keeps its height in metres; an edit across a tile border is continuous; an old edits file shows the message.
+- **H7** `[~]` Wire the new ground into the world
+  - Done: the world's ground is `RasterHeightSource` (the picture imported by H1, smoothed by H3, de-terraced by H4, averaged to the lattice) plus `DetailedHeightSource` (H5, in metres)
+    and the edits, and nothing else. `src/WorldGroundSource.{h,cpp}` is new; `WorldShape` (levels, curve, invert, smoothing, valley mask, detail) and `WorldPicture` (the old reader, pyramid and auto-levels)
+    are deleted, with their tests and `TerrainWorld::AutoLevels`. The world's settings have `detail` and `deterrace` instead of `shape`. `baseHeight` and `heightScale` stay, with the meaning
+    H1 gave them (lowest Y and relief: the picture's lowest and highest pixel are fitted to them, so no pixel is clipped); the inspector calls them "Lowest ground" and "Relief" and shows the
+    picture's true range, typical slope, share below Y = 0 and the 8-bit stairs option (H2). The world rivers are deleted too: `WorldRivers`, `RiverCarve`, `RiverPath`, `TerrainWorldSettings::rivers`,
+    `TerrainTile::rivers`, `river_test`, `world_rivers_test`. The tile-height generation that lived in `WorldRivers.h` is now `src/WorldTileHeights.{h,cpp}`.
+  - Not done: `pictureOffsetX/Z` stay (H8 centres the picture). The ground is still stored as a value between 0 and 1 over [`baseHeight`, `baseHeight + heightScale`], not as raw metres: the tile
+    meshes clamp to that range (see H6). Scatter and placement ask the same ground function through `Scene`; scatter itself still waits for X1.
+  - Tests: `tests/world_ground_source_test.cpp`, `tests/world_edits_test.cpp`, `tests/world_height_test.cpp`, `tests/world_base_height_test.cpp`, `tests/water_visibility_test.cpp`, `tests/tile_patch_test.cpp`
+  - Acceptance (for `[x]`): in the editor the dark-alien picture imports with its true range, a sea-level coast has no stairs, the detail slider adds bumps of the stated height, and the Ground panel
+    shows the numbers it should.
 - **H8** `[ ]` A new world is centred (decision D2)
   - What: New World makes symmetric bounds; the world's picture is centred on the origin; sea level defaults to 0.
   - Tests: `tests/world_grid_test.cpp` (extended)

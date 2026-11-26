@@ -47,33 +47,6 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ReflectionMode, { { ReflectionMode::Sky, "sky" }, {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WorldGridSettings, chunksPerTile, metresPerCell)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FractalWorldSettings, seed, octaves, baseWavelength)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WorldBounds, bounded, minX, minZ, maxX, maxZ)   // (phase 1 of docs/ROADMAP.md)
-// A river of the world: its settings, and the path as [x, z, halfWidth, level] per sample (the carve needs no more than that).
-inline void to_json(json& j, const WorldRiver& river)
-{
-    json path = json::array();
-    for (const RiverPath::Sample& s : river.path) path.push_back(json::array({ s.x, s.z, s.halfWidth, s.level }));
-    j = { { "id", river.id }, { "level", river.carve.level }, { "depth", river.carve.depth }, { "bankWidth", river.carve.bankWidth },
-          { "bankHeight", river.carve.bankHeight }, { "path", std::move(path) } };
-}
-inline void from_json(const json& j, WorldRiver& river)
-{
-    river = WorldRiver{};
-    river.id = j.value("id", 0);
-    river.carve.level = j.value("level", river.carve.level);
-    river.carve.depth = j.value("depth", river.carve.depth);
-    river.carve.bankWidth = j.value("bankWidth", river.carve.bankWidth);
-    river.carve.bankHeight = j.value("bankHeight", river.carve.bankHeight);
-    if (!j.contains("path") || !j["path"].is_array()) return;
-    for (const json& p : j["path"]) {
-        if (!p.is_array() || p.size() < 4) continue;
-        RiverPath::Sample s;
-        s.x = p[0].get<float>();
-        s.z = p[1].get<float>();
-        s.halfWidth = p[2].get<float>();
-        s.level = p[3].get<float>();
-        river.path.push_back(s);
-    }
-}
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PostSettings, srgbEncode, exposureEV, toneMapper)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ShadowSettings, enabled, resolution, depthBias, slopeBias, normalOffset, strength)
@@ -149,12 +122,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainSettings, width, heightSc
                                                 roughnessScale, groundTint, rockTint, slopeStart, slopeFade, shoreHeight, shoreWidth,
                                                 snowHeight, snowFade, breakupScale, breakupAmount, shoreColor, snowColor, frustumCulling,
                                                 lodEnabled, lodDistance0, lodDistance1)
-// The shape of a world's ground (levels, curve, smoothing, detail noise): src/WorldShape.h.
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HeightShapeSettings, blackPoint, whitePoint, curve, invert, smoothing, bicubic, prefilter, detailStrength,
-                                                detailWavelength, detailOctaves, detailSeed, detailRidged, detailValleyMask)
-// Defined AFTER TerrainSettings: a world can carry the material of the terrain it was migrated from. `source` is stored as a number (0 fractal
-// hills, 1 picture). A scene saved before the picture source, the shape or the material existed has none of the new keys and loads as the
-// endless fractal world it always was. (The world's EDITS are not here: they are a file beside the scene, see SceneSerializer.cpp.)
+// The detail layer of a world's ground, in metres: src/HeightDetail.h.
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HeightDetailSettings, strength, wavelength, octaves, seed, ridged)
+// Defined AFTER HeightDetailSettings. `source` is stored as a number (0 fractal hills, 1 picture). (The world's EDITS are not here: they are a file beside
+// the scene, see SceneSerializer.cpp.)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainWorldSettings, grid, source, fractal, picturePath, pictureWidth, pictureOffsetX, pictureOffsetZ, bounds,
-                                                shape, heightScale, baseHeight, viewDistance, rivers)
+                                                detail, deterrace, heightScale, baseHeight, viewDistance)
 

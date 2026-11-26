@@ -17,7 +17,7 @@ bool WorldGroundGrid::Sample(double worldX, double worldZ, float& heightMetres) 
     return true;
 }
 
-WorldGroundGrid BuildWorldGroundGrid(const WorldHeightSource& source, const std::vector<WorldRiver>* rivers, const WorldGridSettings& grid,
+WorldGroundGrid BuildWorldGroundGrid(const WorldHeightSource& source, const WorldGridSettings& grid,
                                      const WorldBounds& bounds, float heightScale, double minX, double maxX, double minZ, double maxZ,
                                      int maxSamplesPerSide, float baseHeight)
 {
@@ -53,7 +53,6 @@ WorldGroundGrid BuildWorldGroundGrid(const WorldHeightSource& source, const std:
             if (bounds.bounded && (x < edgeMinX - 1e-6 || x > edgeMaxX + 1e-6 || z < edgeMinZ - 1e-6 || z > edgeMaxZ + 1e-6)) out.hasGround[index] = 0;
         }
     }
-    if (rivers && !rivers->empty()) CarveRiversIntoBlock(out.metres, out.countX, out.countZ, firstX, firstZ, step, *rivers);   // 0..1, like a tile's
     for (float& value : out.metres) value = baseHeight + value * heightScale;   // 0..1 -> world Y in metres: a tile's vertices times heightScale, on its position.y
     return out;
 }
@@ -75,7 +74,6 @@ std::vector<float> WorldGroundFunction::Lattice(std::int64_t firstX, std::int64_
     std::vector<float> block(static_cast<size_t>(count) * count);
     for (int j = 0; j < count; ++j)
         for (int i = 0; i < count; ++i) block[static_cast<size_t>(j) * count + i] = source->Height01((firstX + i) * lattice, (firstZ + j) * lattice);
-    if (rivers && !rivers->empty()) CarveRiversIntoBlock(block, count, count, firstX, firstZ, lattice, *rivers);
     for (float& value : block) value = baseHeight + value * heightScale;   // the same rule as BuildWorldGroundGrid
     return block;
 }

@@ -8,7 +8,7 @@
 #include "ScatterPlacement.h"
 #include "ScatterTileGround.h"
 #include "TerrainSplat.h"
-#include "WorldRivers.h"
+#include "WorldTileHeights.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -43,7 +43,7 @@ static std::unique_ptr<TileData> MakeTile(const FractalHeightSource& source, int
     const int cells = grid.TileCells();
     const float size = cells * grid.metresPerCell;
     auto tile = std::make_unique<TileData>();
-    const TileHeights heights = GenerateTileHeights(source, grid, { tx, tz }, nullptr);
+    const TileHeights heights = GenerateTileHeights(source, grid, { tx, tz });
     tile->field.Reset({ cells, cells, size, size, kHeightScale }, heights.samples);
     tile->field.SetApron(heights.apron);
     tile->splat.Resize(cells, cells);

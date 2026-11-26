@@ -1,13 +1,12 @@
 #pragma once
-// The ground of a world as a plain grid of heights in metres, made from the world's GROUND FUNCTION (source -> shape -> edits ->
-// rivers: decision 3 of docs/ROADMAP.md) and not from whichever tile meshes happen to be loaded. Pure C++, no Direct3D.
+// The ground of a world as a plain grid of heights in metres, made from the world's GROUND FUNCTION (raster -> detail -> edits: decision 3
+// of docs/ROADMAP.md) and not from whichever tile meshes happen to be loaded. Pure C++, no Direct3D.
 //
 // Why it exists (roadmap W1): the water measures the ground under it to know where it is deep and where it is dry. It used to ask
 // the loaded tile meshes, and "no tile here" meant "100 m of open ocean". A tile that had not streamed in yet, a tile being
 // replaced, and a tile at a coarser level of detail all gave the water a wrong answer. The ground function has an answer for
 // every point of the world, loaded or not.
 #include "WorldGrid.h"
-#include "WorldRivers.h"
 #include <vector>
 
 struct WorldGroundGrid {
@@ -31,8 +30,7 @@ struct WorldGroundGrid {
 struct WorldVec3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
 
 struct WorldGroundFunction {
-    const WorldHeightSource* source = nullptr;          // shape and edits over the base ground (not owned: it must outlive this struct)
-    const std::vector<WorldRiver>* rivers = nullptr;    // may be null
+    const WorldHeightSource* source = nullptr;          // the ground: raster, detail and edits (not owned: it must outlive this struct)
     WorldGridSettings grid;
     WorldBounds bounds;
     float heightScale = 1.0f;   // metres of ground height 1.0: how TALL the ground is (the hills)
@@ -52,7 +50,7 @@ struct WorldGroundFunction {
     bool Raycast(const WorldVec3& origin, const WorldVec3& direction, float maxDistance, float& distance) const;
 
 private:
-    // The heights in metres of a count x count block of lattice points whose first is (firstX, firstZ), rivers dug in.
+    // The heights in metres of a count x count block of lattice points whose first is (firstX, firstZ).
     std::vector<float> Lattice(std::int64_t firstX, std::int64_t firstZ, int count) const;
 };
 
@@ -63,8 +61,8 @@ private:
 // The ground over the rectangle minX..maxX, minZ..maxZ (world metres; grown by one sample all round). The samples sit on the
 // world's own lattice (multiples of `step`), so at full resolution each one is exactly the height a tile's vertex has. A
 // rectangle that would need more than maxSamplesPerSide samples across gets a step that is a whole multiple of the lattice.
-// `rivers` may be null. A point beyond the edge of a bounded world has no ground. Every height is `baseHeight + ground01 * heightScale`
+// A point beyond the edge of a bounded world has no ground. Every height is `baseHeight + ground01 * heightScale`
 // (world Y in metres); `baseHeight` comes last and defaults to 0 so a caller that never heard of it keeps its old answer.
-WorldGroundGrid BuildWorldGroundGrid(const WorldHeightSource& source, const std::vector<WorldRiver>* rivers, const WorldGridSettings& grid,
+WorldGroundGrid BuildWorldGroundGrid(const WorldHeightSource& source, const WorldGridSettings& grid,
                                      const WorldBounds& bounds, float heightScale, double minX, double maxX, double minZ, double maxZ,
                                      int maxSamplesPerSide = 1024, float baseHeight = 0.0f);

@@ -26,38 +26,27 @@ static WorldGridSettings SmallGrid()
     return grid;
 }
 
-static WorldRiver MakeRiver()
-{
-    WorldRiver river;
-    river.id = 3;
-    const float points[][2] = { { -40, 100 }, { 120, 140 }, { 260, 130 }, { 400, 220 }, { 560, 300 } };
-    for (const auto& p : points) { RiverPath::Sample s; s.x = p[0]; s.z = p[1]; s.halfWidth = 10.0f; s.level = 0.0f; river.path.push_back(s); }
-    river.carve.level = 0.30f; river.carve.depth = 0.05f; river.carve.bankWidth = 20.0f; river.carve.bankHeight = 0.04f;
-    return river;
-}
-
 static unsigned g_seed = 4242u;
 static double Random01() { g_seed = g_seed * 1664525u + 1013904223u; return static_cast<double>((g_seed >> 8) & 0xFFFF) / 65535.0; }
 
-static WorldGroundFunction MakeFunction(const WorldHeightSource& source, const std::vector<WorldRiver>* rivers, float heightScale, float baseHeight)
+static WorldGroundFunction MakeFunction(const WorldHeightSource& source, float heightScale, float baseHeight)
 {
     WorldGroundFunction f;
-    f.source = &source; f.rivers = rivers; f.grid = SmallGrid(); f.bounds = WorldBounds{}; f.heightScale = heightScale; f.baseHeight = baseHeight;
+    f.source = &source; f.grid = SmallGrid(); f.bounds = WorldBounds{}; f.heightScale = heightScale; f.baseHeight = baseHeight;
     return f;
 }
 
-// 1. The base lifts every height by the same amount, with or without a river.
+// 1. The base lifts every height by the same amount.
 static void TestBaseLiftsEveryHeight()
 {
     const FractalHeightSource source(kHills);
-    const std::vector<WorldRiver> rivers = { MakeRiver() };
     const float bases[] = { -250.0f, -2.0f, 0.0f, 37.5f, 800.0f };
-    for (const std::vector<WorldRiver>* withRivers : { static_cast<const std::vector<WorldRiver>*>(nullptr), &rivers }) {
-        const WorldGroundFunction flat = MakeFunction(source, withRivers, kHeightScale, 0.0f);
+    {
+        const WorldGroundFunction flat = MakeFunction(source, kHeightScale, 0.0f);
         double worst = 0.0;
         int compared = 0;
         for (float base : bases) {
-            const WorldGroundFunction lifted = MakeFunction(source, withRivers, kHeightScale, base);
+            const WorldGroundFunction lifted = MakeFunction(source, kHeightScale, base);
             for (int k = 0; k < 400; ++k) {
                 const double x = Random01() * 700.0 - 100.0, z = Random01() * 700.0 - 100.0;
                 float a = 0.0f, b = 0.0f;
@@ -68,7 +57,7 @@ static void TestBaseLiftsEveryHeight()
                 ++compared;
             }
         }
-        std::printf("base height (%s): worst difference from 'height + base' %.6f m over %d points\n", withRivers ? "river" : "no river", worst, compared);
+        std::printf("base height (%s): worst difference from 'height + base' %.6f m over %d points\n", "ground", worst, compared);
         CHECK(worst < 2.0e-3);   // float precision at 800 m is about 6e-5 m per step
     }
 }
@@ -78,8 +67,8 @@ static void TestHillHeightScalesAboveTheBase()
 {
     const FractalHeightSource source(kHills);
     const float base = 55.0f;
-    const WorldGroundFunction low = MakeFunction(source, nullptr, 100.0f, base);
-    const WorldGroundFunction tall = MakeFunction(source, nullptr, 250.0f, base);
+    const WorldGroundFunction low = MakeFunction(source, 100.0f, base);
+    const WorldGroundFunction tall = MakeFunction(source, 250.0f, base);
     double worst = 0.0;
     for (int k = 0; k < 400; ++k) {
         const double x = Random01() * 700.0, z = Random01() * 700.0;
@@ -96,8 +85,8 @@ static void TestNormalsAndRaysIgnoreTheBase()
 {
     const FractalHeightSource source(kHills);
     const float base = 420.0f;
-    const WorldGroundFunction flat = MakeFunction(source, nullptr, kHeightScale, 0.0f);
-    const WorldGroundFunction lifted = MakeFunction(source, nullptr, kHeightScale, base);
+    const WorldGroundFunction flat = MakeFunction(source, kHeightScale, 0.0f);
+    const WorldGroundFunction lifted = MakeFunction(source, kHeightScale, base);
     double worstNormal = 0.0, worstRay = 0.0;
     int hits = 0;
     for (int k = 0; k < 200; ++k) {
@@ -127,12 +116,11 @@ static void TestNormalsAndRaysIgnoreTheBase()
 static void TestGroundGridFollowsTheBase()
 {
     const FractalHeightSource source(kHills);
-    const std::vector<WorldRiver> rivers = { MakeRiver() };
     const WorldBounds bounds;   // endless
     const float base = -37.0f;
-    const WorldGroundGrid plain = BuildWorldGroundGrid(source, &rivers, SmallGrid(), bounds, kHeightScale, 0.0, 400.0, 0.0, 400.0);
-    const WorldGroundGrid defaulted = BuildWorldGroundGrid(source, &rivers, SmallGrid(), bounds, kHeightScale, 0.0, 400.0, 0.0, 400.0, 1024, 0.0f);
-    const WorldGroundGrid lifted = BuildWorldGroundGrid(source, &rivers, SmallGrid(), bounds, kHeightScale, 0.0, 400.0, 0.0, 400.0, 1024, base);
+    const WorldGroundGrid plain = BuildWorldGroundGrid(source, SmallGrid(), bounds, kHeightScale, 0.0, 400.0, 0.0, 400.0);
+    const WorldGroundGrid defaulted = BuildWorldGroundGrid(source, SmallGrid(), bounds, kHeightScale, 0.0, 400.0, 0.0, 400.0, 1024, 0.0f);
+    const WorldGroundGrid lifted = BuildWorldGroundGrid(source, SmallGrid(), bounds, kHeightScale, 0.0, 400.0, 0.0, 400.0, 1024, base);
     CHECK(!plain.IsEmpty() && plain.metres.size() == lifted.metres.size());
     CHECK(plain.metres == defaulted.metres);   // a base of 0 gives bit for bit the old grid
     CHECK(plain.hasGround == lifted.hasGround);
@@ -142,9 +130,9 @@ static void TestGroundGridFollowsTheBase()
     CHECK(worst < 1.0e-3);
 
     // The grid the water measures and the function the player stands on may differ a little (the grid is bilinear, the mesh is two triangles
-    // per cell: near a steep river bank that is metres), but the BASE must not change that: the gap is the same at a base of 0 and of -37 m.
+    // per cell: near a steep slope that is metres), but the BASE must not change that: the gap is the same at a base of 0 and of -37 m.
     auto gapBetweenGridAndFunction = [&](const WorldGroundGrid& grid, float baseHeight) {
-        const WorldGroundFunction ground = MakeFunction(source, &rivers, kHeightScale, baseHeight);
+        const WorldGroundFunction ground = MakeFunction(source, kHeightScale, baseHeight);
         std::vector<float> gaps;
         unsigned seed = 99u;
         for (int k = 0; k < 300; ++k) {

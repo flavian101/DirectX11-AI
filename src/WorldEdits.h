@@ -2,15 +2,15 @@
 // EDITS OF A WORLD (phases 3 and 4 of docs/ROADMAP.md): sculpting and painting stored PER TILE, and the migration of an old
 // single terrain into them. Plain maths and a small file format: no Direct3D. Tests: tests/world_edits_test.cpp.
 //
-// THE IDEA. The ground of a world is a function of the world position (source -> shape -> EDITS -> rivers). An edit is therefore not
+// THE IDEA. The ground of a world is a function of the world position (raster -> detail -> EDITS). An edit is therefore not
 // "this tile's vertex buffer was changed" but a small difference laid over the function:
-//   * a HEIGHT DELTA per sample of the finest grid (the visible height is clamp(ground + delta, 0, 1)), and
+//   * a HEIGHT DELTA per sample of the finest grid, in METRES (the visible height is clamp(ground + delta / relief, 0, 1) in ground units, so a
+//     bump is as many metres tall whatever the world's relief is: roadmap H6), and
 //   * painted LAYER WEIGHTS per cell of the finest grid (the same four numbers per texel as the old terrain's PaintMap).
 // Both live on the world's fine LATTICE: sample (i, j) is at world position (i, j) x metresPerCell, for any integer i and j. A sample
 // belongs to exactly ONE tile (tile = floor(i / cellsPerTile)), so the shared edge between two tiles is stored once and cannot disagree.
 // A coarser tile (level of detail) reads every 2nd, 4th or 8th lattice point, so tiles of different detail still meet.
 //
-// Edits sit BEFORE the rivers: a river is dug through sculpted ground, whatever order the two were made in.
 // Changing the grid (metres per cell, chunks per tile) invalidates the lattice, so the world clears its edits then (the editor locks those
 // controls while the world is edited, like the old terrain's mesh resolution).
 #include "HeightfieldEdit.h"
@@ -60,8 +60,8 @@ public:
     unsigned Revision() const { return revision_; }
 
     // --- heights ---
-    float HeightDelta(LatticeIndex x, LatticeIndex z) const;
-    void SetHeightDelta(LatticeIndex x, LatticeIndex z, float delta);   // |delta| below 1e-7 counts as none
+    float HeightDelta(LatticeIndex x, LatticeIndex z) const;   // metres
+    void SetHeightDelta(LatticeIndex x, LatticeIndex z, float delta);   // metres; |delta| below 1e-7 counts as none
 
     // --- paint (one texel per CELL, four weights; cell (i, j) covers lattice points i..i+1) ---
     void GetPaint(LatticeIndex x, LatticeIndex z, float out[4]) const;
@@ -92,21 +92,23 @@ private:
     std::unordered_map<std::uint64_t, Block> blocks_;
 };
 
-// Wraps a ground source and lays the edits over it: clamp(base + delta, 0, 1). Evaluated at the lattice points tiles ask for; between
-// them (never asked by tiles) it blends the four neighbours. `edits` is shared and live: change it, then rebuild the tiles it touched.
+// Wraps a ground source and lays the edits over it: clamp(base + delta / relief, 0, 1), the delta in metres and `reliefMetres` the metres of
+// ground value 1. Evaluated at the lattice points tiles ask for; between them (never asked by tiles) it blends the four neighbours.
+// `edits` is shared and live: change it, then rebuild the tiles it touched.
 class EditedHeightSource final : public WorldHeightSource {
 public:
-    EditedHeightSource(std::shared_ptr<const WorldHeightSource> base, std::shared_ptr<const WorldEdits> edits, double metresPerCell);
+    EditedHeightSource(std::shared_ptr<const WorldHeightSource> base, std::shared_ptr<const WorldEdits> edits, double metresPerCell, double reliefMetres);
     float Height01(double worldX, double worldZ) const override;
 private:
     std::shared_ptr<const WorldHeightSource> base_;
     std::shared_ptr<const WorldEdits> edits_;
     double metresPerCell_;
+    double reliefMetres_;
 };
 
 // --- brushes on the world -------------------------------------------------------------------------------------------------
 // The same brushes as the old terrain (same rates, same falloff, same two-pass smoothing) but on the lattice, so a stroke across a
-// tile border behaves as one stroke on one big terrain. Radii are in METRES. `base` is the ground WITHOUT the edits (and without rivers).
+// tile border behaves as one stroke on one big terrain. Radii are in METRES, and so are the stored deltas (`reliefMetres` converts to the brush's ground units and back). `base` is the ground WITHOUT the edits (and without rivers).
 class WorldStrokeRecorder {
 public:
     void Clear() { heights_.clear(); paints_.clear(); }
@@ -119,7 +121,7 @@ private:
     std::map<std::pair<LatticeIndex, LatticeIndex>, std::array<float, 4>> paints_;
 };
 
-LatticeRect ApplyWorldHeightBrush(WorldEdits& edits, const WorldHeightSource& base, double metresPerCell, const BrushSettings& brush,
+LatticeRect ApplyWorldHeightBrush(WorldEdits& edits, const WorldHeightSource& base, double metresPerCell, double reliefMetres, const BrushSettings& brush,
                                   double worldX, double worldZ, float seconds, WorldStrokeRecorder* recorder);
 LatticeRect ApplyWorldPaintBrush(WorldEdits& edits, double metresPerCell, const PaintBrush& brush, double worldX, double worldZ,
                                  float seconds, WorldStrokeRecorder* recorder);

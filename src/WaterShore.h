@@ -23,7 +23,7 @@ constexpr int kMaxTexelsTotal = 131072;   // ~360 x 360 for a square body: bakes
 constexpr float kMinTexelSize = 0.25f;    // world units: finer than this buys nothing (waves are longer than 1 unit)
 
 // How many texels the map gets for a body of this size: roughly square texels, never finer than kMinTexelSize, never
-// more than kMaxTexelsTotal in all. A big lake gets coarse texels (fine: shoaling is a slow, wide effect); a thin river
+// more than kMaxTexelsTotal in all. A big sea gets coarse texels (fine: shoaling is a slow, wide effect); a thin body
 // gets fine ones along its length.
 inline void ChooseResolution(float extentX, float extentZ, int& width, int& height)
 {

@@ -2,11 +2,12 @@
 // No Direct3D, no framework. The water measures the ground under it from the world's GROUND FUNCTION, not from loaded tile meshes.
 //   A. The depth map says what the ground says: water where the ground is below the level, none where it is above (contract 1, 2).
 //   B. Inside a bounded world there is always ground, whether or not any tile is loaded; beyond the edge there is none (contract 3).
-//   C. The ground grid equals the heights of a tile's vertices at full detail, with and without a river (contract 4).
+//   C. The ground grid equals the heights of a tile's vertices at full detail (contract 4).
 //   D. Moving, turning or scaling a body does not move the shoreline in the world (contract 5).
 //   E. Information for the open W1 suspect "a coarse mesh dips below the sea": how far a coarser tile can lie from the true ground.
 #include "WaterShore.h"
 #include "WorldGround.h"
+#include "WorldTileHeights.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -35,16 +36,6 @@ static WorldBounds TwoByTwo()
     return bounds;
 }
 
-static WorldRiver MakeRiver()
-{
-    WorldRiver river;
-    river.id = 3;
-    const float points[][2] = { { -40, 100 }, { 120, 140 }, { 260, 130 }, { 400, 220 }, { 560, 300 } };
-    for (const auto& p : points) { RiverPath::Sample s; s.x = p[0]; s.z = p[1]; s.halfWidth = 10.0f; s.level = 0.0f; river.path.push_back(s); }
-    river.carve.level = 0.30f; river.carve.depth = 0.05f; river.carve.bankWidth = 20.0f; river.carve.bankHeight = 0.04f;
-    return river;
-}
-
 // A body of the water: a square of `half` metres either way around (cx, cz), turned by `angle` radians. Local (-1..1) -> world.
 struct Body {
     double cx, cz, halfX, halfZ, angle;
@@ -69,15 +60,15 @@ static WaterShore::DepthField BakeBody(const Body& body, const WorldGroundGrid& 
         [&ground](float wx, float wz, float& y) { return ground.Sample(wx, wz, y); });
 }
 
-static WorldGroundGrid MakeGround(const FractalHeightSource& source, const std::vector<WorldRiver>* rivers, double lo, double hi)
+static WorldGroundGrid MakeGround(const FractalHeightSource& source, double lo, double hi)
 {
-    return BuildWorldGroundGrid(source, rivers, SmallGrid(), TwoByTwo(), kHeightScale, lo, hi, lo, hi);
+    return BuildWorldGroundGrid(source, SmallGrid(), TwoByTwo(), kHeightScale, lo, hi, lo, hi);
 }
 
 static void TestDepthMapSaysWhatTheGroundSays()
 {
     const FractalHeightSource source(kHills);
-    const WorldGroundGrid ground = MakeGround(source, nullptr, -128.0, 640.0);
+    const WorldGroundGrid ground = MakeGround(source, -128.0, 640.0);
     const Body body{ 256.0, 256.0, 384.0, 384.0, 0.0 };   // covers the world and a margin all round
     const int texels = 192;
     const WaterShore::DepthField field = BakeBody(body, ground, texels);
@@ -113,21 +104,20 @@ static void TestDepthMapSaysWhatTheGroundSays()
 }
 
 // The value a tile's vertex has at lattice point (x, z) of tile (tx, tz), in metres.
-static float TileVertexMetres(const FractalHeightSource& source, const std::vector<WorldRiver>* rivers, TileCoord tile, int x, int z)
+static float TileVertexMetres(const FractalHeightSource& source, TileCoord tile, int x, int z)
 {
     const WorldGridSettings grid = SmallGrid();
-    const TileHeights heights = GenerateTileHeights(source, grid, tile, rivers);
+    const TileHeights heights = GenerateTileHeights(source, grid, tile);
     return heights.samples[static_cast<size_t>(z) * (grid.TileCells() + 1) + x] * kHeightScale;
 }
 
 static void TestGroundEqualsTheTilesAtFullDetail()
 {
     const FractalHeightSource source(kHills);
-    const std::vector<WorldRiver> rivers = { MakeRiver() };
     const WorldGridSettings grid = SmallGrid();
     const int cells = grid.TileCells();
-    for (const std::vector<WorldRiver>* withRivers : { static_cast<const std::vector<WorldRiver>*>(nullptr), &rivers }) {
-        const WorldGroundGrid ground = MakeGround(source, withRivers, -20.0, 540.0);
+    {
+        const WorldGroundGrid ground = MakeGround(source, -20.0, 540.0);
         CHECK(ground.step == static_cast<double>(grid.metresPerCell));   // full detail: one sample per lattice point
         double worst = 0.0;
         int compared = 0;
@@ -138,28 +128,22 @@ static void TestGroundEqualsTheTilesAtFullDetail()
                         const double wx = (static_cast<double>(tx) * cells + x) * grid.metresPerCell, wz = (static_cast<double>(tz) * cells + z) * grid.metresPerCell;
                         float metres = 0.0f;
                         CHECK(ground.Sample(wx, wz, metres));
-                        worst = (std::max)(worst, static_cast<double>(std::fabs(metres - TileVertexMetres(source, withRivers, { tx, tz }, x, z))));
+                        worst = (std::max)(worst, static_cast<double>(std::fabs(metres - TileVertexMetres(source, { tx, tz }, x, z))));
                         ++compared;
                     }
                 }
             }
         }
-        std::printf("ground grid vs tile vertices (%s): worst difference %.6f m over %d vertices\n", withRivers ? "river" : "no river", worst, compared);
+        std::printf("ground grid vs tile vertices (%s): worst difference %.6f m over %d vertices\n", "ground", worst, compared);
         CHECK(compared > 600);
         CHECK(worst < 1.0e-3);   // contract 4: the water uses the ground the player sees
     }
-    // The river is really in the ground: its centre is lower than the same spot without it.
-    const WorldGroundGrid plain = MakeGround(source, nullptr, -20.0, 540.0), carved = MakeGround(source, &rivers, -20.0, 540.0);
-    float a = 0.0f, b = 0.0f;
-    CHECK(plain.Sample(260.0, 130.0, a) && carved.Sample(260.0, 130.0, b));
-    std::printf("a river's centre: %.2f m without it, %.2f m with it\n", a, b);
-    CHECK(b < a - 1.0f);
 }
 
 static void TestBodyTransformDoesNotMoveTheShore()
 {
     const FractalHeightSource source(kHills);
-    const WorldGroundGrid ground = MakeGround(source, nullptr, -300.0, 800.0);
+    const WorldGroundGrid ground = MakeGround(source, -300.0, 800.0);
     const Body one{ 256.0, 256.0, 300.0, 300.0, 0.0 };
     const Body two{ 230.0, 290.0, 330.0, 260.0, 0.7 };    // moved, turned and a different size
     const WaterShore::DepthField fieldOne = BakeBody(one, ground, 256), fieldTwo = BakeBody(two, ground, 256);
@@ -192,11 +176,11 @@ static void TestHowFarACoarseTileLiesFromTheGround()
     WorldGridSettings grid;
     grid.chunksPerTile = 8;
     grid.metresPerCell = 4.0f;
-    const WorldGroundGrid ground = BuildWorldGroundGrid(source, nullptr, grid, WorldBounds{}, kHeightScale, -20.0, 1050.0, -20.0, 1050.0);
+    const WorldGroundGrid ground = BuildWorldGroundGrid(source, grid, WorldBounds{}, kHeightScale, -20.0, 1050.0, -20.0, 1050.0);
     for (int lod = 1; lod <= 3; ++lod) {
         const WorldGridSettings coarse = grid.ForLod(lod);
         const int cells = coarse.TileCells();
-        const TileHeights heights = GenerateTileHeights(source, coarse, { 0, 0 }, nullptr);
+        const TileHeights heights = GenerateTileHeights(source, coarse, { 0, 0 });
         double above = 0.0, below = 0.0;   // the biggest amount the mesh stands above / below the true ground, at a vertex midway between its samples
         for (int z = 0; z < cells; ++z) {
             for (int x = 0; x < cells; ++x) {

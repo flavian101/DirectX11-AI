@@ -1,9 +1,10 @@
 // Tests for the world's ground at ONE point (roadmap C1): src/WorldGround.{h,cpp} WorldGroundFunction. No Direct3D, no framework.
-//   1. On a one-tile world it equals Terrain's own query (Heightfield::HeightAt / NormalAt over the tile's samples and apron), with and without a river.
+//   1. On a one-tile world it equals Terrain's own query (Heightfield::HeightAt / NormalAt over the tile's samples and apron).
 //   2. It is continuous across tile borders, whether or not any tile is loaded: there is no tile in this test.
 //   3. A bounded world has ground inside its edge and none beyond it.
 //   4. A ray from above finds the surface where HeightAt says it is, agrees with a slow brute-force walk, and misses what it should.
 #include "WorldGround.h"
+#include "WorldTileHeights.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -24,40 +25,29 @@ static WorldGridSettings SmallGrid()
     return grid;
 }
 
-static WorldRiver MakeRiver()
-{
-    WorldRiver river;
-    river.id = 3;
-    const float points[][2] = { { -40, 100 }, { 120, 140 }, { 260, 130 }, { 400, 220 }, { 560, 300 } };
-    for (const auto& p : points) { RiverPath::Sample s; s.x = p[0]; s.z = p[1]; s.halfWidth = 10.0f; s.level = 0.0f; river.path.push_back(s); }
-    river.carve.level = 0.30f; river.carve.depth = 0.05f; river.carve.bankWidth = 20.0f; river.carve.bankHeight = 0.04f;
-    return river;
-}
-
 static unsigned g_seed = 777u;
 static double Random01() { g_seed = g_seed * 1664525u + 1013904223u; return static_cast<double>((g_seed >> 8) & 0xFFFF) / 65535.0; }
 
-static WorldGroundFunction MakeFunction(const FractalHeightSource& source, const std::vector<WorldRiver>* rivers, const WorldBounds& bounds)
+static WorldGroundFunction MakeFunction(const FractalHeightSource& source, const WorldBounds& bounds)
 {
     WorldGroundFunction f;
-    f.source = &source; f.rivers = rivers; f.grid = SmallGrid(); f.bounds = bounds; f.heightScale = kHeightScale;
+    f.source = &source; f.grid = SmallGrid(); f.bounds = bounds; f.heightScale = kHeightScale;
     return f;
 }
 
 static void TestMatchesTheTilesOwnQuery()
 {
     const FractalHeightSource source(kHills);
-    const std::vector<WorldRiver> rivers = { MakeRiver() };
     const WorldGridSettings grid = SmallGrid();
     const int cells = grid.TileCells();
     const float size = cells * grid.metresPerCell;
-    for (const std::vector<WorldRiver>* withRivers : { static_cast<const std::vector<WorldRiver>*>(nullptr), &rivers }) {
+    {
         // The tile exactly as Terrain holds it: its samples, and the apron that lets a border vertex's normal read the neighbour.
-        const TileHeights tile = GenerateTileHeights(source, grid, { 0, 0 }, withRivers);
+        const TileHeights tile = GenerateTileHeights(source, grid, { 0, 0 });
         Heightfield field;
         field.Reset({ cells, cells, size, size, kHeightScale }, tile.samples);
         field.SetApron(tile.apron);
-        const WorldGroundFunction ground = MakeFunction(source, withRivers, WorldBounds{});
+        const WorldGroundFunction ground = MakeFunction(source, WorldBounds{});
 
         double worstHeight = 0.0, worstNormal = 0.0;
         int compared = 0;
@@ -78,7 +68,7 @@ static void TestMatchesTheTilesOwnQuery()
             }
             ++compared;
         }
-        std::printf("one-tile world (%s): worst height difference %.6f m, worst normal difference %.6f over %d points\n", withRivers ? "river" : "no river", worstHeight, worstNormal, compared);
+        std::printf("one-tile world (%s): worst height difference %.6f m, worst normal difference %.6f over %d points\n", "ground", worstHeight, worstNormal, compared);
         CHECK(compared > 3500);
         CHECK(worstHeight < 1.0e-3);
         CHECK(worstNormal < 1.0e-4);
@@ -88,8 +78,7 @@ static void TestMatchesTheTilesOwnQuery()
 static void TestContinuousAcrossTiles()
 {
     const FractalHeightSource source(kHills);
-    const std::vector<WorldRiver> rivers = { MakeRiver() };
-    const WorldGroundFunction ground = MakeFunction(source, &rivers, WorldBounds{});   // an endless world: no tile is loaded anywhere
+    const WorldGroundFunction ground = MakeFunction(source, WorldBounds{});   // an endless world: no tile is loaded anywhere
     double worstJump = 0.0;
     const double border[] = { -512.0, -256.0, 0.0, 256.0, 512.0 };
     for (double b : border) {
@@ -109,7 +98,7 @@ static void TestBoundedEdge()
     const FractalHeightSource source(kHills);
     WorldBounds bounds;
     bounds.bounded = true; bounds.minX = 0; bounds.minZ = 0; bounds.maxX = 1; bounds.maxZ = 1;   // [0, 512] x [0, 512]
-    const WorldGroundFunction ground = MakeFunction(source, nullptr, bounds);
+    const WorldGroundFunction ground = MakeFunction(source, bounds);
     float h = 0.0f;
     WorldVec3 n;
     CHECK(ground.HeightAt(0.0, 0.0, h) && ground.HeightAt(512.0, 512.0, h) && ground.HeightAt(256.0, 256.0, h));   // the edge belongs to the world
@@ -122,7 +111,7 @@ static void TestBoundedEdge()
 static void TestRaycast()
 {
     const FractalHeightSource source(kHills);
-    const WorldGroundFunction ground = MakeFunction(source, nullptr, WorldBounds{});
+    const WorldGroundFunction ground = MakeFunction(source, WorldBounds{});
     int hits = 0;
     double worstSurface = 0.0, worstBrute = 0.0;
     for (int k = 0; k < 300; ++k) {
@@ -163,7 +152,7 @@ static void TestRayLeavesABoundedWorld()
     const FractalHeightSource source(kHills);
     WorldBounds bounds;
     bounds.bounded = true; bounds.minX = 0; bounds.minZ = 0; bounds.maxX = 1; bounds.maxZ = 1;
-    const WorldGroundFunction ground = MakeFunction(source, nullptr, bounds);
+    const WorldGroundFunction ground = MakeFunction(source, bounds);
     float distance = 0.0f;
     CHECK(!ground.Raycast({ 600, 300, 100 }, { 1, -0.05f, 0 }, 3000.0f, distance));    // flies away from the world: never meets it
     CHECK(ground.Raycast({ 300, 300, 100 }, { 0, -1, 0 }, 3000.0f, distance));         // straight down onto it
