@@ -6,6 +6,7 @@
 #include "Terrain.h"
 #include "WorldGrid.h"
 #include "WorldGroundSource.h"
+#include "WorldLook.h"
 #include "WorldEdits.h"
 #include "WorldGround.h"
 #include <d3d11.h>
@@ -45,6 +46,9 @@ struct TerrainWorldSettings {
     float heightScale = 240.0f;     // the RELIEF: metres from the lowest ground to the highest. For a picture this is what the file's lowest and highest pixel are
                                     // fitted to (H1: no pixel is clipped); for the hills it is their height. Moving it changes every slope
     float baseHeight = 0.0f;        // the LOWEST Y: the world Y of the lowest ground. Lifts or sinks the whole world, changes no slope (H1)
+    // The world's SEA LEVEL (world Y) and the look of its ground, whose sand and snow heights are metres above that sea (src/WorldLook.h, H10).
+    float seaLevel = 0.0f;
+    TerrainSettings look = DefaultWorldLook();
     float viewDistance = 5000.0f;   // tiles closer than this to the camera are loaded (far ones at a lower level of detail)
 
     static constexpr float kPictureWidthMin = 40.0f, kPictureWidthMax = 20000.0f;
@@ -56,7 +60,7 @@ struct TerrainWorldSettings {
 };
 
 // The look every tile gets: the default terrain material with the layer rules (shore, snow) scaled to this world's height.
-TerrainSettings MakeWorldMaterial(const TerrainWorldSettings& world);
+TerrainSettings MakeWorldMaterial(const TerrainWorldSettings& world);   // WorldMaterial(world.look, world.seaLevel, world.heightScale)
 
 // The world itself, as ONE object in the scene: it holds the settings (so it can be saved, edited and undone like anything
 // else) and owns no geometry. Its tiles are ordinary Terrain objects (IsTile) that it adds to the scene and removes again.
@@ -66,6 +70,8 @@ public:
     explicit TerrainWorld(ID3D11Device* device) : device_(device) {}
 
     const TerrainWorldSettings& GetSettings() const { return settings_; }
+    // The look and the sea level, applied to the loaded tiles WITHOUT rebuilding their meshes: only a splat map is baked again if a rule moved.
+    void SetLook(Scene& scene, const TerrainSettings& look, float seaLevel);
     void SetSettings(TerrainWorldSettings settings);   // clamps; every tile is rebuilt from the new settings
     // --- EDITS (roadmap phases 3 and 4): sculpting and painting stored per tile on the world's lattice, see src/WorldEdits.h ---
     const WorldEdits& Edits() const { return *edits_; }

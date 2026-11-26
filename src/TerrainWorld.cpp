@@ -19,6 +19,8 @@ void TerrainWorldSettings::Clamp()
     pictureCentreZ = std::clamp(pictureCentreZ, -kPictureCentreMax, kPictureCentreMax);
     bounds.Normalize();
     detail.Clamp();
+    look.Clamp();
+    seaLevel = std::clamp(seaLevel, kSeaLevelMin, kSeaLevelMax);
     heightScale = std::clamp(heightScale, TerrainSettings::kHeightMin, TerrainSettings::kHeightMax);
     baseHeight = std::clamp(baseHeight, kBaseHeightMin, kBaseHeightMax);
     viewDistance = std::clamp(viewDistance, kViewDistanceMin, kViewDistanceMax);
@@ -26,19 +28,19 @@ void TerrainWorldSettings::Clamp()
 
 TerrainSettings MakeWorldMaterial(const TerrainWorldSettings& world)
 {
-    TerrainSettings material;
-    material.heightScale = world.heightScale;
-    // The layer rules talk in world metres (world Y). The defaults suit a 45 m tall terrain standing at Y = 0, so they are scaled to this
-    // world's height and lifted by its base height: the sand and the snow stay at the same fraction of the ground when either one changes.
-    material.shoreHeight = world.baseHeight + world.heightScale * 0.03f;
-    material.shoreWidth = world.heightScale * 0.02f;
-    material.snowHeight = world.baseHeight + world.heightScale * 0.72f;
-    material.snowFade = world.heightScale * 0.08f;
-    // A tile is 1 km wide: the default detail distances (90 m, 220 m) would make most of it a coarse mesh.
-    material.lodDistance0 = 350.0f;
-    material.lodDistance1 = 900.0f;
-    material.Clamp();
-    return material;
+    return WorldMaterial(world.look, world.seaLevel, world.heightScale);
+}
+
+void TerrainWorld::SetLook(Scene& scene, const TerrainSettings& look, float seaLevel)
+{
+    settings_.look = look;
+    settings_.seaLevel = seaLevel;
+    settings_.Clamp();
+    dirty_ = true;
+    const TerrainSettings material = MakeWorldMaterial(settings_);
+    for (const auto& entry : tiles_) {
+        if (auto* terrain = dynamic_cast<Terrain*>(scene.Find(entry.second))) terrain->ApplySettings(material);
+    }
 }
 
 void TerrainWorld::SetSettings(TerrainWorldSettings settings)

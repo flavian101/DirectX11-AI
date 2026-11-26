@@ -127,5 +127,5 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HeightDetailSettings, strength, 
 // Defined AFTER HeightDetailSettings. `source` is stored as a number (0 fractal hills, 1 picture). (The world's EDITS are not here: they are a file beside
 // the scene, see SceneSerializer.cpp.)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TerrainWorldSettings, grid, source, fractal, picturePath, pictureWidth, pictureCentreX, pictureCentreZ, bounds,
-                                                detail, deterrace, heightScale, baseHeight, viewDistance)
+                                                detail, deterrace, heightScale, baseHeight, seaLevel, look, viewDistance)
 

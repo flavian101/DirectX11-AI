@@ -192,16 +192,20 @@ Pure logic first (no Direct3D, built and tested on any compiler), then wired int
   - What: import the dark-alien picture, fit it, fly around, sculpt, scatter.
   - Acceptance: flat areas appear only where the file is flat; peaks are rounded and complete; no stairs. Then H1 to H8 can become `[x]`.
 
-- **H10** `[ ]` The world's look
-  - What: a panel on the world for what the old terrain inspector held: the layer rules (slope, height, shore and snow bands), tints and the layer textures, applied to every tile.
-    (`MakeWorldMaterial` makes the automatic look from the world's height today; there is no way to change it.)
+- **H10** `[~]` The world's look
+  - Done: the world has a **sea level** (`seaLevel`, world Y) and a **look** (`TerrainSettings look`) whose sand and snow heights are metres ABOVE THE SEA (`src/WorldLook.h`), so the beach stays at the
+    shore when the relief, the lowest ground or the picture changes, and moves when the sea does. (The first automatic look put the sand at 3% of the relief above the lowest ground, nowhere near the sea.)
+    The inspector has a Look section: sea level (with "Match ocean"), sand and snow height and blend, rock slope, breakup, the four layers' tiling and tints, normal, AO and roughness, and a reset. It is
+    applied live: no mesh is rebuilt, only a splat map is baked again when a rule moves. `TerrainSettings` moved to its own pure header and source (`src/TerrainSettings.{h,cpp}`) so it can be tested.
+  - Not done: the sea level is the world's own number for now and the ocean's level is the ocean's own (the button copies it across); S1 makes the ocean read the world's sea level and removes the button.
+    The layer image files cannot be chosen per layer from the editor yet (they are looked up as `assets/Terrain/<Layer>/...`).
   - Tests: `tests/world_material_test.cpp`
-  - Acceptance: the beach sand follows sea level, not a fixed Y; changing a layer image changes every tile, and survives streaming.
+  - Acceptance (for `[x]`): the beach sand follows the sea level and not a fixed Y; changing the look changes every loaded tile at once, and tiles that stream in later have it too.
 
 ### M2. The world owns the sea
 
 - **S1** `[ ]` World water info
-  - What: one raster over the world bounds, built from the ground function: depth (`seaLevel` - ground), ocean flag, unit direction toward the nearest land and the distance to it
+  - What: the ocean reads the WORLD's sea level (H10) instead of having a level of its own, and "Match ocean" goes. One raster over the world bounds, built from the ground function: depth (`seaLevel` - ground), ocean flag, unit direction toward the nearest land and the distance to it
     (refraction and surf need both). Outside the bounds the ground is a constant great depth (decision D4), and the depth falls smoothly toward it so there is no step in the waves or a line
     of foam (Crest). Streamed with the tiles. A tile that is not loaded is never deep ocean inside the world (it is "unknown", and the sea waits).
   - Tests: `tests/world_sea_test.cpp`

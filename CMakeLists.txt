@@ -116,6 +116,7 @@ add_library(Engine STATIC
 	src/WorldGround.cpp
 	src/WorldGrid.cpp
 	src/WorldGroundSource.cpp
+	src/TerrainSettings.cpp
 	src/WorldTileHeights.cpp
 	src/HeightDeterrace.cpp
 	src/HeightDetail.cpp
@@ -271,6 +272,11 @@ if(BUILD_TESTS)
     add_executable(WorldGroundSourceTests tests/world_ground_source_test.cpp src/WorldGroundSource.cpp src/WorldGrid.cpp src/HeightDetail.cpp src/HeightRaster.cpp src/HeightSample.cpp src/HeightStats.cpp src/HeightDeterrace.cpp src/HeightPicture.cpp src/Png16.cpp src/libs/stb_image.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
     target_include_directories(WorldGroundSourceTests PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/libs)
     add_test(NAME WorldGroundSource COMMAND WorldGroundSourceTests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+    # The world's look follows the sea level (roadmap H10).
+    add_executable(WorldMaterialTests tests/world_material_test.cpp src/TerrainSettings.cpp)
+    target_include_directories(WorldMaterialTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME WorldMaterial COMMAND WorldMaterialTests)
 
     add_executable(WorldGridTests tests/world_grid_test.cpp src/WorldGrid.cpp src/TerrainSplat.cpp src/HeightfieldEdit.cpp src/Heightfield.cpp)
     target_include_directories(WorldGridTests PRIVATE ${CMAKE_SOURCE_DIR}/src)

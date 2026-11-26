@@ -2404,6 +2404,55 @@ void EditorLayer::DrawTerrainWorldInspector(TerrainWorld* world)
     }
     if (commit) world->SetSettings(s);   // every tile is rebuilt from the new settings
 
+    // ---- LOOK: sea level and the layer rules (roadmap H10). Sand and snow are measured from the SEA, so the beach stays at the shore. Applied live:
+    // no mesh is rebuilt, only the splat map when a rule moves. ----
+    ImGui::SeparatorText("Look");
+    {
+        TerrainSettings look = world->GetSettings().look;
+        float sea = world->GetSettings().seaLevel;
+        bool lookChanged = false;
+        lookChanged |= ImGui::DragFloat("Sea level (m)", &sea, 0.5f, kSeaLevelMin, kSeaLevelMax, "%.1f");
+        ImGui::SetItemTooltip("The world Y of the sea. The sand and the snow below are measured from it, so moving the sea moves the beach.");
+        if (Water* water = scene_->GetWater()) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Match ocean")) { sea = water->GetSettings().height; lookChanged = true; }
+            ImGui::SetItemTooltip("Takes the level of the ocean in the scene.");
+        }
+        lookChanged |= ImGui::Checkbox("Show layer weights", &look.showLayers);
+        ImGui::SetItemTooltip("Paints rock as red, snow as green and shore sand as blue: use it to tune the rules.");
+        lookChanged |= ImGui::SliderFloat("Sand height above sea (m)", &look.shoreHeight, -20.0f, 100.0f, "%.1f");
+        lookChanged |= ImGui::SliderFloat("Sand blend (m)", &look.shoreWidth, 0.1f, 30.0f, "%.1f");
+        lookChanged |= ImGui::SliderFloat("Snow height above sea (m)", &look.snowHeight, 0.0f, 1500.0f, "%.0f");
+        lookChanged |= ImGui::SliderFloat("Snow blend (m)", &look.snowFade, 0.1f, 50.0f, "%.1f");
+        lookChanged |= ImGui::SliderFloat("Rock starts at slope", &look.slopeStart, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("0 = flat, 1 = vertical. About 0.3 is a 45 degree slope.");
+        lookChanged |= ImGui::SliderFloat("Rock blend", &look.slopeFade, 0.01f, 1.0f, "%.2f");
+        lookChanged |= ImGui::SliderFloat("Edge breakup", &look.breakupAmount, 0.0f, 1.0f, "%.2f");
+        lookChanged |= ImGui::SliderFloat("Breakup scale", &look.breakupScale, TerrainSettings::kBreakupScaleMin, TerrainSettings::kBreakupScaleMax, "%.3f", ImGuiSliderFlags_Logarithmic);
+        lookChanged |= ImGui::SliderFloat("Ground tiling", &look.groundTiling, TerrainSettings::kRockTilingMin, TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
+        lookChanged |= ImGui::SliderFloat("Rock tiling", &look.rockTiling, TerrainSettings::kRockTilingMin, TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
+        lookChanged |= ImGui::SliderFloat("Sand tiling", &look.sandTiling, TerrainSettings::kRockTilingMin, TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
+        lookChanged |= ImGui::SliderFloat("Snow tiling", &look.snowTiling, TerrainSettings::kRockTilingMin, TerrainSettings::kRockTilingMax, "%.3f", ImGuiSliderFlags_Logarithmic);
+        lookChanged |= ImGui::SliderFloat("Rock brightness", &look.rockDarkness, 0.1f, 1.5f, "%.2f");
+        lookChanged |= ImGui::SliderFloat("Height blend", &look.heightBlend, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("0 = layers fade into each other like a double exposure.\nHigher = the taller bumps of each layer win, so stones poke through sand.");
+        lookChanged |= ImGui::SliderFloat("Normal strength", &look.normalStrength, 0.0f, 3.0f, "%.2f");
+        lookChanged |= ImGui::Checkbox("Flip green (OpenGL maps)", &look.flipGreen);
+        lookChanged |= ImGui::SliderFloat("AO strength", &look.aoStrength, 0.0f, 1.0f, "%.2f");
+        lookChanged |= ImGui::SliderFloat("Roughness scale", &look.roughnessScale, 0.0f, 2.0f, "%.2f");
+        auto tint = [&](const char* label, XMFLOAT3& colour) {
+            float rgb[3] = { colour.x, colour.y, colour.z };
+            if (ImGui::ColorEdit3(label, rgb)) { colour = { rgb[0], rgb[1], rgb[2] }; lookChanged = true; }
+        };
+        tint("Ground tint", look.groundTint);
+        tint("Rock tint", look.rockTint);
+        tint("Sand tint", look.shoreColor);
+        tint("Snow tint", look.snowColor);
+        ImGui::SetItemTooltip("Tints MULTIPLY the layer textures; white shows exactly the colours of each layer's image.");
+        if (ImGui::Button("Reset look")) { look = DefaultWorldLook(); lookChanged = true; }
+        if (lookChanged) world->SetLook(*scene_, look, sea);
+    }
+
     // Beyond the view distance there is no land at all. Fog is what makes that look like distance instead of an edge.
     if (ImGui::Button("Fog: hide the edge")) {
         FogSettings& fog = scene_->GetWeather().fog;
