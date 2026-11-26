@@ -266,12 +266,14 @@ change checked with DXC.
   - Also done (GPU half, step 2): `src/OceanGpu.h/.cpp`, the evolve pass's Direct3D 11 side: per band two structured buffers (the modes and omega), a 16-byte constant buffer and two RGBA32F textures with an SRV and a UAV each;
     `Evolve` dispatches every band; `ReadSpectra` copies a band back to the CPU (slow, for checks); `SelfCheck` runs once when the renderer starts and logs, per band, how far the GPU's spectrum is from
     `OceanGpuPack::EvolvePacked`. Not run on a GPU yet: written without the Windows SDK and only syntax-checked against stand-in headers.
-  - Editor check to do: the log shows three lines "Ocean GPU evolve check, band N ...: ok" (a "MISMATCH" or an error line means the shader or a resource is wrong).
-  - Still to do: the FFT compute shader (rows, then columns) and the pass that assembles displacement, slopes and the Jacobian; the same readback check on the finished sea; three cascades feeding the water's vertex and
-    pixel shaders, `Buoyancy` reading the CPU mirror, and deleting the 16-slot wave table, `WaterWaves` and the settings that only it used.
-  - What: the rest of this item is the GPU half. Boats need the heights on the CPU, the same for everybody: the CPU mirror runs the same FFT for the coarse cascades at a small size and `Buoyancy` reads it; it is the
-    reference the GPU result is tested against.
-  - Tests: `tests/ocean_fft_test.cpp`, `tests/ocean_gpu_pack_test.cpp`
+  - Also done (GPU half, step 3): `shaders/ocean_fft_cs.hlsl` (one thread group per row or column, bit-reversed load into groupshared memory, log2 n stages of butterflies; compiles at `cs_6_0` with warnings as errors) and its
+    C++ copy `src/OceanGpuFft.h`. Checked: the butterflies of a stage never touch an element twice; a line equals `OceanFFT::Fft1D` for 2 to 512 samples (lines longer than the group's 128 threads included); rows then
+    columns equal `Fft2D`; and evolve then FFT gives `OceanFFT::Evolve`'s height, displacement, slopes and Jacobian to 1e-4 of the wave size in all three bands, deep and shallow. `OceanGpu::Transform` runs it
+    (A -> work -> A, B -> work -> B), `Simulate` is Evolve then Transform, and `SelfCheck` now also compares the finished sea with `OceanFFT::Evolve`. Not run on a GPU yet.
+  - Editor check to do: the log shows three "Ocean GPU evolve check, band N ...: ok" lines and three "Ocean GPU sea check, band N ...: ok" lines (a "MISMATCH" or an error line means a shader or a resource is wrong).
+  - Still to do: the pass that assembles displacement, slopes and the Jacobian into the textures the water reads; three cascades feeding the water's vertex and pixel shaders, `Buoyancy` reading the CPU mirror, and deleting
+    the 16-slot wave table, `WaterWaves` and the settings that only it used.
+  - Tests: `tests/ocean_fft_test.cpp`, `tests/ocean_gpu_pack_test.cpp`, `tests/ocean_gpu_fft_test.cpp`
   - Acceptance: the CPU and GPU heights agree at test points; boats still float; over 4 km there is no repeating pattern; the straight surf bars and the "structures drifting" are gone.
 - **O3** `[ ]` A microfacet BRDF whose roughness comes from unresolved wave slope (D11)
   - What: replace the Blinn-Phong glint. `WaterBrdf.h` (pure maths, mirrored in the shader): GGX distribution, Smith masking, Schlick Fresnel with F0 from the index of refraction (about 0.02), and a

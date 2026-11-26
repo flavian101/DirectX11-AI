@@ -35,13 +35,25 @@ bool MakeStructuredBuffer(ID3D11Device* device, const void* data, UINT stride, U
 
 template <class T> void SafeRelease(T*& pointer) { if (pointer) { pointer->Release(); pointer = nullptr; } }
 
+// The largest difference between the CPU's numbers and the GPU's, next to the biggest CPU number, so the error reads as a fraction of the wave size.
+struct Fit {
+    double biggest = 0.0, worst = 0.0;
+    void Add(double reference, double gpu)
+    {
+        biggest = std::max(biggest, std::fabs(reference));
+        // NaN fails every comparison, so test it explicitly: a NaN from the GPU must count as the worst error, not vanish from max().
+        worst = std::max(worst, std::isfinite(gpu) ? std::fabs(gpu - reference) : 1e30);
+    }
+    double Relative() const { return biggest > 0.0 ? worst / biggest : 1e30; }
+};
+
 }   // namespace
 
 void OceanGpu::Band::Release()
 {
-    SafeRelease(uavA); SafeRelease(uavB);
-    SafeRelease(srvA); SafeRelease(srvB);
-    SafeRelease(textureA); SafeRelease(textureB);
+    SafeRelease(uavA); SafeRelease(uavB); SafeRelease(uavWorkA); SafeRelease(uavWorkB);
+    SafeRelease(srvA); SafeRelease(srvB); SafeRelease(srvWorkA); SafeRelease(srvWorkB);
+    SafeRelease(textureA); SafeRelease(textureB); SafeRelease(textureWorkA); SafeRelease(textureWorkB);
     SafeRelease(modesView); SafeRelease(omegaView);
     SafeRelease(modes); SafeRelease(omega); SafeRelease(constants);
 }
@@ -52,6 +64,7 @@ void OceanGpu::Release()
 {
     for (Band& band : bands_) band.Release();
     bands_.clear();
+    SafeRelease(fftConstants_);
 }
 
 bool OceanGpu::CreateBand(const OceanGpuPack::PackedBand& packed, Band& band)
@@ -70,7 +83,8 @@ bool OceanGpu::CreateBand(const OceanGpuPack::PackedBand& packed, Band& band)
     HRESULT hr = device_->CreateBuffer(&constantsDesc, nullptr, &band.constants);
     if (FAILED(hr)) { LOG_HR(hr, "Ocean constant buffer creation failed"); band.constants = nullptr; return false; }
 
-    // The two output textures: written by the evolve pass through a UAV, read by the FFT through an SRV. Never both in one pass.
+    // The textures: A and B are written by the evolve pass through a UAV and read by the FFT through an SRV; the work pair holds the image between the
+    // FFT's two passes. A texture is never read and written in the same pass, so the FFT goes A -> work -> A, and B the same way.
     D3D11_TEXTURE2D_DESC textureDesc{};
     textureDesc.Width = static_cast<UINT>(packed.n);
     textureDesc.Height = static_cast<UINT>(packed.n);
@@ -80,10 +94,10 @@ bool OceanGpu::CreateBand(const OceanGpuPack::PackedBand& packed, Band& band)
     textureDesc.SampleDesc.Count = 1;
     textureDesc.Usage = D3D11_USAGE_DEFAULT;
     textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-    ID3D11Texture2D** textures[2] = { &band.textureA, &band.textureB };
-    ID3D11ShaderResourceView** srvs[2] = { &band.srvA, &band.srvB };
-    ID3D11UnorderedAccessView** uavs[2] = { &band.uavA, &band.uavB };
-    for (int i = 0; i < 2; ++i) {
+    ID3D11Texture2D** textures[4] = { &band.textureA, &band.textureB, &band.textureWorkA, &band.textureWorkB };
+    ID3D11ShaderResourceView** srvs[4] = { &band.srvA, &band.srvB, &band.srvWorkA, &band.srvWorkB };
+    ID3D11UnorderedAccessView** uavs[4] = { &band.uavA, &band.uavB, &band.uavWorkA, &band.uavWorkB };
+    for (int i = 0; i < 4; ++i) {
         hr = device_->CreateTexture2D(&textureDesc, nullptr, textures[i]);
         if (FAILED(hr)) { LOG_HR(hr, "Ocean spectrum texture creation failed"); *textures[i] = nullptr; return false; }
         hr = device_->CreateShaderResourceView(*textures[i], nullptr, srvs[i]);   // nullptr = a view of the whole texture in its own format
@@ -100,11 +114,25 @@ bool OceanGpu::Create(ID3D11Device* device, const SeaSpectrum::Settings& setting
     device_ = device;
     if (!device_) { LOG_ERROR("OceanGpu::Create received a null device"); return false; }
     if (!evolveShader_.Load(L"shaders/ocean_evolve_cs.hlsl", device_)) return false;
+    if (!fftShader_.Load(L"shaders/ocean_fft_cs.hlsl", device_)) return false;
+
+    D3D11_BUFFER_DESC fftConstantsDesc{};
+    fftConstantsDesc.ByteWidth = sizeof(OceanGpuFft::FftConstants);
+    fftConstantsDesc.Usage = D3D11_USAGE_DEFAULT;
+    fftConstantsDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    const HRESULT hr = device_->CreateBuffer(&fftConstantsDesc, nullptr, &fftConstants_);
+    if (FAILED(hr)) { LOG_HR(hr, "Ocean FFT constant buffer creation failed"); fftConstants_ = nullptr; return false; }
 
     const std::vector<SeaSpectrum::Band> bandList = SeaSpectrum::DefaultBands();
     bands_.resize(bandList.size());
     for (size_t i = 0; i < bandList.size(); ++i) {
         const SeaSpectrum::BandField field = SeaSpectrum::Make(settings, bandList[i], static_cast<int>(i));
+        // The FFT shader's groupshared array holds OceanGpuFft::kMaxN elements and the butterflies need a power of two.
+        if (!OceanGpuFft::IsPowerOfTwo(field.N()) || field.N() > OceanGpuFft::kMaxN) {
+            LOG_ERROR("Ocean band size is not a power of two the FFT shader supports");
+            Release();
+            return false;
+        }
         if (!CreateBand(OceanGpuPack::Pack(field), bands_[i])) {
             Release();   // a failed Create leaves nothing half-built
             return false;
@@ -134,6 +162,34 @@ void OceanGpu::Evolve(ID3D11DeviceContext* ctx, float time)
         const UINT groups = ComputeShader::GroupCount(static_cast<UINT>(band.n), 8);
         evolveShader_.Dispatch(ctx, groups, groups, 1);
         ComputeShader::UnbindCompute(ctx, 2, 2);   // the FFT will READ these textures: they must not still be bound as outputs
+    }
+}
+
+void OceanGpu::RunFftPass(ID3D11DeviceContext* ctx, const Band& band, ID3D11ShaderResourceView* source, ID3D11UnorderedAccessView* target, bool vertical)
+{
+    OceanGpuFft::FftConstants constants;
+    constants.n = static_cast<std::uint32_t>(band.n);
+    constants.log2n = static_cast<std::uint32_t>(OceanGpuFft::Log2(band.n));
+    constants.vertical = vertical ? 1u : 0u;
+    ctx->UpdateSubresource(fftConstants_, 0, nullptr, &constants, 0, 0);
+    ctx->CSSetShaderResources(0, 1, &source);
+    ctx->CSSetUnorderedAccessViews(0, 1, &target, nullptr);
+    // One thread group per line (a row, or a column): n groups, however long the lines are. The group's 128 threads share the line's work.
+    fftShader_.Dispatch(ctx, static_cast<UINT>(band.n), 1, 1);
+    ComputeShader::UnbindCompute(ctx, 1, 1);   // the next pass reads what this one wrote: nothing may still be bound as an output
+}
+
+void OceanGpu::Transform(ID3D11DeviceContext* ctx)
+{
+    if (!ctx || !IsValid()) return;
+    fftShader_.Bind(ctx);
+    ctx->CSSetConstantBuffers(0, 1, &fftConstants_);   // b0 was the evolve pass's constants a moment ago
+    for (Band& band : bands_) {
+        // Rows first (A -> work A, B -> work B), then columns (work A -> A, work B -> B): the 2-D inverse FFT, the sea in A and B.
+        RunFftPass(ctx, band, band.srvA, band.uavWorkA, false);
+        RunFftPass(ctx, band, band.srvB, band.uavWorkB, false);
+        RunFftPass(ctx, band, band.srvWorkA, band.uavA, true);
+        RunFftPass(ctx, band, band.srvWorkB, band.uavB, true);
     }
 }
 
@@ -210,6 +266,38 @@ bool OceanGpu::SelfCheck(ID3D11Device* device, ID3D11DeviceContext* ctx)
         char line[200];
         std::snprintf(line, sizeof(line), "Ocean GPU evolve check, band %d (%d x %d): biggest value %.4g, largest difference from the CPU %.3g (%.2g of it): %s",
                       i, gpu.Resolution(i), gpu.Resolution(i), biggest, worst, biggest > 0.0 ? worst / biggest : 0.0, good ? "ok" : "MISMATCH");
+        if (good) LOG_INFO(std::string(line)); else LOG_WARNING(std::string(line));
+    }
+
+    // Second half: the finished sea. The FFT runs on what the evolve pass left in A and B, and the result is compared with OceanFFT::Evolve, the
+    // double-precision reference the whole GPU sea has to agree with (height, displacement, slopes, and the Jacobian built from the derivatives).
+    const double choppiness = 0.8;
+    gpu.Transform(ctx);
+    for (int i = 0; i < gpu.BandCount(); ++i) {
+        OceanGpuPack::PackedSpectra sea;
+        if (!gpu.ReadSpectra(ctx, i, sea)) { LOG_WARNING("Ocean GPU check: could not read a band back"); return false; }
+        const SeaSpectrum::BandField field = SeaSpectrum::Make(settings, bandList[static_cast<size_t>(i)], i);
+        const OceanFFT::Surface reference = OceanFFT::Evolve(field, static_cast<double>(time), choppiness);
+
+        Fit height, displacement, slope;
+        double worstJacobian = 0.0;
+        for (size_t t = 0; t < sea.a.size(); ++t) {
+            // A = (height, displacement x, displacement z, slope x); B = (slope z, dXdx, dZdz, dXdz).
+            height.Add(reference.height[t], sea.a[t].x);
+            displacement.Add(reference.displaceX[t], sea.a[t].y);
+            displacement.Add(reference.displaceZ[t], sea.a[t].z);
+            slope.Add(reference.slopeX[t], sea.a[t].w);
+            slope.Add(reference.slopeZ[t], sea.b[t].x);
+            const double jxx = 1.0 + choppiness * sea.b[t].y, jzz = 1.0 + choppiness * sea.b[t].z, jxz = choppiness * sea.b[t].w;
+            const double jacobian = jxx * jzz - jxz * jxz;
+            worstJacobian = std::max(worstJacobian, std::isfinite(jacobian) ? std::fabs(jacobian - reference.jacobian[t]) : 1e30);
+        }
+        const bool good = height.Relative() <= 1e-3 && displacement.Relative() <= 1e-3 && slope.Relative() <= 1e-3 && worstJacobian <= 2e-3;
+        allGood = allGood && good;
+        char line[220];
+        std::snprintf(line, sizeof(line),
+                      "Ocean GPU sea check, band %d: largest difference from the CPU as a fraction of the biggest value: height %.2g, displacement %.2g, slope %.2g; Jacobian %.2g: %s",
+                      i, height.Relative(), displacement.Relative(), slope.Relative(), worstJacobian, good ? "ok" : "MISMATCH");
         if (good) LOG_INFO(std::string(line)); else LOG_WARNING(std::string(line));
     }
     return allGood;
