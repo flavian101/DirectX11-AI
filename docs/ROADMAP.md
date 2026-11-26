@@ -259,11 +259,15 @@ change checked with DXC.
   - Done so far: `src/OceanFFT.h`, pure: a radix-2 2-D inverse FFT; the time step giving height, choppy displacement, slopes and the Jacobian of the displacement for one band; `Surface::HeightAt` (periodic,
     bilinear) and `SeaHeightAt` (the bands added): this is the CPU mirror and the GPU's reference. Checked: a single wave moves at exactly omega / k toward +k, deep or shallow; the sea is real, periodic and has the
     spectrum's variance; the slopes are exact; the Jacobian is 1 with no choppiness, falls as it grows and goes negative where a storm folds.
-  - Still to do: the compute shader (checked with DXC at `cs_6_0`) and its D3D11 resources, three cascades feeding the water's vertex and pixel shaders, `Buoyancy` reading the CPU mirror, and deleting the 16-slot
-    wave table, `WaterWaves` and the settings that only it used.
+  - Also done (GPU half, step 1): `src/ComputeShader.h/.cpp` (a cs_5_0 compute shader: Direct3D 11 runs DXBC, so DXC at `cs_6_0` is the check, not the build); `src/OceanGpuPack.h`, pure: the layout the shader reads
+    (h0(k) and conj(h0(-k)) side by side, omega) and `EvolvePacked`, the C++ copy of `shaders/ocean_evolve_cs.hlsl`, which writes the 8 real results (height, displacement, slopes, Jacobian derivatives) as 4 complex
+    numbers in 2 float4 textures (two real results share one complex FFT). Checked: with the FFT it gives `OceanFFT::Evolve`'s sea to rounding (1e-7), in three bands, deep and shallow; no NaN anywhere; the shader
+    compiles at `cs_6_0` with warnings as errors. Not yet run on a GPU, and `ComputeShader` is not yet built in the editor project.
+  - Still to do: the D3D11 resources for the evolve pass (the two buffers, the constant buffer, the two UAV textures), the FFT compute shader (rows, then columns) and the pass that assembles displacement, slopes and the
+    Jacobian; the CPU/GPU readback check; three cascades feeding the water's vertex and pixel shaders, `Buoyancy` reading the CPU mirror, and deleting the 16-slot wave table, `WaterWaves` and the settings that only it used.
   - What: the rest of this item is the GPU half. Boats need the heights on the CPU, the same for everybody: the CPU mirror runs the same FFT for the coarse cascades at a small size and `Buoyancy` reads it; it is the
     reference the GPU result is tested against.
-  - Tests: `tests/ocean_fft_test.cpp`
+  - Tests: `tests/ocean_fft_test.cpp`, `tests/ocean_gpu_pack_test.cpp`
   - Acceptance: the CPU and GPU heights agree at test points; boats still float; over 4 km there is no repeating pattern; the straight surf bars and the "structures drifting" are gone.
 - **O3** `[ ]` A microfacet BRDF whose roughness comes from unresolved wave slope (D11)
   - What: replace the Blinn-Phong glint. `WaterBrdf.h` (pure maths, mirrored in the shader): GGX distribution, Smith masking, Schlick Fresnel with F0 from the index of refraction (about 0.02), and a
