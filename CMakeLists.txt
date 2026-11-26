@@ -80,6 +80,7 @@ add_library(Engine STATIC
 	src/GpuTimer.cpp
 	src/Logger.cpp
 	src/Shader.cpp
+	src/ComputeShader.cpp
 	src/Model.cpp
 	src/Cube.cpp
 	src/Scene.cpp
