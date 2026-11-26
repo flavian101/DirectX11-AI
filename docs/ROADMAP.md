@@ -262,9 +262,13 @@ change checked with DXC.
   - Also done (GPU half, step 1): `src/ComputeShader.h/.cpp` (a cs_5_0 compute shader: Direct3D 11 runs DXBC, so DXC at `cs_6_0` is the check, not the build); `src/OceanGpuPack.h`, pure: the layout the shader reads
     (h0(k) and conj(h0(-k)) side by side, omega) and `EvolvePacked`, the C++ copy of `shaders/ocean_evolve_cs.hlsl`, which writes the 8 real results (height, displacement, slopes, Jacobian derivatives) as 4 complex
     numbers in 2 float4 textures (two real results share one complex FFT). Checked: with the FFT it gives `OceanFFT::Evolve`'s sea to rounding (1e-7), in three bands, deep and shallow; no NaN anywhere; the shader
-    compiles at `cs_6_0` with warnings as errors. Not yet run on a GPU, and `ComputeShader` is not yet built in the editor project.
-  - Still to do: the D3D11 resources for the evolve pass (the two buffers, the constant buffer, the two UAV textures), the FFT compute shader (rows, then columns) and the pass that assembles displacement, slopes and the
-    Jacobian; the CPU/GPU readback check; three cascades feeding the water's vertex and pixel shaders, `Buoyancy` reading the CPU mirror, and deleting the 16-slot wave table, `WaterWaves` and the settings that only it used.
+    compiles at `cs_6_0` with warnings as errors.
+  - Also done (GPU half, step 2): `src/OceanGpu.h/.cpp`, the evolve pass's Direct3D 11 side: per band two structured buffers (the modes and omega), a 16-byte constant buffer and two RGBA32F textures with an SRV and a UAV each;
+    `Evolve` dispatches every band; `ReadSpectra` copies a band back to the CPU (slow, for checks); `SelfCheck` runs once when the renderer starts and logs, per band, how far the GPU's spectrum is from
+    `OceanGpuPack::EvolvePacked`. Not run on a GPU yet: written without the Windows SDK and only syntax-checked against stand-in headers.
+  - Editor check to do: the log shows three lines "Ocean GPU evolve check, band N ...: ok" (a "MISMATCH" or an error line means the shader or a resource is wrong).
+  - Still to do: the FFT compute shader (rows, then columns) and the pass that assembles displacement, slopes and the Jacobian; the same readback check on the finished sea; three cascades feeding the water's vertex and
+    pixel shaders, `Buoyancy` reading the CPU mirror, and deleting the 16-slot wave table, `WaterWaves` and the settings that only it used.
   - What: the rest of this item is the GPU half. Boats need the heights on the CPU, the same for everybody: the CPU mirror runs the same FFT for the coarse cascades at a small size and `Buoyancy` reads it; it is the
     reference the GPU result is tested against.
   - Tests: `tests/ocean_fft_test.cpp`, `tests/ocean_gpu_pack_test.cpp`

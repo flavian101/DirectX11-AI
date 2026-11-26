@@ -81,6 +81,7 @@ add_library(Engine STATIC
 	src/Logger.cpp
 	src/Shader.cpp
 	src/ComputeShader.cpp
+	src/OceanGpu.cpp
 	src/Model.cpp
 	src/Cube.cpp
 	src/Scene.cpp

@@ -1,6 +1,7 @@
 ﻿#include "Direct3D11Renderer.h"
 #include "Color.h"
 #include "DepthMath.h"
+#include "OceanGpu.h"
 #include "ShaderSlots.h"
 #include <algorithm>
 #include "Layer.h"
@@ -117,6 +118,7 @@ bool Direct3D11Renderer::Init()
     BindBackBuffer();
 
     LOG_INFO("Direct3D 11 device, swap chain, render target, and depth buffer initialized");
+    OceanGpu::SelfCheck(m_device, m_context);   // roadmap O2: does the first ocean compute pass give the CPU's numbers? (the result is only logged)
     return true;
 }
 
