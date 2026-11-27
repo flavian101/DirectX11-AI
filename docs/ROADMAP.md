@@ -275,11 +275,16 @@ change checked with DXC.
     from `GenerateMips`, repeating every patch size. Checked: the chain pack, evolve, FFT, assemble gives the maps of `OceanFFT::Evolve` to 1e-4 of the wave size in all three bands; the layout, the Jacobian without
     choppiness (exactly 1) and the half-float reader (every positive value, the extremes, the sign) are tested; four deliberate bugs are caught. `OceanGpu::Assemble` runs it, `Simulate(ctx, time, choppiness)` is all
     three passes, and `SelfCheck` now also compares the maps and counts their mip levels. Not run on a GPU yet.
+  - Also done (CPU mirror): `src/OceanSea.h`, pure: every band's spectrum and the heights at a time, the way a boat reads them. One FFT per band, and the two 128-mode bands share one (the packing trick), so an update is
+    two FFTs (about 5 ms in an optimised build, only when something asks, once per time). Same arithmetic as `OceanFFT::Evolve`: heights agree to float rounding at any world position, deep and shallow; asking twice
+    for one time costs nothing and going back in time gives the same sea; `HeightBound` = 6 sigma of the spectrum is never reached over 12 times x 160 000 points at 5, 12 and 20 m/s (the highest seen is 4.4 to 5.1
+    sigma). Four deliberate bugs are caught. Known limit: it reads the height at the grid position, while the water is drawn pushed sideways by choppiness x displacement, so a boat can be off by up to that
+    much along the wave (centimetres in a breeze, up to about a metre in a storm). Not wired into `Water` yet.
   - Editor check to do: the log shows nine lines, "Ocean GPU evolve check", "Ocean GPU sea check" and "Ocean GPU map check", for bands 0 to 2, each ending in "ok" (a "MISMATCH" or an error line means a shader or a
     resource is wrong; the map lines also report the mip levels, 8 or 9).
   - Still to do: the water's vertex and pixel shaders reading the three cascades (the displacement maps move the mesh, the slope maps give the normal and the Jacobian the foam), `Water::SampleHeight` reading the CPU
     mirror, and deleting the 16-slot wave table, `WaterWaves` and the settings that only it used.
-  - Tests: `tests/ocean_fft_test.cpp`, `tests/ocean_gpu_pack_test.cpp`, `tests/ocean_gpu_fft_test.cpp`, `tests/ocean_gpu_assemble_test.cpp`
+  - Tests: `tests/ocean_fft_test.cpp`, `tests/ocean_gpu_pack_test.cpp`, `tests/ocean_gpu_fft_test.cpp`, `tests/ocean_gpu_assemble_test.cpp`, `tests/ocean_sea_test.cpp`
   - Acceptance: the CPU and GPU heights agree at test points; boats still float; over 4 km there is no repeating pattern; the straight surf bars and the "structures drifting" are gone.
 - **O3** `[ ]` A microfacet BRDF whose roughness comes from unresolved wave slope (D11)
   - What: replace the Blinn-Phong glint. `WaterBrdf.h` (pure maths, mirrored in the shader): GGX distribution, Smith masking, Schlick Fresnel with F0 from the index of refraction (about 0.02), and a
