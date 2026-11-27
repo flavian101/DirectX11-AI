@@ -1,4 +1,4 @@
-#include "waves.hlsli"
+#include "ocean.hlsli"
 #include "noise.hlsli"
 
 TextureCube  environmentMap : register(t1);   // the skybox cubemap, bound once per frame by Scene
@@ -14,6 +14,7 @@ struct PS_IN {
     float3 worldPos : TEXCOORD0;
     float3 rest     : TEXCOORD1;   // xy = rest position of this surface point, z = wave height / tallest wave
     float2 local    : TEXCOORD2;   // position on the plane itself, -1..1 (the plane is square in its own space)
+    float  shore    : TEXCOORD3;   // the vertex shader's ShoreLimit factor (1 deep ... 0 at the waterline)
 };
 
 // Hardware depth (0..1, spread non-linearly) -> distance in front of the camera, in world units.
@@ -80,14 +81,14 @@ float4 main(PS_IN input) : SV_Target
     const float3 V = toEye / max(distanceToEye, 1e-4f);   // surface -> eye
     const float3 L = normalize(-dirDirection.xyz);        // surface -> sun
 
-    // ---- The surface normal: big waves (exact, from the wave table) + small ripples ----
-    // Waves shorter than a few pixels fade out by themselves (that is what keeps the far sea from shimmering).
+    // ---- The surface normal: the sea (from the slope maps) + small ripples ----
+    // Waves shorter than a few pixels fade out by themselves: the maps are read from the mip that matches the pixel (that is what keeps the far sea calm).
     const float pixelsPerUnit = (0.5f / screenParams.y) * proj._22 / max(distanceToEye, 0.01f);
     float3 N;
     float jacobian;
     const float3 shore = WaterShoreAt(input.local);     // depth and the way to the land under this pixel (1000 and nothing when the body has no map)
     const float mapDepth = shore.x;                     // vertical depth under this pixel
-    EvaluateWaveShading(input.rest.xy, time, pixelsPerUnit, shore, N, jacobian);
+    OceanShading(input.rest.xy, input.shore, N, jacobian);
 
     const float detailStrength = waterWaveInfo.y;
     const float detailFade = 1.0f - smoothstep(0.35f * waterWaveInfo.w, waterWaveInfo.w, distanceToEye);
@@ -134,16 +135,14 @@ float4 main(PS_IN input) : SV_Target
     // band built from it changes width as you tilt the camera. When the body has a depth map, the vertical depth
     // from the terrain is used instead; `thickness` still counts where something other than the terrain (a rock, a
     // hull) touches the water, because the smaller of the two wins.
-    // The waterline also slides with the waves: the surface itself is `waveHeight` higher or lower here, and near the
-    // shore, where the waves are squeezed to nothing, `swashLift` stands in for the run-up of the first wave.
+    // The waterline also slides with the waves: the surface itself is `waveHeight` higher or lower here. (The run-up of a wave over the beach,
+    // the swash, comes with roadmap O6.)
     float shoreDepth = thickness;
     float breaking = 0.0f;
     [branch]
     if (waterShore.x > 0.5f) {
-        const float waveHeight = input.rest.z * waterMeshInfo.z;
-        const float phase0 = waterWaveDirK[0].z * dot(waterWaveDirK[0].xy, input.rest.xy) + waterWaveMotion[0].x * time + waterWaveMotion[0].z;
-        const float swashLift = waterShore.z * waterWaveDirK[0].w * sin(phase0);
-        shoreDepth = max(min(mapDepth, thickness) + waveHeight + swashLift, 0.0f);
+        const float waveHeight = input.rest.z * 0.5f * waterMeshInfo.z;   // (rest.z is the height over half the tallest wave)
+        shoreDepth = max(min(mapDepth, thickness) + waveHeight, 0.0f);
         // A crest that is tall for the water under it is about to break: wave height / depth, up to ~0.4 where it is limited.
         breaking = saturate((waveHeight / max(mapDepth, 0.05f) - 0.18f) * 8.0f) * step(0.0f, mapDepth);
     }
@@ -225,27 +224,12 @@ float4 main(PS_IN input) : SV_Target
     // Three sources, each an AMOUNT from 0 to 1 (how much of the surface it covers), then ONE bubble pattern that all three share:
     //  * the shore: a band where the water is shallow ,
     //  * surf: waves tripping over the bottom,
-    //  * crests: where the surface is squeezed together (Jacobian below 1), PLUS the trail the crest leaves. Because the waves
-    //    are written in rest positions, "was this parcel of water squeezed 0.5 s ago?" is just the Jacobian at an earlier time.
+    //  * crests: where the surface is squeezed together (Jacobian below 1). The trail a crest used to leave behind is gone until the persistent
+    //    foam of roadmap O8: it needed the sea at an EARLIER time, which a texture computed for this frame cannot give.
     const float shoreAmount = pow(1.0f - saturate(shoreDepth / max(foamDistance, 0.001f)), 1.3f) * foamStrength;
     const float breakAmount = breaking * foamStrength * waterShore.y;
     // Jacobian < 1 means the surface is being squeezed together: that is where real waves break.
     float crestAmount = saturate(((1.0f - jacobian) - waterFoamInfo.y) * 5.0f) * waterFoamInfo.x;
-    const float trailSeconds = waterFoam2.y;
-    [branch]
-    // Up close only (far away it is too small to see), and only where the surface is being squeezed at least a little right now:
-    // a parcel that folded a moment ago is still tightened (the squeeze changes smoothly), a surface that is stretching cannot
-    // be carrying a fresh trail. That skips about half of the pixels, and each skipped pixel saves three passes over the waves.
-    if (waterFoamInfo.x > 0.001f && trailSeconds > 0.01f && distanceToEye < 0.7f * waterWaveInfo.w &&
-        (1.0f - jacobian) > 0.2f * waterFoamInfo.y) {
-        [unroll]
-        for (int k = 1; k <= 3; ++k) {
-            const float earlier = time - trailSeconds * (k / 3.0f);
-            const float fold = WaveFold(input.rest.xy, earlier, pixelsPerUnit, shore);
-            const float fading = exp(-1.9f * k / 3.0f);   // the older the foam, the thinner
-            crestAmount = max(crestAmount, saturate(((1.0f - fold) - waterFoamInfo.y) * 5.0f) * waterFoamInfo.x * fading);
-        }
-    }
     // Any of the three is enough to make foam: combine them as chances (1 - none of them).
     const float amount = 1.0f - (1.0f - shoreAmount) * (1.0f - breakAmount) * (1.0f - crestAmount);
 

@@ -20,16 +20,14 @@ struct WaterMaterialCB {
 	XMFLOAT4 shallowColor;   // rgb = shallow colour (linear), a = refraction strength
 	XMFLOAT4 optics;         // reflectivity, glint strength, glint sharpness, mirror distortion
 	XMFLOAT4 depth;          // fade distance, foam distance, foam strength, absorption
-	XMFLOAT4 waveInfo;       // wave count, detail strength, detail scale, detail fade distance
+	XMFLOAT4 waveInfo;       // unused, detail strength, detail scale, detail fade distance
 	XMFLOAT4 foamInfo;       // crest foam strength, crest foam threshold, scatter strength, debug view
-	XMFLOAT4 meshInfo;       // LOD distance, finest grid cell size, tallest possible wave, unused
+	XMFLOAT4 meshInfo;       // LOD distance, finest grid cell size, tallest possible wave (6 sigma), unused
 	XMFLOAT4 wind;           // xy = unit direction the waves travel toward
 	XMFLOAT4 mirror;         // x = a mirror image is bound for this body this frame, yzw unused
 	XMFLOAT4 shore;          // x = a depth map is bound (t15), y = shore wave strength, z = swash, w = unused
-	XMFLOAT4 groupInfo;      // wave groups: strength (0 = off), k of the pattern, its speed
+	XMFLOAT4 seaPatch;       // xyz = patch size in metres of the three sea cascades, w unused
 	XMFLOAT4 foam2;          // x = foam bubble scale, y = seconds crest foam lingers, zw unused
-	XMFLOAT4 waveDirK[WaterWaves::kMaxWaves];     // xy = direction, z = k, w = amplitude
-	XMFLOAT4 waveMotion[WaterWaves::kMaxWaves];   // x = omega, y = steepness, z = phase offset
 };
 static_assert(sizeof(WaterMaterialCB) % 16 == 0, "constant buffers must be a multiple of 16 bytes");
 
@@ -82,13 +80,14 @@ std::unique_ptr<SceneObject> Water::Clone(ID3D11Device* device) const
 bool Water::GetBoundingSphere(XMFLOAT3& center, float& radius) const
 {
 	center = position_;
-	radius = 0.5f * std::sqrt(ExtentX() * ExtentX() + ExtentZ() * ExtentZ()) + waves_.heightBound;
+	radius = 0.5f * std::sqrt(ExtentX() * ExtentX() + ExtentZ() * ExtentZ()) + seaBound_;
 	return true;
 }
 
 Water::~Water()
 {
 	ReleaseShoreMap();
+	if (oceanSampler_) { oceanSampler_->Release(); oceanSampler_ = nullptr; }
 }
 
 void Water::ReleaseShoreMap()
@@ -130,6 +129,14 @@ void Water::CreateRenderStates(ID3D11Device* device)
 	solidDesc.DepthClipEnable = TRUE;
 
 	if (!device) return;
+	// The sea's maps repeat every patch, so they are read with WRAP; trilinear + anisotropic so that water at a grazing angle is not smeared.
+	D3D11_SAMPLER_DESC oceanSamplerDesc{};
+	oceanSamplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
+	oceanSamplerDesc.AddressU = oceanSamplerDesc.AddressV = oceanSamplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+	oceanSamplerDesc.MaxAnisotropy = 8;
+	oceanSamplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+	oceanSamplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+	if (FAILED(device->CreateSamplerState(&oceanSamplerDesc, &oceanSampler_))) { oceanSampler_ = nullptr; LOG_ERROR("Water sea sampler creation failed"); }
 	if (!material_.CreateRasterizerState(solidDesc)) LOG_ERROR("Water rasterizer state creation failed");
 	if (!material_.CreateBlendState(blendDesc)) LOG_ERROR("Water blend state creation failed");
 	if (!material_.CreateDepthStencilState(depthDesc)) LOG_ERROR("Water depth state creation failed");
@@ -236,16 +243,6 @@ float Water::GetTravelDegrees() const
 	return sceneWind_.direction;   // the scene's wind (a body has none of its own since lesson 63)
 }
 
-WaterWaves::Params Water::CurrentWaveParams() const
-{
-	WaterWaves::Params p = settings_.WaveParams();
-	p.windDegrees = GetTravelDegrees();
-	p.shoreWaves = settings_.shoreWaves;   // waves can grow near a shore: the table's height bound must have room for that
-	p.windSpeed = sceneWind_.speed;        // the wind makes the sea: how hard it blows. The open sea has no fetch limit, and a sea is not made bigger to fit a mesh.
-	p.fetch = 0.0f;
-	return p;
-}
-
 float Water::FinestCell() const
 {
 	const float cellsX = static_cast<float>((std::max)(builtGrid_.x, 1) * (std::max)(cellsPerTile_, 1));
@@ -253,9 +250,34 @@ float Water::FinestCell() const
 	return (std::max)(ExtentX() / cellsX, ExtentZ() / cellsZ);   // (the cells are square: the tiles are)
 }
 
+namespace {
+bool SameSea(const SeaSpectrum::Settings& a, const SeaSpectrum::Settings& b)
+{
+	return a.windSpeed == b.windSpeed && a.fetch == b.fetch && a.depth == b.depth && a.windRadians == b.windRadians && a.seed == b.seed && a.heightScale == b.heightScale;
+}
+}
+
+// Both copies of the sea (the CPU's for boats, the GPU's for the screen) are made from the same numbers, and only when those change: the spectrum is
+// a few thousand modes to build, which is nothing once but too much on every colour slider tick.
 void Water::RebuildWaves()
 {
-	waves_ = WaterWaves::Build(CurrentWaveParams());
+	SeaSpectrum::Settings sea;
+	sea.windSpeed = sceneWind_.speed;                              // the wind makes the sea: how hard it blows
+	sea.windRadians = XMConvertToRadians(GetTravelDegrees());      // and which way the waves travel
+	sea.fetch = 0.0;                                               // the open sea has no fetch limit, and a sea is not made bigger to fit a mesh
+	sea.depth = 0.0;                                               // deep water: the shore is the interim limit in the shader, not the dispersion
+	sea.seed = static_cast<std::uint32_t>((std::max)(settings_.waveSeed, 0));
+	sea.heightScale = settings_.waveScale;                         // the artist's exaggeration of every height
+	if (!seaBuilt_ || !SameSea(sea, builtSea_)) {
+		sea_.Build(sea);
+		if (device_ && !gpuSea_.Create(device_, sea)) LOG_ERROR("The GPU sea could not be made: the water will be flat (see the errors above)");
+		builtSea_ = sea;
+		seaBuilt_ = true;
+		gpuSimDone_ = false;   // the maps describe the old sea
+		const std::vector<SeaSpectrum::Band> bands = SeaSpectrum::DefaultBands();
+		for (size_t i = 0; i < seaPatch_.size() && i < bands.size(); ++i) seaPatch_[i] = static_cast<float>(bands[i].patchSize);
+		seaBound_ = (std::max)(static_cast<float>(sea_.HeightBound()), 0.5f);   // (never 0: the shaders divide by it)
+	}
 	seaSummary_ = SeaState::Describe(sceneWind_.speed, 0.0);
 	UpdateDryTiles();   // how high the surface can reach decides which tiles are safely under the ground
 }
@@ -275,20 +297,15 @@ void Water::UploadMaterial(bool mirrored) const
 	block.shallowColor = { shallow.x, shallow.y, shallow.z, settings_.refraction };
 	block.optics = { settings_.reflectivity, settings_.glintStrength, settings_.glintSharpness, settings_.reflectionDistortion };
 	block.depth = { settings_.fadeDistance, settings_.foamDistance, std::min(settings_.foamStrength * settings_.foamIntensity, 1.0f), settings_.absorption };   // (foamIntensity: the master control, lesson 43)
-	block.waveInfo = { static_cast<float>(waves_.count), settings_.detailNormal, settings_.detailScale, settings_.detailDistance };
+	block.waveInfo = { 0.0f, settings_.detailNormal, settings_.detailScale, settings_.detailDistance };
 	block.foamInfo = { std::min(settings_.crestFoam * settings_.foamIntensity, 1.0f), settings_.crestFoamThreshold, settings_.scatter,
 					   static_cast<float>(static_cast<int>(settings_.debugView)) };
-	block.meshInfo = { settings_.lodDistance, cellSize, waves_.heightBound, 0.0f };
+	block.meshInfo = { settings_.lodDistance, cellSize, seaBound_, 0.0f };
 	block.wind = { std::cos(windRadians), std::sin(windRadians), 0.0f, 0.0f };
 	block.shore = { depthView_ ? 1.0f : 0.0f, settings_.shoreWaves, settings_.swash, settings_.shoreShelter };
-	block.groupInfo = { waves_.groupStrength, waves_.groupK, waves_.groupSpeed, 0.0f };
+	block.seaPatch = { seaPatch_[0], seaPatch_[1], seaPatch_[2], 0.0f };
 	block.foam2 = { settings_.foamScale, settings_.foamTrail, 0.0f, 0.0f };
 	block.mirror = { mirrored ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
-	for (int i = 0; i < waves_.count; ++i) {
-		const WaterWaves::Wave& w = waves_.waves[i];
-		block.waveDirK[i] = { w.dirX, w.dirZ, w.k, w.amplitude };
-		block.waveMotion[i] = { w.omega, w.steepness, w.phase0, 0.0f };
-	}
 	renderable_->SetMaterialBlock(&block, sizeof(block));
 }
 
@@ -305,9 +322,9 @@ void Water::ChooseTiles(const RenderView& view) const
 	stats.tilesTotal = static_cast<int>(tiles_.size());
 
 	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
-	// The waves lift and push the surface by up to heightBound in every direction: the boxes must include that, or
+	// The waves lift and push the surface by up to seaBound_ in every direction: the boxes must include that, or
 	// a tile whose wave crest is still on screen could be skipped.
-	const float margin = waves_.heightBound + 0.25f;
+	const float margin = seaBound_ + 0.25f;
 
 	// To CHANGE level a tile must pass the threshold by 10%, so a tile on a boundary does not flicker as the camera jitters.
 	const float thresholds[kWaterLodCount - 1] = { settings_.lodDistance, settings_.lodDistance * 2.2f, settings_.lodDistance * 4.5f };
@@ -359,6 +376,18 @@ void Water::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 	stats.reflectionSlot = mirror ? slot : -1;
 	UploadMaterial(mirror != nullptr);
 	ctx->PSSetShaderResources(Slots::kSrvReflection, 1, &mirror);
+	// The FFT sea: the compute passes run once for this moment (the mirror view draws the same sea), then both stages get their maps.
+	SimulateSea(ctx);
+	ID3D11ShaderResourceView* displacementMaps[3] = {};
+	ID3D11ShaderResourceView* slopeMaps[3] = {};
+	if (gpuSea_.IsValid() && gpuSea_.BandCount() == 3) {
+		for (int i = 0; i < 3; ++i) { displacementMaps[i] = gpuSea_.Displacement(i); slopeMaps[i] = gpuSea_.Slope(i); }
+	}
+	ID3D11SamplerState* oceanSampler = oceanSampler_;
+	ctx->VSSetShaderResources(Slots::kSrvOceanDisplacement, 3, displacementMaps);
+	ctx->PSSetShaderResources(Slots::kSrvOceanSlope, 3, slopeMaps);
+	ctx->VSSetSamplers(Slots::kSamplerOcean, 1, &oceanSampler);
+	ctx->PSSetSamplers(Slots::kSamplerOcean, 1, &oceanSampler);
 	// The measured ground under this body (null when there is no terrain under it). The vertex shader reads it too: that
 	// is where waves grow and die.
 	ID3D11ShaderResourceView* depthMap = depthView_;
@@ -374,17 +403,31 @@ void Water::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 		renderable_->Render(ctx, &drawList_);
 		ctx->RSSetState(nullptr);   // the next object is not drawn double-sided
 	}
+	// The next frame's compute passes WRITE these maps: a texture still bound for reading would be forced off by Direct3D with a warning, so let go now.
+	ID3D11ShaderResourceView* none[3] = {};
+	ctx->VSSetShaderResources(Slots::kSrvOceanDisplacement, 3, none);
+	ctx->PSSetShaderResources(Slots::kSrvOceanSlope, 3, none);
+}
+
+void Water::SimulateSea(ID3D11DeviceContext* ctx) const
+{
+	if (!gpuSea_.IsValid()) return;
+	const float choppiness = settings_.choppiness;
+	if (gpuSimDone_ && gpuSimTime_ == sceneTime_ && gpuSimChoppiness_ == choppiness) return;   // already made for this moment (the mirror view draws too)
+	gpuSea_.Simulate(ctx, sceneTime_, choppiness);
+	gpuSimDone_ = true;
+	gpuSimTime_ = sceneTime_;
+	gpuSimChoppiness_ = choppiness;
 }
 
 // A tile is DRY when the ground under all of it (and a little around it, because the waves push the surface sideways too)
-// stands higher above the water level than the surface can ever rise: tallest wave, plus the swash run-up, plus a margin.
+// stands higher above the water level than the surface can ever rise: tallest wave plus a margin.
 // Then no pixel of the tile can show: the terrain is in front of all of it. Decided once per change, not once per frame.
 void Water::UpdateDryTiles()
 {
 	tileDry_.assign(tiles_.size(), 0);
 	if (depthField_.IsEmpty() || tiles_.empty()) return;
-	const float firstAmplitude = waves_.count > 0 ? waves_.waves[0].amplitude : 0.0f;
-	const float rise = waves_.heightBound + settings_.swash * firstAmplitude + 0.5f;
+	const float rise = seaBound_ + 0.5f;   // (the run-up of a wave over the beach, the swash, comes with roadmap O6)
 	const float padX = 2.0f * rise / (std::max)(ExtentX(), 0.01f);   // the same distance in the plane's own -1..1 space
 	const float padZ = 2.0f * rise / (std::max)(ExtentZ(), 0.01f);
 	for (size_t i = 0; i < tiles_.size(); ++i) {
@@ -400,7 +443,7 @@ bool Water::IsWetVisible(const Frustum& frustum) const
 	if (!IsVisible(frustum)) return false;   // the whole body is off screen: the cheap test first
 	if (tileDry_.size() != tiles_.size()) return true;   // nothing known about the ground: assume the water shows
 	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
-	const float margin = waves_.heightBound + 0.25f;
+	const float margin = seaBound_ + 0.25f;
 	for (size_t i = 0; i < tiles_.size(); ++i) {
 		if (tileDry_[i]) continue;
 		if (!settings_.frustumCulling) return true;
@@ -420,7 +463,7 @@ bool Water::IsVisible(const Frustum& frustum) const
 	const XMMATRIX world = XMLoadFloat4x4(&renderable_->GetModel()->GetWorld());
 	XMFLOAT3 worldMin, worldMax;
 	TransformBounds(world, { -1.0f, 0.0f, -1.0f }, { 1.0f, 0.0f, 1.0f }, worldMin, worldMax);
-	const float margin = waves_.heightBound + 0.25f;
+	const float margin = seaBound_ + 0.25f;
 	worldMin = { worldMin.x - margin, worldMin.y - margin, worldMin.z - margin };
 	worldMax = { worldMax.x + margin, worldMax.y + margin, worldMax.z + margin };
 	return frustum.IntersectsAABB(worldMin, worldMax);
@@ -451,12 +494,11 @@ float Water::DistanceTo(const XMFLOAT3& point) const
 float Water::SampleHeight(float x, float z, float time) const
 {
 	if (!IsOverWater(x, z)) return position_.y;
-	const float level = position_.y;
-	if ((settings_.shoreWaves > 0.0f || settings_.shoreShelter > 0.0f) && !depthField_.IsEmpty()) {   // the same shoaled, sheltered waves the shader draws
-		return level + WaterWaves::HeightAtShore(waves_, x, z, time, settings_.shoreWaves, settings_.shoreShelter,
-													   [this](float restX, float restZ) { return ShoreAtWorld(restX, restZ); });
-	}
-	return level + WaterWaves::HeightAt(waves_, x, z, time);
+	// The FFT sea at this moment (the CPU copy; the GPU made the same one for the screen), limited near a shore exactly as the vertex shader limits it.
+	sea_.Update(time);
+	double height = sea_.HeightAt(x, z);
+	if (!depthField_.IsEmpty()) height = OceanSea::ShoreLimited(height, DepthAtWorld(x, z));
+	return position_.y + static_cast<float>(height);
 }
 
 XMFLOAT3 Water::SampleNormal(float x, float z, float time) const
@@ -513,17 +555,6 @@ float Water::DepthAtWorld(float x, float z) const
 	if (depthField_.IsEmpty() || !worldToLocalValid_) return WaterShore::kDeepWater;
 	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), XMLoadFloat4x4(&worldToLocal_));
 	return depthField_.Sample(XMVectorGetX(local), XMVectorGetZ(local));
-}
-
-WaterWaves::ShoreSample Water::ShoreAtWorld(float x, float z) const
-{
-	WaterWaves::ShoreSample shore;   // very deep, no direction
-	if (depthField_.IsEmpty() || !worldToLocalValid_) return shore;
-	const XMVECTOR local = XMVector3Transform(XMVectorSet(x, position_.y, z, 1.0f), XMLoadFloat4x4(&worldToLocal_));
-	const float lx = XMVectorGetX(local), lz = XMVectorGetZ(local);
-	shore.depth = depthField_.Sample(lx, lz);
-	depthField_.SampleToward(lx, lz, shore.towardX, shore.towardZ);   // already in world space
-	return shore;
 }
 
 bool Water::RayHit(const XMFLOAT3& origin, const XMFLOAT3& direction, float& distance) const

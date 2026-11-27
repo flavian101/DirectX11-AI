@@ -280,10 +280,21 @@ change checked with DXC.
     for one time costs nothing and going back in time gives the same sea; `HeightBound` = 6 sigma of the spectrum is never reached over 12 times x 160 000 points at 5, 12 and 20 m/s (the highest seen is 4.4 to 5.1
     sigma). Four deliberate bugs are caught. Known limit: it reads the height at the grid position, while the water is drawn pushed sideways by choppiness x displacement, so a boat can be off by up to that
     much along the wave (centimetres in a breeze, up to about a metre in a storm). Not wired into `Water` yet.
-  - Editor check to do: the log shows nine lines, "Ocean GPU evolve check", "Ocean GPU sea check" and "Ocean GPU map check", for bands 0 to 2, each ending in "ok" (a "MISMATCH" or an error line means a shader or a
-    resource is wrong; the map lines also report the mip levels, 8 or 9).
-  - Still to do: the water's vertex and pixel shaders reading the three cascades (the displacement maps move the mesh, the slope maps give the normal and the Jacobian the foam), `Water::SampleHeight` reading the CPU
-    mirror, and deleting the 16-slot wave table, `WaterWaves` and the settings that only it used.
+  - Editor check to do (compute): the log shows nine lines, "Ocean GPU evolve check", "Ocean GPU sea check" and "Ocean GPU map check", for bands 0 to 2, each ending in "ok" (a "MISMATCH" or an error line means a shader
+    or a resource is wrong; the map lines also report the mip levels, 8 or 9).
+  - Also done (G6b, the water draws it): `shaders/ocean.hlsli` replaces `waves.hlsli`. The **vertex shader** moves each vertex by the sum of the three displacement maps (t17 to t19), each read at a mip that matches the
+    grid spacing there (`SampleLevel`); the **pixel shader** takes the normal from the three slope maps (t20 to t22) and the crest foam from their Jacobian; the maps repeat every patch (2000, 250 and 30 m). `Water`
+    owns the two copies of the sea (`OceanSea` for boats, `OceanGpu` for the screen), rebuilds them only when the wind, the seed or the height scale change, runs the compute passes once per scene-clock moment
+    (`SetSceneTime`, pushed by the scene next to the wind) and binds the maps for the draw only. `SampleHeight` reads the CPU copy; the margins and the dry-tile test use its 6 sigma bound (the 16-slot table's
+    height bound is gone). Near a shore the displacement is limited to 0.4 of the depth with a soft clamp (`OceanSea::ShoreFactor`, copied by `ShoreLimit` in the shader; tested): an interim stand-in for O6. All
+    shaders in the folder compile with DXC at shader model 6 with warnings as errors.
+  - Interim, until the milestone closes: the per-wave shoaling, shelter, wave groups and swash lift are gone with the Gerstner functions, and the **foam trail** (crest foam lingering behind a crest) is off, because
+    it read the sea at earlier times (back with O8). The Waves panel's wave count, swell, swell angle, swell length, wave groups, shelter, directional spread, swash and foam-trail sliders do nothing now (height scale,
+    seed and choppiness work). They go, with `WaterWaves.h` and its test, in the clean-up step that closes O2.
+  - Editor check to do (G6b): the sea moves and has no visible tile pattern over a few kilometres; choppiness 0 gives rounded waves and 1 sharp crests; the horizon is calm (no crawling or shimmer); waves flatten
+    toward a beach and the water stays put at the waterline (no gaps or spikes between water and terrain); a boat floats at the height of the surface it sits on (no floating above or sinking in by more than the
+    choppy sideways shift in a storm).
+  - Still to do: the clean-up that closes O2 (delete `WaterWaves.h`, its test, the dead settings and their editor controls and scene fields), and the foam and shore items that replace the interim ones (O6 to O8).
   - Tests: `tests/ocean_fft_test.cpp`, `tests/ocean_gpu_pack_test.cpp`, `tests/ocean_gpu_fft_test.cpp`, `tests/ocean_gpu_assemble_test.cpp`, `tests/ocean_sea_test.cpp`
   - Acceptance: the CPU and GPU heights agree at test points; boats still float; over 4 km there is no repeating pattern; the straight surf bars and the "structures drifting" are gone.
 - **O3** `[ ]` A microfacet BRDF whose roughness comes from unresolved wave slope (D11)
@@ -312,6 +323,8 @@ change checked with DXC.
   - What: the waterline slides up and down the beach with the breaking waves, and the sand it wets is darker and glossier, fading after the water has gone (a wetness mask read by `terrain_ps.hlsl`). Replaces `swash`.
   - Tests: `tests/swash_test.cpp`
   - Acceptance: run-up grows with wave height and falls with beach slope; wetness decays at a set rate; in the editor the wet band follows the waterline and dries behind it.
+  - Reported while wiring O2: the water travels very little up the land and back to the sea, and a wave dies too soon after reaching the shore (distance travelled and height do not look real). So the acceptance
+    includes the run-up reaching a believable distance up the beach and a visible backwash, with the wave height decaying across the surf zone over metres, not at the waterline.
 - **O8** `[ ]` Foam as a simulation (D10)
   - What: `FoamField.h`, pure: one foam value per texel of a camera-centred window that **grows from sources** (wave folding from the Jacobian, breaking from O6, objects crossing the surface from the depth buffer), **decays
     exponentially**, and is carried by the current. The window moves with the camera in whole texels so the foam does not swim. Wind speed scales the whitecaps. Replaces `crestFoam`, `crestFoamThreshold`, `foamTrail`,

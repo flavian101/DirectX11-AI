@@ -34,9 +34,13 @@ namespace Slots {
     constexpr unsigned int kSrvSceneColor  = 14;  // a copy of the opaque scene, bound only for the water pass (refraction)
     constexpr unsigned int kSrvWaterDepth  = 15;  // R32_FLOAT map of the water's depth over the terrain, bound per water body (VS + PS)
     constexpr unsigned int kSrvTerrainSplat = 16; // RGBA8: the terrain's layer weights (grass, rock, sand, snow), baked from the heightfield (PS)
+    // The FFT sea (Water::Render): three cascades, each with two maps (shaders/ocean.hlsli). Bound for the water draw only, unbound after it.
+    constexpr unsigned int kSrvOceanDisplacement = 17;   // 17..19, VS: (choppiness * displacement x, height, choppiness * displacement z, 0), RGBA16F with mips
+    constexpr unsigned int kSrvOceanSlope        = 20;   // 20..22, PS: (slope x, slope z, Jacobian, 0), RGBA16F with mips
 
     // Samplers (PS)
     constexpr unsigned int kSamplerLinear  = 0;  // trilinear + anisotropic, bound once by the renderer
     constexpr unsigned int kSamplerShadow  = 1;  // comparison sampler for the shadow map
     constexpr unsigned int kSamplerClamp   = 2;  // linear, edges CLAMP instead of wrapping (screen-space lookups)
+    constexpr unsigned int kSamplerOcean   = 3;  // trilinear + anisotropic, WRAP: the sea's patches repeat. Bound by Water::Render to the VS AND the PS
 }

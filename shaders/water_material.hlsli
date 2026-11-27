@@ -4,23 +4,19 @@
 #ifndef WATER_MATERIAL_HLSLI
 #define WATER_MATERIAL_HLSLI
 
-#define WATER_MAX_WAVES 16   // must equal WaterWaves::kMaxWaves (src/WaterWaves.h)
-
 cbuffer WaterMaterial : register(b4) {
     float4 waterDeepColor;      // rgb = deep-water colour (linear), a = opacity of deep water
     float4 waterShallowColor;   // rgb = shallow-water colour (linear), a = refraction strength (fraction of the screen)
     float4 waterOptics;         // x = reflectivity, y = glint strength, z = glint sharpness, w = mirror distortion
     float4 waterDepthParams;    // x = fade distance, y = foam distance, z = foam strength, w = absorption
-    float4 waterWaveInfo;       // x = wave count, y = detail normal strength, z = detail scale, w = detail fade distance
+    float4 waterWaveInfo;       // x = unused, y = detail normal strength, z = detail scale, w = detail fade distance
     float4 waterFoamInfo;       // x = crest foam strength, y = crest foam threshold, z = scatter strength, w = debug view
-    float4 waterMeshInfo;       // x = LOD distance, y = size of one grid cell at the finest level, z = tallest possible wave
+    float4 waterMeshInfo;       // x = LOD distance, y = size of one grid cell at the finest level, z = tallest possible wave (6 sigma of the sea)
     float4 waterWind;           // xy = unit direction the waves travel toward (XZ)
     float4 waterMirror;         // x = 1 when this body has a mirror image bound to t3 this frame, yzw unused
     float4 waterShore;          // x = 1 when this body's depth map is bound to t15, y = shore wave strength (0 = waves identical everywhere), z = swash, w = shelter (0 = off)
-    float4 waterGroupInfo;      // wave groups (WaveGroupFactor): x = strength (0 = off), y = k of the pattern, z = its speed (radians per second)
+    float4 waterSeaPatch;       // xyz = size in metres of the three sea cascades' patches (OceanGpu::PatchSize), w = unused
     float4 waterFoam2;          // x = foam bubble scale, y = seconds crest foam lingers, zw unused
-    float4 waterWaveDirK[WATER_MAX_WAVES];     // xy = unit direction, z = k (radians per unit), w = amplitude
-    float4 waterWaveMotion[WATER_MAX_WAVES];   // x = omega (radians per second), y = steepness Q, z = phase offset
 };
 
 // How deep the water is under each point of the body: a map baked on the CPU from the terrain (src/WaterShore.h),

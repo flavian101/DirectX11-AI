@@ -3,6 +3,8 @@
 #include "Renderable.h"
 #include "SceneObject.h"
 #include "Material.h"
+#include "OceanGpu.h"
+#include "OceanSea.h"
 #include "RenderView.h"
 #include "UnderwaterLook.h"
 #include "WaterMesh.h"
@@ -63,6 +65,9 @@ public:
 	// The scene's wind, pushed in by the scene every frame. The waves are rebuilt only when it actually changed: the wind makes the sea
 	// (there is no wind of a body's own: lesson 63). The ocean is the open sea, so nothing but the wind limits its waves.
 	void SetSceneWind(const WindSettings& wind);
+	// The scene clock, pushed in by the scene every frame. The GPU makes the sea for exactly this moment, and SampleHeight is asked for the same
+	// moment by boats, so what is drawn and what floats agree.
+	void SetSceneTime(float seconds) { sceneTime_ = seconds; }
 	// What the wind makes of this body right now: how tall, how long and how fast its biggest waves are (the editor shows it).
 	const SeaState::Summary& GetSeaSummary() const { return seaSummary_; }
 	void SetSettings(const WaterSettings& settings);
@@ -108,13 +113,12 @@ private:
 	void CreateRenderStates(ID3D11Device* device);
 	void RebuildMesh(const WaterMesh::TileGrid& grid);
 	void RebuildWaves();
-	WaterWaves::Params CurrentWaveParams() const;   // WaterSettings::WaveParams() plus the scene's wind
+	void SimulateSea(ID3D11DeviceContext* ctx) const;   // runs the compute passes for the scene clock, once per moment
 	void EnsureMesh();                    // rebuilds the tiles when the mesh detail or the body's proportions need a different grid
 	void UploadMaterial(bool mirrored) const;   // `mirrored`: this frame, a mirror image is bound for this body
 	void UpdateWorldTransform();
 	void ReleaseShoreMap();
 	float DepthAtWorld(float x, float z) const;   // water depth under a world position, from the CPU copy of the map
-	WaterWaves::ShoreSample ShoreAtWorld(float x, float z) const;   // depth AND the way to the land, the same blend the shader reads
 	float ExtentX() const { return settings_.size * std::abs(scale_.x); }   // world size along X
 	float ExtentZ() const { return settings_.sizeZ * std::abs(scale_.z); }
 	void ChooseTiles(const RenderView& view) const;
@@ -132,7 +136,18 @@ private:
 	DirectX::XMFLOAT3 scale_ = { 1.0f, 1.0f, 1.0f };
 	Material material_;       // alpha blending, no depth writes
 	Material wireMaterial_;   // the same, drawn as wires (debug)
-	WaterWaves::Table waves_;
+	// The FFT sea (roadmap O2): one sea in two copies, built from the same numbers. The CPU's gives heights (SampleHeight, the margins); the GPU's makes
+	// the maps the shaders draw. Rebuilt only when the wind, the seed or the height scale change (RebuildWaves).
+	mutable OceanSea::Sea sea_;     // mutable: asking a height at a new time updates it, and SampleHeight is const
+	mutable OceanGpu gpuSea_;       // mutable: Render is const and runs the passes
+	SeaSpectrum::Settings builtSea_;
+	bool seaBuilt_ = false;
+	float seaBound_ = 0.5f;         // a height the sea practically never passes (6 sigma): the mesh margins and the dry-tile test use it
+	std::array<float, 3> seaPatch_{ 2000.0f, 250.0f, 30.0f };   // the three cascades' patch sizes in metres (what the shaders divide a position by)
+	float sceneTime_ = 0.0f;
+	mutable bool gpuSimDone_ = false;
+	mutable float gpuSimTime_ = 0.0f, gpuSimChoppiness_ = 0.0f;   // what the GPU's maps were last made for
+	ID3D11SamplerState* oceanSampler_ = nullptr;   // WRAP, trilinear + anisotropic: the sea's patches repeat
 	// The measured ground under the body. Three copies of one thing: the CPU map (for SampleHeight), the texture and its view.
 	WaterShore::DepthField depthField_;
 	ID3D11Texture2D* depthTexture_ = nullptr;

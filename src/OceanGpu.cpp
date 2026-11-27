@@ -135,25 +135,32 @@ bool OceanGpu::CreateBand(const OceanGpuPack::PackedBand& packed, Band& band)
 
 bool OceanGpu::Create(ID3D11Device* device, const SeaSpectrum::Settings& settings)
 {
-    Release();
+    // A new sea (the wind changed, a new seed) replaces the BANDS only. The shaders and the constant buffers do not depend on the sea, and compiling
+    // three shaders on every wind slider tick would stall the editor, so Create keeps what it already has.
+    for (Band& band : bands_) band.Release();
+    bands_.clear();
     device_ = device;
     if (!device_) { LOG_ERROR("OceanGpu::Create received a null device"); return false; }
-    if (!evolveShader_.Load(L"shaders/ocean_evolve_cs.hlsl", device_)) return false;
-    if (!fftShader_.Load(L"shaders/ocean_fft_cs.hlsl", device_)) return false;
-    if (!assembleShader_.Load(L"shaders/ocean_assemble_cs.hlsl", device_)) return false;
+    if (!evolveShader_.IsValid() && !evolveShader_.Load(L"shaders/ocean_evolve_cs.hlsl", device_)) return false;
+    if (!fftShader_.IsValid() && !fftShader_.Load(L"shaders/ocean_fft_cs.hlsl", device_)) return false;
+    if (!assembleShader_.IsValid() && !assembleShader_.Load(L"shaders/ocean_assemble_cs.hlsl", device_)) return false;
 
     D3D11_BUFFER_DESC fftConstantsDesc{};
     fftConstantsDesc.ByteWidth = sizeof(OceanGpuFft::FftConstants);
     fftConstantsDesc.Usage = D3D11_USAGE_DEFAULT;
     fftConstantsDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    const HRESULT hr = device_->CreateBuffer(&fftConstantsDesc, nullptr, &fftConstants_);
-    if (FAILED(hr)) { LOG_HR(hr, "Ocean FFT constant buffer creation failed"); fftConstants_ = nullptr; return false; }
+    if (!fftConstants_) {
+        const HRESULT hr = device_->CreateBuffer(&fftConstantsDesc, nullptr, &fftConstants_);
+        if (FAILED(hr)) { LOG_HR(hr, "Ocean FFT constant buffer creation failed"); fftConstants_ = nullptr; return false; }
+    }
     D3D11_BUFFER_DESC assembleConstantsDesc{};
     assembleConstantsDesc.ByteWidth = sizeof(OceanGpuAssemble::AssembleConstants);
     assembleConstantsDesc.Usage = D3D11_USAGE_DEFAULT;
     assembleConstantsDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    const HRESULT assembleHr = device_->CreateBuffer(&assembleConstantsDesc, nullptr, &assembleConstants_);
-    if (FAILED(assembleHr)) { LOG_HR(assembleHr, "Ocean assemble constant buffer creation failed"); assembleConstants_ = nullptr; return false; }
+    if (!assembleConstants_) {
+        const HRESULT assembleHr = device_->CreateBuffer(&assembleConstantsDesc, nullptr, &assembleConstants_);
+        if (FAILED(assembleHr)) { LOG_HR(assembleHr, "Ocean assemble constant buffer creation failed"); assembleConstants_ = nullptr; return false; }
+    }
 
     const std::vector<SeaSpectrum::Band> bandList = SeaSpectrum::DefaultBands();
     bands_.resize(bandList.size());

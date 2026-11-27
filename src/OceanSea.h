@@ -113,4 +113,20 @@ private:
     bool valid_ = false;
 };
 
+// ---- The sea at a shore (interim, until roadmap O6 gives waves a real run-up) ------------------------------------------------------------------
+// A wave cannot stand taller than the water under it. The surface is limited to a fraction of the depth: the factor below multiplies the displacement
+// (height and the sideways push together, so the shape is kept), is 1 where the water is deep and falls to 0 at the waterline. It is a soft limit,
+// h' = h / (1 + (|h| / L)^4)^(1/4) with L = kShoreBreakRatio * depth, which stays under L however tall h is, and is within 0.01% of h while |h| < L / 8.
+// shaders/ocean.hlsli ShoreLimit is the copy the vertex shader runs; Water::SampleHeight uses this one, so boats and the drawn surface agree.
+constexpr double kShoreBreakRatio = 0.4;
+
+inline double ShoreFactor(double height, double depth)
+{
+    const double limit = kShoreBreakRatio * depth;
+    if (limit <= 1e-4) return 0.0;   // dry (or the very edge): no wave at all
+    const double x = std::fabs(height) / limit, x2 = x * x;
+    return 1.0 / std::sqrt(std::sqrt(1.0 + x2 * x2));
+}
+inline double ShoreLimited(double height, double depth) { return height * ShoreFactor(height, depth); }
+
 }   // namespace OceanSea

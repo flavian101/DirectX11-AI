@@ -110,6 +110,31 @@ static void TestCost()
     CHECK(ms < 100.0);
 }
 
+// The shore limit: deep water is untouched, shallow water is capped well under the depth, the waterline is flat, and it never reverses a wave.
+static void TestShoreLimit()
+{
+    CHECK(OceanSea::ShoreLimited(3.0, 200.0) > 3.0 * 0.9999 && OceanSea::ShoreLimited(3.0, 200.0) <= 3.0);
+    CHECK(OceanSea::ShoreLimited(-3.0, 200.0) < -3.0 * 0.9999);   // troughs are limited the same way: it is symmetric
+    CHECK(OceanSea::ShoreLimited(5.0, 0.0) == 0.0 && OceanSea::ShoreLimited(5.0, -2.0) == 0.0);   // dry land and below: no wave
+    CHECK(OceanSea::ShoreLimited(0.0, 3.0) == 0.0);
+    bool capped = true, monotonic = true, nearIdentity = true;
+    for (double depth : { 0.2, 0.5, 1.0, 2.0, 5.0, 20.0 }) {
+        const double limit = OceanSea::kShoreBreakRatio * depth;
+        double previous = -1.0;
+        for (double h = 0.0; h <= 30.0; h += 0.05) {
+            const double limited = OceanSea::ShoreLimited(h, depth);
+            capped = capped && limited <= limit + 1e-9;                 // never taller than 0.4 of the depth
+            monotonic = monotonic && limited >= previous - 1e-12;       // a taller wave is never made SHORTER than a lower one
+            previous = limited;
+            if (h < limit / 8.0) nearIdentity = nearIdentity && std::fabs(limited - h) <= 1e-4 * h + 1e-12;
+        }
+    }
+    CHECK(capped && monotonic && nearIdentity);
+    // The factor goes to 0 smoothly toward the waterline: a wave 1 m tall in 2 m of water is kept more than in 0.5 m, and so on down.
+    CHECK(OceanSea::ShoreFactor(1.0, 2.0) > OceanSea::ShoreFactor(1.0, 1.0) && OceanSea::ShoreFactor(1.0, 1.0) > OceanSea::ShoreFactor(1.0, 0.5));
+    CHECK(OceanSea::ShoreFactor(1.0, 0.5) > OceanSea::ShoreFactor(1.0, 0.1) && OceanSea::ShoreFactor(1.0, 0.1) > 0.0);
+}
+
 int main()
 {
     TestMatchesReference(8.0, 0.0, 3.7);
@@ -117,6 +142,7 @@ int main()
     TestMatchesReference(8.0, 25.0, 9.0);   // shallow: omega differs per mode
     TestUpdateIsAFunctionOfTime();
     TestBound();
+    TestShoreLimit();
     TestCost();
     if (failures) { std::printf("%d check(s) failed\n", failures); return 1; }
     std::printf("ocean_sea_test: all passed\n");
