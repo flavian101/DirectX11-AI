@@ -288,6 +288,9 @@ change checked with DXC.
     (`SetSceneTime`, pushed by the scene next to the wind) and binds the maps for the draw only. `SampleHeight` reads the CPU copy; the margins and the dry-tile test use its 6 sigma bound (the 16-slot table's
     height bound is gone). Near a shore the displacement is limited to 0.4 of the depth with a soft clamp (`OceanSea::ShoreFactor`, copied by `ShoreLimit` in the shader; tested): an interim stand-in for O6. All
     shaders in the folder compile with DXC at shader model 6 with warnings as errors.
+  - Also done (G6c, found in the editor): at choppiness 1 with a height scale of 3.34 the surface folded over itself nearly everywhere, covered the water in foam and fell to about 8 FPS. Two fixes: the height scale now
+    exaggerates **height only** (the sideways push is as big as the height it comes from, so `Water` passes choppiness / max(height scale, 1) to the maps), and the foam pattern, the costliest code in the pixel shader, is
+    computed only where its bubbles are big enough to show (the rest of the foam was already an even cover). To judge: the Performance panel's Water pass time at choppiness 0.55 and 1, and with foam intensity 0.
   - Interim, until the milestone closes: the per-wave shoaling, shelter, wave groups and swash lift are gone with the Gerstner functions, and the **foam trail** (crest foam lingering behind a crest) is off, because
     it read the sea at earlier times (back with O8). The Waves panel's wave count, swell, swell angle, swell length, wave groups, shelter, directional spread, swash and foam-trail sliders do nothing now (height scale,
     seed and choppiness work). They go, with `WaterWaves.h` and its test, in the clean-up step that closes O2.

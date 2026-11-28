@@ -238,14 +238,21 @@ float4 main(PS_IN input) : SV_Target
     [branch]
     if (amount > 0.01f) {   // open water without foam skips all the noise
         const float freq = 1.1f * waterFoam2.x;                                      // bubbles per world unit
-        // The pattern is drawn on the water's REST position, so it travels with the water instead of sliding over it.
-        const float tex = FoamTexture(input.rest.xy * freq, time);
-        // Keep only the part of the pattern above a threshold that falls as the amount rises: the fringe of weak foam is a
-        // few lacy islands (thin), the middle of strong foam is a sheet (thick).
-        thick = saturate((tex - (1.0f - amount * 1.15f)) / 0.35f);
         // Bubbles smaller than about two pixels cannot be drawn (they shimmer): far away, fade to an even cover instead.
         const float detail = saturate((pixelsPerUnit / (freq * kFoamBubbleScale) - 1.5f) * 0.5f);
-        thick = lerp(saturate(amount * 0.7f), thick, detail);
+        thick = saturate(amount * 0.7f);   // the even cover
+        // The pattern is the most expensive thing in this shader (five noise lookups, a warp and a nine-cell Voronoi), and a pixel whose bubbles are
+        // too small never uses it: `detail` is 0 there. So only the pixels that can show the pattern compute it. With foam over a wide stretch of
+        // far water that is most of the foam pixels.
+        [branch]
+        if (detail > 0.001f) {
+            // The pattern is drawn on the water's REST position, so it travels with the water instead of sliding over it.
+            const float tex = FoamTexture(input.rest.xy * freq, time);
+            // Keep only the part of the pattern above a threshold that falls as the amount rises: the fringe of weak foam is a
+            // few lacy islands (thin), the middle of strong foam is a sheet (thick).
+            const float patterned = saturate((tex - (1.0f - amount * 1.15f)) / 0.35f);
+            thick = lerp(thick, patterned, detail);
+        }
         foam = saturate(thick * 1.35f);
     }
     const float3 foamColor = lerp(float3(0.60f, 0.72f, 0.78f), float3(0.96f, 0.98f, 1.0f), thick) * lightColor;

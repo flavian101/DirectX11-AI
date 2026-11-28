@@ -412,7 +412,10 @@ void Water::Render(ID3D11DeviceContext* ctx, const RenderView& view) const
 void Water::SimulateSea(ID3D11DeviceContext* ctx) const
 {
 	if (!gpuSea_.IsValid()) return;
-	const float choppiness = settings_.choppiness;
+	// The height scale exaggerates HEIGHT only. The FFT's sideways push is as big as the height it comes from, so a sea made 3x taller would also be
+	// pinched 3x harder and fold over itself everywhere (foam all over the water, triangles drawn on top of each other). Dividing the choppiness by
+	// the scale keeps the push at the size of the unexaggerated sea; below 1 the push shrinks with the height, which keeps the shape.
+	const float choppiness = settings_.choppiness / (std::max)(settings_.waveScale, 1.0f);
 	if (gpuSimDone_ && gpuSimTime_ == sceneTime_ && gpuSimChoppiness_ == choppiness) return;   // already made for this moment (the mirror view draws too)
 	gpuSea_.Simulate(ctx, sceneTime_, choppiness);
 	gpuSimDone_ = true;
