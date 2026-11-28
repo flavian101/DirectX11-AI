@@ -275,11 +275,12 @@ change checked with DXC.
     from `GenerateMips`, repeating every patch size. Checked: the chain pack, evolve, FFT, assemble gives the maps of `OceanFFT::Evolve` to 1e-4 of the wave size in all three bands; the layout, the Jacobian without
     choppiness (exactly 1) and the half-float reader (every positive value, the extremes, the sign) are tested; four deliberate bugs are caught. `OceanGpu::Assemble` runs it, `Simulate(ctx, time, choppiness)` is all
     three passes, and `SelfCheck` now also compares the maps and counts their mip levels. Not run on a GPU yet.
-  - Also done (CPU mirror): `src/OceanSea.h`, pure: every band's spectrum and the heights at a time, the way a boat reads them. One FFT per band, and the two 128-mode bands share one (the packing trick), so an update is
-    two FFTs (about 5 ms in an optimised build, only when something asks, once per time). Same arithmetic as `OceanFFT::Evolve`: heights agree to float rounding at any world position, deep and shallow; asking twice
-    for one time costs nothing and going back in time gives the same sea; `HeightBound` = 6 sigma of the spectrum is never reached over 12 times x 160 000 points at 5, 12 and 20 m/s (the highest seen is 4.4 to 5.1
-    sigma). Four deliberate bugs are caught. Known limit: it reads the height at the grid position, while the water is drawn pushed sideways by choppiness x displacement, so a boat can be off by up to that
-    much along the wave (centimetres in a breeze, up to about a metre in a storm). Not wired into `Water` yet.
+  - Also done (CPU mirror): `src/OceanSea.h`, pure: the sea as a boat or the camera reads it, **summed directly** over the 15 to 18 thousand strongest modes (all but 1e-5 of the energy, 0.3% of sigma) instead of a
+    per-frame FFT: `Update(t)` turns each kept mode to the time (0.26 ms in an optimised build), a query costs about 18 microseconds, and a frame with no query costs nothing. (The first version made a 256 x 256 FFT
+    mirror per frame, about 6 ms optimised, because the scene asks for the height under the camera EVERY frame: that was the 8 FPS found in the editor.) Checked against the sum over every mode (worst 2 to 8 mm at sigma 0.35 to
+    1 m), against `OceanFFT::Evolve` at the texels of every band, for shifts by whole patches, time as a pure function, the empty and the calm sea, and the 6 sigma bound (never reached; highest seen 3.5 to 5.0 sigma); six
+    deliberate bugs are caught. `Water::SampleHeight` also returns the level straight away where the ground is dry (the interim shore limit is 0 there), which is where a camera on the beach is. Known limit: it reads the
+    height at the grid position, while the water is drawn pushed sideways by choppiness x displacement, so a boat can be off by up to that much along the wave (centimetres in a breeze, up to about a metre in a storm).
   - Editor check to do (compute): the log shows nine lines, "Ocean GPU evolve check", "Ocean GPU sea check" and "Ocean GPU map check", for bands 0 to 2, each ending in "ok" (a "MISMATCH" or an error line means a shader
     or a resource is wrong; the map lines also report the mip levels, 8 or 9).
   - Also done (G6b, the water draws it): `shaders/ocean.hlsli` replaces `waves.hlsli`. The **vertex shader** moves each vertex by the sum of the three displacement maps (t17 to t19), each read at a mip that matches the

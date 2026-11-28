@@ -1,5 +1,7 @@
 # Lesson 68 - The boats' sea: the CPU mirror (O2)
 
+> **Revised by lesson 71.** The mirror described here made a whole height map with an FFT every frame. The scene asks for the height under the camera every frame, so that cost was paid with no boat in sight (8 FPS in the editor). It now adds up the strongest waves directly; lesson 71 explains how. The ideas below (why the CPU needs its own copy, the packing trick, the bound, the sideways-push limit) still hold.
+
 ## Understand
 
 **Why the CPU needs its own copy.** The GPU makes the sea you see, but a boat, a swimmer or a splash is gameplay code on the CPU. Reading the GPU's texture back every frame would stall the pipeline. So the CPU computes the same sea itself, from the same spectrum, at the same time. Both start from the same numbers, so they agree.

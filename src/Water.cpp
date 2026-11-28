@@ -497,10 +497,18 @@ float Water::DistanceTo(const XMFLOAT3& point) const
 float Water::SampleHeight(float x, float z, float time) const
 {
 	if (!IsOverWater(x, z)) return position_.y;
-	// The FFT sea at this moment (the CPU copy; the GPU made the same one for the screen), limited near a shore exactly as the vertex shader limits it.
+	// The sea at this moment (the CPU copy; the GPU made the same one for the screen), limited near a shore exactly as the vertex shader limits it.
+	// The scene asks this EVERY frame for the camera, and a camera on the beach is "over" the water body's plane while the ground under it is dry:
+	// there the limit flattens the sea to nothing, so the answer is the level and the sea is not summed at all.
+	double depth = 0.0;
+	const bool hasDepth = !depthField_.IsEmpty();
+	if (hasDepth) {
+		depth = DepthAtWorld(x, z);
+		if (OceanSea::ShoreFactor(1.0, depth) == 0.0) return position_.y;
+	}
 	sea_.Update(time);
 	double height = sea_.HeightAt(x, z);
-	if (!depthField_.IsEmpty()) height = OceanSea::ShoreLimited(height, DepthAtWorld(x, z));
+	if (hasDepth) height = OceanSea::ShoreLimited(height, depth);
 	return position_.y + static_cast<float>(height);
 }
 
